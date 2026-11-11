@@ -2,10 +2,10 @@
 //  CallFailureReason.swift
 //  ConduitCallEngine
 //
-//  Why a call ended in `.failed`. Drives the spoken/visible state and how the
-//  log row reads. `badToken` (auth) is distinct from `lostConnection` (a
-//  recoverable drop whose reconnection budget was exhausted) so the two never
-//  get conflated — one is a desk-time fix, the other a road condition.
+//  Why a call ended in `.failed`. `badToken` (credentials rejected) is distinct
+//  from `lostConnection` (a mid-call drop that exhausted its reconnection budget),
+//  so a host can tell a configuration problem from a network one. Raw values are
+//  stable, so a host can persist them.
 //
 
 import Foundation

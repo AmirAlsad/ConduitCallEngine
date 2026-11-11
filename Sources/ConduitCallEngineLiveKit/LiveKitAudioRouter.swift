@@ -6,9 +6,8 @@
 //  mode (it does not manage `AVAudioSession`), so routing goes straight through
 //  `AVAudioSession` here — which is also why the native CallKit route button works,
 //  since CallKit owns the same session. Device ids are the kind keywords
-//  `AudioRouteKind(deviceID:)` recognizes, so the existing in-call picker labels,
-//  sorts, and checkmarks them with no change (it resolves the real Bluetooth name
-//  from `AVAudioSession.availableInputs` itself).
+//  `AudioRouteKind(deviceID:)` recognizes, so a host maps them to kinds exactly as
+//  it does the Daily adapter's ids.
 //
 
 import AVFoundation

@@ -3,7 +3,7 @@
 //  ConduitCallEngine
 //
 //  Fake conforming to `CallProviding`, plus `FakeAudioSession` for driving
-//  the activation handshake. A test drives the system → app direction
+//  the activation handshake. A test drives the system → engine direction
 //  (`simulateActivate`, `simulateEndCall`, …) and asserts on what was reported.
 //
 
@@ -121,7 +121,7 @@ package final class FakeCallProvider: CallProviding {
     }
     package func setMuted(_ id: UUID, muted: Bool) async { muteStates[id] = muted }
 
-    // MARK: - System → app drivers (for tests / debug path)
+    // MARK: - System → engine drivers (for tests and the simulator)
 
     package func simulateActivate(_ session: AudioSessionActivating) {
         delegate?.providerDidActivate(session)
@@ -139,14 +139,5 @@ package final class FakeCallProvider: CallProviding {
 
 @MainActor
 package final class FakeAudioSession: AudioSessionActivating {
-    package var hasExternalAudioRoute: Bool
-    package private(set) var didOverrideToSpeaker = false
-    package private(set) var didClearOverride = false
-
-    package init(hasExternalAudioRoute: Bool = false) {
-        self.hasExternalAudioRoute = hasExternalAudioRoute
-    }
-
-    package func overrideOutputToSpeaker() throws { didOverrideToSpeaker = true }
-    package func clearOutputOverride() throws { didClearOverride = true }
+    package init() {}
 }

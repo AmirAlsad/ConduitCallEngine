@@ -2,15 +2,18 @@
 //  CallTransport.swift
 //  ConduitCallEngine
 //
-//  The seam over the Pipecat iOS client. Concrete adapters (DailyTransport,
-//  later LiveKitTransport) live in this folder and conform here; nothing outside
-//  references an SDK type. The call engine drives a `CallTransport` and
-//  consumes its `events`.
+//  The engine's seam over a real-time media SDK. The `ConduitCallEngineDaily` and
+//  `ConduitCallEngineLiveKit` products provide adapters, and a host can write its
+//  own; no SDK type crosses this protocol. The engine drives a `CallTransport`
+//  from the main actor and consumes its `events`.
 //
 //  AUDIO-SESSION INVARIANT: a transport must NOT seize the microphone or activate
 //  the audio session on its own. Media attaches only when the engine calls
 //  `attachAudioSession()`, which it does only after CallKit's `providerDidActivate`.
 //  CallKit owns the session; the transport attaches to it.
+//
+//  A conforming type isolated to the main actor (as the package's adapters are)
+//  must declare `events` as `nonisolated`, because the requirement is nonisolated.
 //
 
 import Foundation
@@ -24,8 +27,8 @@ public protocol CallTransport: AnyObject {
     func setMicEnabled(_ enabled: Bool) async
 
     /// The audio routes the user can pick from (speaker, earpiece, Bluetooth, …).
-    /// Routing goes through the transport so the SDK — which manages its own audio
-    /// session and would otherwise re-assert its choice — honors the selection.
+    /// Routing goes through the transport so an SDK that manages its own audio
+    /// session, and would otherwise re-assert its choice, honors the selection.
     func availableAudioDevices() async -> [AudioDeviceInfo]
     func selectedAudioDevice() async -> AudioDeviceInfo?
     func setAudioDevice(_ id: String) async

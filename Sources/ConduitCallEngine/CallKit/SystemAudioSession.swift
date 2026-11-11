@@ -3,8 +3,8 @@
 //  ConduitCallEngine
 //
 //  Real `AudioSessionActivating` over `AVAudioSession`. CallKit owns activation;
-//  this only pre-configures the category/mode (without activating) and performs
-//  the hands-free route decision once CallKit has activated the session.
+//  this only pre-configures the category and mode, without activating, before a
+//  call is reported.
 //
 
 import AVFoundation
@@ -26,25 +26,5 @@ final class SystemAudioSession: AudioSessionActivating {
             mode: .voiceChat,
             options: [.allowBluetoothHFP, .allowBluetoothA2DP, .duckOthers]
         )
-    }
-
-    var hasExternalAudioRoute: Bool {
-        session.currentRoute.outputs.contains { output in
-            switch output.portType {
-            case .bluetoothA2DP, .bluetoothHFP, .bluetoothLE,
-                 .carAudio, .airPlay, .headphones, .headsetMic, .usbAudio:
-                return true
-            default:
-                return false
-            }
-        }
-    }
-
-    func overrideOutputToSpeaker() throws {
-        try session.overrideOutputAudioPort(.speaker)
-    }
-
-    func clearOutputOverride() throws {
-        try session.overrideOutputAudioPort(.none)
     }
 }

@@ -3,8 +3,8 @@
 //  ConduitCallEngine
 //
 //  A selectable in-call audio route (speaker, earpiece, Bluetooth/AirPods, wired),
-//  surfaced by the transport. SDK-agnostic: the Daily adapter maps its device list
-//  into these so the in-call route picker never sees an SDK type.
+//  surfaced by the transport. SDK-agnostic: each adapter maps its SDK's devices
+//  into these, so a host never sees an SDK type.
 //
 
 import Foundation

@@ -4,8 +4,8 @@
 //
 //  The call state machine: it orchestrates the CallKit
 //  seam (`CallProviding`) and the transport seam (`CallTransport`), owns `CallState`,
-//  and drives reconnection. It knows calls, not agents: the host hands it a
-//  `CallTarget` and hears back through `CallEngineDelegate` (transitions, finished
+//  and drives reconnection. It knows calls, not the host's models: the host hands
+//  it a `CallTarget` and hears back through `CallEngineDelegate` (transitions, finished
 //  calls, incoming-target resolution, receipt bearers). It depends only on
 //  protocols, so the whole machine runs in the simulator against fakes.
 //
@@ -22,7 +22,7 @@ import Foundation
 @Observable
 public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDelegate {
 
-    // MARK: - Observed state (the InCall screen is a pure projection of these)
+    // MARK: - Observed state (a host's in-call UI can be a pure projection of these)
 
     public private(set) var state: CallState = .idle
     public private(set) var activeCall: ActiveCall?
@@ -37,9 +37,10 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     /// Available audio routes and the active one, for the in-call route picker.
     public private(set) var audioDevices: [AudioDeviceInfo] = []
     public private(set) var selectedAudioDeviceID: String?
-    /// Set when the local user taps End (vs a remote hangup or a failure). The UI
-    /// dismisses a user-ended call immediately with no terminal page; remote/failed
-    /// terminals keep their page until Close. Cleared on reset.
+    /// True once the host ends the call through `markEndedByUser()` or `endCall()`;
+    /// false for a remote hangup, a failure, or an end from the system UI. Lets a
+    /// host dismiss a call its user ended at once while still showing other
+    /// endings. Cleared on reset.
     public private(set) var endedByUser = false
 
     // MARK: - Dependencies
@@ -148,7 +149,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     // MARK: - Placing a call
 
     public func placeCall(_ target: CallTarget) async {
-        // A finished call still on screen gives way to the new one.
+        // A finished call the host has not reset yet gives way to the new one.
         if state.isTerminal { resetState() }
         guard case .idle = state else {
             Log.warning(.call, "placeCall ignored; state is \(String(describing: state))")
@@ -201,7 +202,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
 
     // MARK: - Receiving a call (via VoIP push)
 
-    /// The PushKit entry point. iOS terminates the app if a VoIP push doesn't
+    /// The PushKit entry point. iOS terminates the host if a VoIP push doesn't
     /// report an incoming call before the push callback returns, so this reports
     /// FIRST — synchronously, under the identity the push itself carries — and only
     /// then touches state or the delegate. The target is resolved right after the
@@ -272,7 +273,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     /// not when CallKit completes the report, because the user can answer before
     /// that completion reaches the main actor.
     private func beginRing(_ incoming: IncomingCall, payload: IncomingCallPayload) -> CallTarget? {
-        // A finished call still on screen gives way to the ring.
+        // A finished call the host has not reset yet gives way to the ring.
         if state.isTerminal { resetState() }
         let target = delegate?.callEngine(self, targetForIncomingCall: incoming)
         currentTarget = target
@@ -373,7 +374,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         await connectTransport(for: target)
     }
 
-    /// Fire-and-forget receipt to the server that rang us, authenticated with the
+    /// Fire-and-forget receipt to the server that sent the push, authenticated with the
     /// bearer the host supplies for the target (omitted when it has none).
     private func reportRingStatus(_ status: RingStatus, callID: UUID, endpoint: URL, targetID: UUID?) {
         let apiKey = targetID.flatMap { delegate?.callEngine(self, ringStatusBearerForTarget: $0) }
@@ -383,7 +384,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     /// Create and subscribe the transport, then resolve credentials and connect.
     /// Shared by `placeCall` and `answer`. The transport exists before the
     /// credential fetch so a CallKit activation landing mid-fetch still reaches
-    /// `attachAudioSession()` (see potential_skills/callkit.md).
+    /// `attachAudioSession()`.
     private func connectTransport(for target: CallTarget) async {
         let transport = target.makeTransport()
         self.transport = transport
@@ -404,7 +405,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
             Log.error(.transport, "connect failed: \(error)")
             // `connect` can resolve LATE — after an event already failed this call and
             // the user reset to idle (or started another call). Failing again would
-            // re-enter `.failed` and re-present the call screen. Ignore unless this is
+            // re-enter `.failed` and replace the newer state. Ignore unless this is
             // still the live transport.
             guard self.transport === transport else { return }
             fail((error as? TransportError) == .authenticationFailed ? .badToken : .transportError)
@@ -599,7 +600,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         isAudioActivated = true
         await transport?.attachAudioSession()
         // Enabling the mic only takes effect once the transport is connected. If
-        // CallKit activates BEFORE connect (e.g. a slow pairing fetch delays the
+        // CallKit activates BEFORE connect (e.g. slow credential resolution delays the
         // join), this is a no-op and the mic is (re)enabled in `handleConnected`.
         await transport?.setMicEnabled(micShouldBeOn)
         await refreshAudioDevices()
@@ -607,9 +608,9 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
 
     /// Hands-free default: prefer the loudspeaker when nothing external (car /
     /// Bluetooth / wired) is connected, so call audio isn't stuck on the quiet
-    /// earpiece. Driven through the transport (an AVAudioSession override doesn't
-    /// stick — the WebRTC SDK manages the session and reverts it). Runs once per
-    /// call, after connect, when the device list is populated.
+    /// earpiece. Driven through the transport, because an SDK that manages the
+    /// session itself reverts a direct AVAudioSession override. Runs once per call,
+    /// on connect or a device change, once the device list is populated.
     private func applyHandsFreeDefaultIfNeeded() async {
         // Caller refreshes the device list first; bail until it's populated so a
         // later trigger (connect / devices-changed) can apply the default instead.
@@ -663,7 +664,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     // call): pause the mic while interrupted and re-apply it on resume. We never
     // touch the audio session — CallKit owns it and re-fires `providerDidActivate`
     // when the interruption ends, so this and that activation are two unordered
-    // edges; both re-apply mic state idempotently (see potential_skills/callkit.md).
+    // edges; both re-apply mic state idempotently.
 
     package func audioInterruptionBegan() {
         guard state.isActive, !state.isTerminal else { return }
@@ -682,9 +683,9 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
 
     // MARK: - User-initiated controls
 
-    /// Flip the user-ended flag synchronously so the UI can dismiss the in-call
-    /// cover in the SAME (animation-disabled) transaction as the tap — no slide-down
-    /// reveal. `endCall()` then does the actual teardown asynchronously.
+    /// Set `endedByUser` synchronously, so a host can dismiss its in-call UI in the
+    /// same transaction as the user's tap; `endCall()` then does the teardown
+    /// asynchronously.
     public func markEndedByUser() {
         guard state.isActive, !state.isTerminal else { return }
         endedByUser = true
@@ -692,9 +693,8 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
 
     public func endCall() async {
         guard state.isActive, !state.isTerminal else { return }
-        // Mark this as a local user-end: the UI dismisses immediately with no
-        // "Call Ended" page (presentation lives in RootTabView), while the state
-        // still goes `.ended` (logged) per the engine contract. Going terminal
+        // Mark this as a local user-end, so a host can skip its ended view, while
+        // the state still goes `.ended` and the call is recorded. Going terminal
         // BEFORE the system round-trip also avoids the mid-`.connecting` race where a
         // teardown disconnect would be misread as `.failed`. `finishEnded` nils
         // `activeCallID`, so capture it first; the round-trip then no-ops on the
@@ -736,7 +736,8 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         await applyHandsFreeDefaultIfNeeded()
     }
 
-    /// Return to idle after a terminal state (called by the UI on dismiss).
+    /// Return to idle after a terminal state, once the host has shown the outcome.
+    /// Placing a call or a new ring also resets a terminal state.
     public func reset() {
         guard state.isTerminal else { return }
         resetState()

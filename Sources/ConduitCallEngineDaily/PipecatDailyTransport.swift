@@ -11,10 +11,11 @@
 //  `DailyTransport`.
 //
 //  Audio-session note: the Daily SDK manages `AVAudioSession` itself and has no
-//  documented hook to defer activation to CallKit, so we join with the mic
-//  DISABLED and only enable capture via `setMicEnabled` — which the engine calls
-//  after CallKit activation — so the mic is never hot before activation. `attachAudioSession`/`detachAudioSession` are no-ops here
-//  because Daily owns the session; they exist to satisfy the seam.
+//  documented hook to defer activation to CallKit, so the transport joins with the
+//  mic DISABLED and enables capture only via `setMicEnabled`, which the engine
+//  calls after CallKit activation, so the mic is never hot before activation.
+//  `attachAudioSession`/`detachAudioSession` are no-ops here because Daily owns the
+//  session; they exist to satisfy the seam.
 //
 
 import Foundation
@@ -65,10 +66,10 @@ public final class PipecatDailyTransport: CallTransport {
 
     public func disconnect() async {
         clientEvents.userRequestedDisconnect = true
-        // Deliberate hangup: explicit end signal so the engine ends at once
-        // instead of waiting out its human-absent grace window (design §2.5).
-        // Throws when the bot was never ready — exactly when there's no one to
-        // tell. The brief sleep lets the app message flush before the leave.
+        // Deliberate hangup: an explicit end-call message lets the remote side end
+        // at once instead of waiting out the grace period it may give a dropped
+        // participant. Throws when the bot was never ready — exactly when there's
+        // no one to tell. The brief sleep lets the message flush before the leave.
         if (try? client.sendClientMessage(msgType: "end-call")) != nil {
             try? await Task.sleep(for: .milliseconds(200))
         }
@@ -98,8 +99,8 @@ public final class PipecatDailyTransport: CallTransport {
     }
 
     public func attachAudioSession() async {
-        // Daily owns the AVAudioSession; nothing to attach here. The CallKit-owned
-        // activation handshake for Daily is the M3 on-device spike.
+        // Daily owns the AVAudioSession, so there is nothing to attach; the mic
+        // stays off until the engine enables it after activation.
     }
 
     public func detachAudioSession() async {

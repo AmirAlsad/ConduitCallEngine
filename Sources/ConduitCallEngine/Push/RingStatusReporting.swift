@@ -2,13 +2,12 @@
 //  RingStatusReporting.swift
 //  ConduitCallEngine
 //
-//  Reports an inbound ring's terminal status back to the agent's own server, when
-//  the push carried a `status_url` — so a server that really needed to reach the
-//  user learns whether the ring was answered, declined, arrived mid-call, or was
-//  suppressed by Focus/DND. Fire-and-forget: a receipt must never block or fail
-//  call handling. See `docs/INBOUND_CALLS.md` for the contract (and its privacy
-//  note — receipts reveal Focus/busy state, but only to a server the user already
-//  opted into).
+//  Reports an inbound ring's terminal status to the push's `status_url`, when it
+//  carried one, so the server that rang learns whether the ring was answered,
+//  declined, arrived mid-call, or was suppressed by Focus/DND. The receipt is a
+//  JSON POST of `call_id` and `status`, with the host's bearer when it supplies
+//  one. Fire-and-forget: a receipt never blocks or fails call handling. Receipts
+//  reveal Focus and busy state to that server.
 //
 
 import Foundation

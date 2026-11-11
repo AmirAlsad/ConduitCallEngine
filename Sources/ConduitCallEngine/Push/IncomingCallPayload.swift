@@ -4,9 +4,10 @@
 //
 //  The parsed contents of a VoIP push: which target is calling, the call's id, how
 //  to ring (optional caller name and handle), and OPTIONAL inline room credentials.
-//  Hybrid resolution — if `room_url` + `token` are present the app joins directly;
-//  otherwise the host resolves its own credentials after the user answers (so
-//  they needn't ride the push). See `docs/INBOUND_CALLS.md` for the server contract.
+//  When `room_url` and a non-empty `token` are both present they reach the host as
+//  `IncomingCall.connection`, for the target it returns to connect with; otherwise
+//  that target resolves credentials itself after the user answers, so they need
+//  not ride the push.
 //
 
 import Foundation

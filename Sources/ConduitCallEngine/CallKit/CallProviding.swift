@@ -2,13 +2,13 @@
 //  CallProviding.swift
 //  ConduitCallEngine
 //
-//  The app → system direction of the CallKit seam, abstracting `CXProvider` and
+//  The engine → system direction of the CallKit seam, abstracting `CXProvider` and
 //  `CXCallController`. The real `SystemCallProvider` wraps CallKit; `FakeCallProvider`
 //  lets the whole call state machine run in the simulator.
 //
 //  Reporting maps to CallKit lifecycle: `reportOutgoingCallConnecting` when the
-//  transport begins connecting, `reportOutgoingCallConnected` only when media AND
-//  bot are truly ready (this starts the native duration timer).
+//  transport begins connecting, `reportOutgoingCallConnected` only when media is up
+//  AND the remote party is present (this starts the native duration timer).
 //
 
 import Foundation
@@ -41,7 +41,7 @@ package protocol CallProviding: AnyObject {
     func updateCall(_ id: UUID, handle: CallHandle, displayName: String)
     func reportOutgoingCallConnecting(_ id: UUID)
     func reportOutgoingCallConnected(_ id: UUID)
-    /// Request the system end the call (app-initiated End).
+    /// Request the system end the call (an end the host asked for).
     func endCall(_ id: UUID) async
     /// Tell the system the call ended (transport-initiated / failure).
     func reportCallEnded(_ id: UUID, reason: CallEndReason)

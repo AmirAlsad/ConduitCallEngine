@@ -103,7 +103,7 @@ public final class FakeTransport: CallTransport, @unchecked Sendable {
         isAudioAttached = false
     }
 
-    /// Drive an event onto the stream from a test or the debug path.
+    /// Drive an event onto the stream from a test or a simulator build.
     public func emit(_ event: TransportEvent) {
         continuation.yield(event)
     }

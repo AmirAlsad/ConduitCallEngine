@@ -2,10 +2,9 @@
 //  Log.swift
 //  ConduitCallEngine
 //
-//  The engine's logging, built on Apple's unified logging (os.Logger) with the same
-//  shape and category labels as the host app's `Log`, so call sites read the same
-//  and Console filtering looks the same. `debug` / `info` are compiled out of
-//  release builds; `warning` / `error` always log.
+//  The engine's logging, built on Apple's unified logging (os.Logger), one
+//  category per domain. `debug` / `info` are compiled out of release builds;
+//  `warning` / `error` always log.
 //
 
 import Foundation
@@ -33,7 +32,7 @@ package enum LogCategory: String {
     case call = "📞 [Call]"
     /// CallKit integration (provider, call controller, system call UI).
     case callkit = "☎️ [CallKit]"
-    /// Signaling / transport layer (Pipecat connection, room join/leave).
+    /// Signaling / transport layer (room join/leave, media connection).
     case transport = "🔌 [Transport]"
     /// Audio session, routing, and playback/capture.
     case audio = "🔊 [Audio]"
@@ -42,10 +41,10 @@ package enum LogCategory: String {
 }
 
 package enum Log {
-    /// One `Logger` per category, reused across calls. The subsystem is the host
-    /// app's bundle identifier, so engine logs group with the app's in Console.
+    /// One `Logger` per category, reused across calls. The subsystem is the host's
+    /// bundle identifier, so engine logs group with the host's in Console.
     private static let loggers: [LogCategory: Logger] = {
-        let subsystem = Bundle.main.bundleIdentifier ?? "com.conduit.app"
+        let subsystem = Bundle.main.bundleIdentifier ?? "ConduitCallEngine"
         var map: [LogCategory: Logger] = [:]
         for category in [LogCategory.call, .callkit, .transport, .audio, .network] {
             map[category] = Logger(subsystem: subsystem, category: category.rawValue)
@@ -81,7 +80,7 @@ package enum Log {
     /// pass raw PII.
     private static func emit(_ level: LogLevel, _ category: LogCategory, _ message: String) {
         let logger = loggers[category] ?? Logger(
-            subsystem: Bundle.main.bundleIdentifier ?? "com.conduit.app",
+            subsystem: Bundle.main.bundleIdentifier ?? "ConduitCallEngine",
             category: category.rawValue
         )
         logger.log(level: level.osLogType, "\(message, privacy: .public)")

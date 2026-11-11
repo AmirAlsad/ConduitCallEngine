@@ -14,7 +14,9 @@ import Foundation
 public struct CallTarget {
     public let id: UUID
     public let displayName: String
-    /// The CallKit handle; nil falls back to `defaultHandle(for:)`.
+    /// The CallKit handle; nil falls back to `defaultHandle(for:)`. The engine
+    /// reports it to CallKit as an email-address handle (`CXHandle.HandleType
+    /// .emailAddress`, the only type its provider supports), whatever its format.
     public let handle: String?
     public let makeTransport: @MainActor () -> any CallTransport
     public let connect: @MainActor () async throws -> CallConnection
@@ -33,12 +35,13 @@ public struct CallTarget {
         self.connect = connect
     }
 
+    /// An email-shaped handle unique to `id`, under the reserved `.invalid` domain.
     public static func defaultHandle(for id: UUID) -> String {
         "\(id.uuidString.lowercased())@calltarget.invalid"
     }
 }
 
-/// The live call, as the UI projects it.
+/// The live call, as a host's UI shows it.
 public struct ActiveCall: Equatable, Sendable {
     public let targetID: UUID
     public let displayName: String

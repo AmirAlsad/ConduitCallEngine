@@ -7,7 +7,7 @@
 //  `SystemVoIPPushRegistry` wraps `PKPushRegistry`; `FakeVoIPPushRegistry` drives
 //  the same callbacks without PushKit.
 //
-//  NOTE (device): iOS terminates the app unless `reportNewIncomingCall` is invoked
+//  NOTE (device): iOS terminates the host unless `reportNewIncomingCall` is invoked
 //  before the push callback returns. An incoming push is therefore handed to the
 //  engine synchronously, inside the PushKit callback — no Task in between — and the
 //  engine reports before returning and calls PushKit's completion after CallKit's.

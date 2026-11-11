@@ -2,7 +2,7 @@
 //  CallProviderDelegate.swift
 //  ConduitCallEngine
 //
-//  The system → app direction of the CallKit seam. The engine conforms to
+//  The system → engine direction of the CallKit seam. The engine conforms to
 //  this; the provider calls it. `providerDidActivate` is the audio-session
 //  ownership boundary — the one place media may attach.
 //
@@ -11,12 +11,14 @@ import Foundation
 
 @MainActor
 package protocol CallProviderDelegate: AnyObject {
-    /// CallKit activated the audio session. The engine attaches media here
-    /// (and nowhere else) and sets the hands-free default route.
+    /// CallKit activated the audio session. The engine attaches the live call's
+    /// transport and applies its mic state; media never attaches before this (a
+    /// transport created later attaches at once). Activation sets no route: the
+    /// hands-free default follows the transport's connect and device changes.
     func providerDidActivate(_ audioSession: AudioSessionActivating)
     /// CallKit deactivated the audio session. The engine detaches media.
     func providerDidDeactivate(_ audioSession: AudioSessionActivating)
-    /// The user answered an agent-initiated incoming call from the system UI.
+    /// The user answered an incoming call from the system UI.
     func providerPerformAnswerCall(_ id: UUID)
     /// The user ended the call from the system UI (lock screen, CarPlay). Also the
     /// decline path for an incoming call that's still ringing.

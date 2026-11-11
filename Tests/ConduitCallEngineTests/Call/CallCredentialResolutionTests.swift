@@ -28,7 +28,7 @@ struct CallCredentialResolutionTests {
         #expect(h.target.makeTransportCount == 1) // created before the fetch
         #expect(h.transport.connectCount == 0)
 
-        h.provider.simulateActivate(FakeAudioSession(hasExternalAudioRoute: false))
+        h.provider.simulateActivate(FakeAudioSession())
         await h.engine.awaitPendingActivation()
         #expect(h.transport.isAudioAttached)
 
@@ -141,7 +141,7 @@ struct CallCredentialResolutionTests {
         let place = Task { await h.placeCall() }
         await waitUntil { h.provider.pendingStartCount == 1 }
         #expect(h.provider.pendingStartCount == 1)
-        h.provider.simulateActivate(FakeAudioSession(hasExternalAudioRoute: false))
+        h.provider.simulateActivate(FakeAudioSession())
         await h.engine.awaitPendingActivation()
         #expect(h.engine.isAudioActivated)
         #expect(h.target.makeTransportCount == 0) // nothing to attach yet
@@ -156,7 +156,7 @@ struct CallCredentialResolutionTests {
     @Test func activationBeforeAnswerAttachesTheTransportWhenItIsCreated() async throws {
         let h = CallEngineHarness()
         h.ring()
-        h.provider.simulateActivate(FakeAudioSession(hasExternalAudioRoute: false))
+        h.provider.simulateActivate(FakeAudioSession())
         await h.engine.awaitPendingActivation()
         #expect(h.engine.isAudioActivated)
         #expect(h.target.makeTransportCount == 0)
@@ -175,7 +175,7 @@ struct CallCredentialResolutionTests {
         let place = Task { await h.placeCall() }
         await waitUntil { h.provider.pendingStartCount == 1 }
         #expect(h.provider.pendingStartCount == 1)
-        h.provider.simulateActivate(FakeAudioSession(hasExternalAudioRoute: false))
+        h.provider.simulateActivate(FakeAudioSession())
         await h.engine.awaitPendingActivation()
 
         h.provider.releaseStart()

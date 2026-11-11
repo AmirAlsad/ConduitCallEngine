@@ -21,7 +21,7 @@ struct CallInterruptionTests {
         let h = CallEngineHarness(pushToTalk: pushToTalk)
         await h.placeCall()
         h.engine.handle(.connected)
-        await h.engine.activate(FakeAudioSession(hasExternalAudioRoute: false))
+        await h.engine.activate(FakeAudioSession())
         return h
     }
 

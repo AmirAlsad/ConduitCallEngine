@@ -3,7 +3,8 @@
 //  ConduitCallEngine
 //
 //  The already-resolved room a transport joins: the room (or offer) URL and its
-//  token. Credentials are resolved before `connect` — the transport never pairs.
+//  token. The engine resolves them through `CallTarget.connect` and hands them to
+//  `CallTransport.connect`; a transport never fetches credentials itself.
 //
 
 import Foundation

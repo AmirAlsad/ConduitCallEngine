@@ -3,13 +3,13 @@
 //  ConduitCallEngine
 //
 //  Native LiveKit transport behind the engine's `CallTransport` seam. Unlike Daily,
-//  LiveKit supports manual audio: we disable its automatic `AVAudioSession`
-//  management and gate its audio engine on CallKit activation
+//  LiveKit supports manual audio: the transport disables its automatic
+//  `AVAudioSession` management and gates its audio engine on CallKit activation
 //  (`attachAudioSession`/`detachAudioSession` → `AudioManager.setEngineAvailability`).
 //  Because CallKit then truly owns the session, the native call-screen route button
-//  moves the audio and the in-app picker routes via `AVAudioSession`
+//  moves the audio, and `setAudioDevice` routes via `AVAudioSession`
 //  (`LiveKitAudioRouter`). RTVI-style signals are re-derived from LiveKit: `.connected`
-//  when the room and the agent (a remote participant) are both ready, bot-speaking
+//  when the room is connected and a remote participant is present, bot-speaking
 //  from active speakers. Device-only (WebRTC audio aborts in the simulator).
 //
 
@@ -29,10 +29,9 @@ public final class LiveKitTransport: CallTransport {
     private let roomEvents: RoomEventMapper
     private var routeObserver: NSObjectProtocol?
     /// Whether CallKit has activated the audio session (attach/detach edges).
-    /// Activation and connect are unordered (see potential_skills/callkit.md):
-    /// on a cold launch the pairing fetch is slow enough that activation lands
-    /// mid-connect, and an unconditional `.none` there would stomp it — the
-    /// engine then never starts and the call has no mic.
+    /// Activation and connect are unordered: when credential resolution is slow,
+    /// activation lands mid-connect, and an unconditional `.none` there would stomp
+    /// it — LiveKit's audio engine then never starts and the call has no mic.
     private var isSessionAttached = false
 
     public init() {
@@ -47,7 +46,7 @@ public final class LiveKitTransport: CallTransport {
         self.roomEvents = roomEvents
         self.room = Room(delegate: roomEvents)
 
-        // The route can change from the native CallKit screen too — keep the in-app
+        // The route can change from the native CallKit screen too — keep a host's
         // picker in sync. Continuation is thread-safe, so yield directly.
         routeObserver = NotificationCenter.default.addObserver(
             forName: AVAudioSession.routeChangeNotification, object: nil, queue: nil
@@ -82,11 +81,11 @@ public final class LiveKitTransport: CallTransport {
         await room.disconnect()
     }
 
-    /// Deliberate hangup: tell the engine to end NOW instead of burning its
-    /// human-absent grace window (which exists for genuine drops — design §2.5).
-    /// RTVI client-message shape over the data channel; the reference engine
-    /// listens on the raw data event because Pipecat's LiveKit input path doesn't
-    /// deliver client RTVI messages to its RTVI processor.
+    /// Deliberate hangup: tell the remote side to end now instead of waiting out
+    /// the grace period it may give a dropped participant. Sent as an RTVI client
+    /// message over the data channel; a Pipecat bot must read it from the raw data
+    /// event, because Pipecat's LiveKit input does not deliver client RTVI messages
+    /// to its RTVI processor.
     private func sendEndCallSignal() async {
         guard room.connectionState == .connected else { return }
         let message: [String: Any] = [

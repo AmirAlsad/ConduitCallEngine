@@ -3,7 +3,7 @@
 //  ConduitCallEngine
 //
 //  The host's side of the call engine: it resolves incoming targets, observes
-//  state transitions (spoken cues, Siri donation), records finished calls, and
+//  state transitions, records finished calls, and
 //  supplies the bearer for ring-status receipts. Every call is synchronous and on
 //  the main actor, in the order the engine makes the change, so a host sees each
 //  transition in the same turn as the state assignment.
@@ -16,7 +16,10 @@ public protocol CallEngineDelegate: AnyObject {
     /// Once per push, after its CallKit report is issued: synchronously for a ring
     /// (CallKit may not have accepted the report yet), or once CallKit accepts it
     /// for a push that arrives during another call. nil means the target is
-    /// unknown and the ring fails.
+    /// unknown: the ring fails once CallKit accepts its report (an answer before
+    /// that does nothing), and a ring Focus filtered is still recorded as missed. A
+    /// push during a live call is ended as unanswered either way; nil only leaves
+    /// its caller name and handle uncorrected.
     func callEngine(_ engine: CallEngine, targetForIncomingCall call: IncomingCall) -> CallTarget?
     /// Only on real assignments, after the engine's own field batch for that transition.
     func callEngine(_ engine: CallEngine, didChangeStateFrom old: CallState, to new: CallState)

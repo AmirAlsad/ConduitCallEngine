@@ -167,7 +167,7 @@ struct CallEngineTests {
         await h.placeCall()
         h.engine.handle(.connected)
 
-        let session = FakeAudioSession(hasExternalAudioRoute: false)
+        let session = FakeAudioSession()
         await h.engine.activate(session)
 
         #expect(h.transport.isAudioAttached)
@@ -203,7 +203,7 @@ struct CallEngineTests {
         let h = CallEngineHarness(pushToTalk: true)
         await h.placeCall()
 
-        let session = FakeAudioSession(hasExternalAudioRoute: false)
+        let session = FakeAudioSession()
         await h.engine.activate(session)
 
         #expect(h.transport.isAudioAttached)
@@ -390,7 +390,7 @@ struct CallEngineTests {
         await h.placeCall()
         h.engine.handle(.connected)
 
-        let session = FakeAudioSession(hasExternalAudioRoute: false)
+        let session = FakeAudioSession()
         h.provider.simulateActivate(session) // the real CallKit delegate path
         await h.engine.awaitPendingActivation()
 
@@ -407,7 +407,7 @@ struct CallEngineTests {
         // can't turn on a not-yet-joined mic, so the engine must re-apply it
         // once connected. (The fake doesn't model the no-op, so we assert the
         // re-apply happens, not the device-only end state.)
-        let session = FakeAudioSession(hasExternalAudioRoute: false)
+        let session = FakeAudioSession()
         h.provider.simulateActivate(session)
         await h.engine.awaitPendingActivation()
         #expect(h.engine.isAudioActivated)

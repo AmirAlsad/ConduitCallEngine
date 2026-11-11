@@ -3,9 +3,9 @@
 //  ConduitCallEngine
 //
 //  Real `CallProviding` over CallKit (`CXProvider` + `CXCallController`). Bridges
-//  the `CXProviderDelegate` callbacks onto our `CallProviderDelegate`. This is the
-//  audio-session-ownership boundary: CallKit activates the session and we forward
-//  that via `providerDidActivate` — media must NOT start anywhere else.
+//  the `CXProviderDelegate` callbacks onto `CallProviderDelegate`. This is the
+//  audio-session-ownership boundary: CallKit activates the session and this
+//  forwards that via `providerDidActivate` — media must NOT start anywhere else.
 //
 //  Device-only (CallKit doesn't run in the simulator).
 //
@@ -34,11 +34,11 @@ final class SystemCallProvider: NSObject, CallProviding, CXProviderDelegate {
         provider.setDelegate(self, queue: nil) // nil → main queue
     }
 
-    // MARK: - CallProviding (app → system)
+    // MARK: - CallProviding (engine → system)
 
     func startOutgoingCall(handle: CallHandle, displayName: String) async throws -> UUID {
-        // Pre-configure the session (no activation); CallKit activates it and we
-        // attach media in providerDidActivate.
+        // Pre-configure the session (no activation); CallKit activates it and the
+        // engine attaches media in providerDidActivate.
         try? audioSession.prepareForVoIPCall()
 
         let uuid = UUID()
@@ -46,9 +46,8 @@ final class SystemCallProvider: NSObject, CallProviding, CXProviderDelegate {
         let action = CXStartCallAction(call: uuid, handle: cxHandle)
         try await callController.request(CXTransaction(action: action))
 
-        // Show the agent's name on the call/lock screen instead of the raw
-        // synthetic email handle. The photo (and Contacts/Siri matching) comes
-        // from the optional contact mirror (WS-4); this name shows with or without it.
+        // Show the target's display name on the call and lock screens instead of
+        // the raw email-type handle.
         let update = CXCallUpdate()
         update.localizedCallerName = displayName
         provider.reportCall(with: uuid, updated: update)
@@ -69,7 +68,7 @@ final class SystemCallProvider: NSObject, CallProviding, CXProviderDelegate {
         update.localizedCallerName = displayName
         update.remoteHandle = CXHandle(type: .emailAddress, value: handle.value)
         update.hasVideo = false
-        // Issued synchronously: PushKit kills the app if a VoIP push's call isn't
+        // Issued synchronously: PushKit kills the host if a VoIP push's call isn't
         // reported before the push callback returns.
         provider.reportNewIncomingCall(with: id, update: update) { error in
             let result: IncomingCallReportError?
@@ -118,7 +117,7 @@ final class SystemCallProvider: NSObject, CallProviding, CXProviderDelegate {
         try? await callController.request(CXTransaction(action: action))
     }
 
-    // MARK: - CXProviderDelegate (system → app)
+    // MARK: - CXProviderDelegate (system → engine)
     //
     // CXProvider delivers on the main queue (delegate queue is nil), so these
     // nonisolated methods hop onto the main actor via assumeIsolated. They're

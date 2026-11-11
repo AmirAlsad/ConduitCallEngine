@@ -2,10 +2,12 @@
 //  AudioRouteKind+Port.swift
 //  ConduitCallEngine
 //
-//  Maps a live `AVAudioSession` output port to an `AudioRouteKind`. Used to read
-//  the route that's ACTUALLY active (the source of truth) — for the in-call
-//  picker's checkmark, and so the engine can make the transport follow a
-//  route the user picks from the native CallKit call screen.
+//  Maps a live `AVAudioSession` output port to an `AudioRouteKind`, to read the
+//  route that is actually active. The engine does not make the transport follow a
+//  route picked with the native call screen's route button; whether that button
+//  moves the audio depends on the transport (it does with the LiveKit adapter,
+//  which leaves the session to CallKit, and not with the Daily adapter, whose SDK
+//  manages the session itself).
 //
 
 import AVFoundation
