@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.1.1 - 2026-11-11
+
+- Correct the stated requirement: the package needs Xcode 26 or later, not 16.3. The sources use iOS 26 SDK names and never compiled with Xcode 16. CI now builds with Xcode 26.
+
 ## 0.1.0 - 2026-11-11
 
 - Initial extraction of the call engine from the Conduit iOS app. `ConduitCallEngine` provides `CallEngine`, which reports calls to CallKit, receives agent-initiated calls over PushKit VoIP pushes, runs the call state machine, owns the call's audio-session policy and reconnects after drops, driven by host-supplied `CallTarget` values and reporting back through `CallEngineDelegate` and `CallRecord`. It also sends optional ring-status receipts and defines the `CallTransport` protocol.

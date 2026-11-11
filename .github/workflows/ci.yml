@@ -16,9 +16,10 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # LiveKit's manifest needs swift-tools 6.1, i.e. Xcode 16.3 or later. Xcode 16.4 is
-  # installed on the macos-15 image and ships Swift 6.1.
-  DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
+  # The sources use iOS 26 SDK names (AVAudioSession's `.allowBluetoothHFP`), so they
+  # need Xcode 26 or later; LiveKit's manifest separately needs swift-tools 6.1. The
+  # macos-15 image has Xcode 26.3 and the iOS 18.6 simulator runtime the tests run on.
+  DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
 
 jobs:
   package-tests:
