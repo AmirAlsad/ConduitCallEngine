@@ -62,6 +62,9 @@ public final class LiveKitTransport: CallTransport {
     // MARK: - CallTransport
 
     public func connect(_ connection: CallConnection) async throws {
+        // An abandoned SDK reconnect left the room to be disconnected; a connect
+        // running alongside that teardown would be torn down with it.
+        await roomEvents.roomReset?.value
         roomEvents.gate = LiveKitConnectGate()
         roomEvents.wasBotSpeaking = false
         do {
@@ -153,6 +156,9 @@ private final class RoomEventMapper: NSObject, RoomDelegate {
     private nonisolated let continuation: AsyncStream<TransportEvent>.Continuation
     var gate = LiveKitConnectGate()
     var wasBotSpeaking = false
+    /// Disconnects a room whose reconnect the SDK abandoned while still reporting it
+    /// connected, so the engine's next connect starts from a disconnected room.
+    private(set) var roomReset: Task<Void, Never>?
 
     init(continuation: AsyncStream<TransportEvent>.Continuation) {
         self.continuation = continuation
@@ -179,7 +185,9 @@ private final class RoomEventMapper: NSObject, RoomDelegate {
             let hasRemote = !room.remoteParticipants.isEmpty
             Task { @MainActor in self.onRoomConnected(hasRemote: hasRemote) }
         case .reconnecting:
-            continuation.yield(.reconnecting)
+            // Hop like the completion does, so a reconnect that starts right after
+            // one completes cannot overtake that completion's `.connected`.
+            Task { @MainActor in self.continuation.yield(.reconnecting) }
         default:
             break
         }
@@ -201,16 +209,29 @@ private final class RoomEventMapper: NSObject, RoomDelegate {
     }
 
     nonisolated func room(_ room: Room, didStartReconnectWithMode mode: ReconnectMode) {
-        continuation.yield(.reconnecting)
+        Task { @MainActor in self.continuation.yield(.reconnecting) }
     }
 
     nonisolated func room(_ room: Room, didCompleteReconnectWithMode mode: ReconnectMode) {
-        // The engine's `.reconnecting` display recovers on a fresh `.connected`.
-        continuation.yield(.connected)
+        // The engine's `.reconnecting` display recovers on a fresh `.connected`, but
+        // only if the gate finds the room usable; otherwise this is the drop.
+        let isRoomConnected = room.connectionState == .connected
+        let remotesPresent = !room.remoteParticipants.isEmpty
+        Task { @MainActor in
+            guard let event = self.gate.reconnectDidComplete(
+                roomConnected: isRoomConnected, remotesPresent: remotesPresent
+            ) else { return }
+            if case .disconnected = event {
+                self.roomReset = Task { await room.disconnect() }
+            }
+            self.continuation.yield(event)
+        }
     }
 
     nonisolated func room(_ room: Room, didDisconnectWithError error: LiveKitError?) {
-        Task { @MainActor in self.continuation.yield(self.gate.roomDidDisconnect()) }
+        Task { @MainActor in
+            if let event = self.gate.roomDidDisconnect() { self.continuation.yield(event) }
+        }
     }
 
     nonisolated func room(_ room: Room, didUpdateSpeakingParticipants participants: [Participant]) {

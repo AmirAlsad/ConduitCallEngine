@@ -409,7 +409,7 @@ The engine joins whatever room `connect` returns. Your server must put an agent 
 
   If your agent runs on Pipecat, note that Pipecat's LiveKit transport has not been delivering client data messages to its RTVI processor, so parse this from the transport's raw data-received event.
 - **Agent hangup.** When the last remote participant leaves a connected call, the call ends as `.completed`. If another remote participant remains, the call continues.
-- **Drops.** A room disconnect without a hangup triggers the engine's reconnect. LiveKit's own reconnects show as `reconnecting(attempt: 0)` and recover without spending a retry.
+- **Drops.** A room disconnect without a hangup triggers the engine's reconnect. LiveKit's own reconnects show as `reconnecting(attempt: 0)` and recover without spending a retry. A reconnect LiveKit reports as complete counts as recovered only if the room is connected and a remote participant is present, the same rule as the first connect. Otherwise (LiveKit can report an abandoned reconnect as complete, with the room still marked connected and no participants) the adapter disconnects the room and reports a network drop, so the engine's own reconnect runs and, if the outage lasts, the call fails as `.lostConnection`.
 - **Errors.** Connect errors that LiveKit reports as insufficient permissions, or whose description mentions unauthorized, 401, permission or token, become `.authenticationFailed` (`.badToken`); others become `.connectionFailed`.
 
 ### For any transport
