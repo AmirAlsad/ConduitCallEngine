@@ -17,6 +17,12 @@
 //  `attachAudioSession`/`detachAudioSession` are no-ops here because Daily owns the
 //  session; they exist to satisfy the seam.
 //
+//  Interruptions: Daily heals short network outages inside its SDK without changing
+//  the Pipecat transport state, so nothing in the client's callbacks reports them.
+//  Once connected, the transport watches the device's network path instead
+//  (`DailyInterruptionReporter`): losing it emits `.reconnecting`, getting it back
+//  emits `.connected`. This reflects the path, not Daily's media state.
+//
 
 import Foundation
 import ConduitCallEngine
@@ -53,6 +59,7 @@ public final class PipecatDailyTransport: CallTransport {
     public func connect(_ connection: CallConnection) async throws {
         clientEvents.didReportConnected = false
         clientEvents.userRequestedDisconnect = false
+        clientEvents.interruptions.connectDidStart()
         do {
             let params = DailyTransportConnectionParams(
                 roomUrl: connection.url.absoluteString, token: connection.token
@@ -66,6 +73,7 @@ public final class PipecatDailyTransport: CallTransport {
 
     public func disconnect() async {
         clientEvents.userRequestedDisconnect = true
+        clientEvents.interruptions.userDidRequestDisconnect()
         // Deliberate hangup: an explicit end-call message lets the remote side end
         // at once instead of waiting out the grace period it may give a dropped
         // participant. Throws when the bot was never ready — exactly when there's
@@ -113,11 +121,13 @@ public final class PipecatDailyTransport: CallTransport {
 @MainActor
 private final class PipecatEventMapper: PipecatClientDelegate {
     private nonisolated let continuation: AsyncStream<TransportEvent>.Continuation
+    let interruptions: DailyInterruptionReporter
     var didReportConnected = false
     var userRequestedDisconnect = false
 
     init(continuation: AsyncStream<TransportEvent>.Continuation) {
         self.continuation = continuation
+        self.interruptions = DailyInterruptionReporter { continuation.yield($0) }
     }
 
     nonisolated func onTransportStateChanged(state: TransportState) {
@@ -134,6 +144,7 @@ private final class PipecatEventMapper: PipecatClientDelegate {
             break
         case .disconnected:
             continuation.yield(.disconnected(reason: userRequestedDisconnect ? .requestedByUser : .networkDropped))
+            interruptions.transportDidDisconnect()
         case .error:
             continuation.yield(.error(.connectionFailed("transport error")))
         @unknown default:
@@ -145,6 +156,7 @@ private final class PipecatEventMapper: PipecatClientDelegate {
         guard !didReportConnected else { return }
         didReportConnected = true
         continuation.yield(.connected)
+        interruptions.callDidConnect()
     }
 
     nonisolated func onBotReady(botReadyData: BotReadyData) {
