@@ -172,11 +172,17 @@ The `ConduitCallEngineTesting` product covers the rest. `CallEngine.simulated()`
 
 ## Verified SDK versions
 
-The transport SDK versions this package has been verified against on a device:
+The transport SDK versions this package has been verified against on a device, with real calls:
 
 | Product | SDK | Version | Verified on |
 |---|---|---|---|
-| TODO: filled in after device verification | | | |
+| `ConduitCallEngineDaily` | `pipecat-client-ios` / `pipecat-client-ios-daily` | 1.2.0 / 1.2.0 | iPhone 17, iOS 27.0, 2026-11-11 |
+| `ConduitCallEngineDaily` | `daily-client-ios` | 0.38.0 | iPhone 17, iOS 27.0, 2026-11-11 |
+| `ConduitCallEngineLiveKit` | LiveKit `client-sdk-swift` (LiveKitWebRTC) | 2.15.1 (144.7559.10) | iPhone 17, iOS 27.0, 2026-11-11 |
+
+That run covered outgoing and incoming calls, mute, route switching, hang-up, declining, a ring during a call, short network drops and long outages on both adapters. Two paths could not be triggered on the test phone and are covered by unit tests only: a ring filtered by a Focus, and an audio interruption pausing the microphone.
+
+Newer SDK versions that the manifest allows (for example LiveKit 2.19 and Pipecat 1.3) compile and pass the unit tests, but have not been through a device run. To stay on the verified set, pin those versions in your app.
 
 ## Documentation
 
