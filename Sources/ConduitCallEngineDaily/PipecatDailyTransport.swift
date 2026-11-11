@@ -23,18 +23,18 @@ import PipecatClientIOS
 import PipecatClientIOSDaily
 
 @MainActor
-public final class PipecatDailyTransport: CallTransport, PipecatClientDelegate {
+public final class PipecatDailyTransport: CallTransport {
     public nonisolated let events: AsyncStream<TransportEvent>
-    private nonisolated let continuation: AsyncStream<TransportEvent>.Continuation
 
     private let client: PipecatClient
-    private var didReportConnected = false
-    private var userRequestedDisconnect = false
+    // `PipecatClient.delegate` is weak, so this strong reference keeps the mapper alive
+    // as long as the client. The mapper holds neither the client nor the transport.
+    private let clientEvents: PipecatEventMapper
 
     public init() {
         let (stream, continuation) = AsyncStream.makeStream(of: TransportEvent.self)
         self.events = stream
-        self.continuation = continuation
+        self.clientEvents = PipecatEventMapper(continuation: continuation)
         // Join with the mic disabled; capture is enabled only on CallKit activation
         // (via setMicEnabled), preserving the audio-session-ownership invariant.
         self.client = PipecatClient(
@@ -44,14 +44,14 @@ public final class PipecatDailyTransport: CallTransport, PipecatClientDelegate {
                 enableCam: false
             )
         )
-        self.client.delegate = self
+        self.client.delegate = clientEvents
     }
 
     // MARK: - CallTransport
 
     public func connect(_ connection: CallConnection) async throws {
-        didReportConnected = false
-        userRequestedDisconnect = false
+        clientEvents.didReportConnected = false
+        clientEvents.userRequestedDisconnect = false
         do {
             let params = DailyTransportConnectionParams(
                 roomUrl: connection.url.absoluteString, token: connection.token
@@ -64,7 +64,7 @@ public final class PipecatDailyTransport: CallTransport, PipecatClientDelegate {
     }
 
     public func disconnect() async {
-        userRequestedDisconnect = true
+        clientEvents.userRequestedDisconnect = true
         // Deliberate hangup: explicit end signal so the engine ends at once
         // instead of waiting out its human-absent grace window (design §2.5).
         // Throws when the bot was never ready — exactly when there's no one to
@@ -105,10 +105,21 @@ public final class PipecatDailyTransport: CallTransport, PipecatClientDelegate {
     public func detachAudioSession() async {
         // See attachAudioSession.
     }
+}
 
-    // MARK: - PipecatClientDelegate (→ TransportEvent)
+/// Translates the Pipecat client's delegate callbacks into `TransportEvent`s. Kept
+/// out of the public type so hosts cannot invoke SDK callbacks on a live transport.
+@MainActor
+private final class PipecatEventMapper: PipecatClientDelegate {
+    private nonisolated let continuation: AsyncStream<TransportEvent>.Continuation
+    var didReportConnected = false
+    var userRequestedDisconnect = false
 
-    public nonisolated func onTransportStateChanged(state: TransportState) {
+    init(continuation: AsyncStream<TransportEvent>.Continuation) {
+        self.continuation = continuation
+    }
+
+    nonisolated func onTransportStateChanged(state: TransportState) {
         Task { @MainActor in self.mapState(state) }
     }
 
@@ -135,41 +146,41 @@ public final class PipecatDailyTransport: CallTransport, PipecatClientDelegate {
         continuation.yield(.connected)
     }
 
-    public nonisolated func onBotReady(botReadyData: BotReadyData) {
+    nonisolated func onBotReady(botReadyData: BotReadyData) {
         Task { @MainActor in self.emitConnectedOnce() }
     }
 
-    public nonisolated func onBotDisconnected(participant: Participant) {
+    nonisolated func onBotDisconnected(participant: Participant) {
         continuation.yield(.disconnected(reason: .botLeft))
     }
 
-    public nonisolated func onDisconnected() {
+    nonisolated func onDisconnected() {
         // Authoritative disconnect is driven by onTransportStateChanged(.disconnected);
         // this is left to the state mapping to avoid double-emitting.
     }
 
-    public nonisolated func onBotStartedSpeaking() { continuation.yield(.botStartedSpeaking) }
-    public nonisolated func onBotStoppedSpeaking() { continuation.yield(.botStoppedSpeaking) }
-    public nonisolated func onUserStartedSpeaking() { continuation.yield(.userStartedSpeaking) }
-    public nonisolated func onUserStoppedSpeaking() { continuation.yield(.userStoppedSpeaking) }
+    nonisolated func onBotStartedSpeaking() { continuation.yield(.botStartedSpeaking) }
+    nonisolated func onBotStoppedSpeaking() { continuation.yield(.botStoppedSpeaking) }
+    nonisolated func onUserStartedSpeaking() { continuation.yield(.userStartedSpeaking) }
+    nonisolated func onUserStoppedSpeaking() { continuation.yield(.userStoppedSpeaking) }
 
-    public nonisolated func onRemoteAudioLevel(level: Float, participant: Participant) {
+    nonisolated func onRemoteAudioLevel(level: Float, participant: Participant) {
         continuation.yield(.remoteAudioLevel(level))
     }
 
-    public nonisolated func onAvailableMicsUpdated(mics: [MediaDeviceInfo]) {
+    nonisolated func onAvailableMicsUpdated(mics: [MediaDeviceInfo]) {
         continuation.yield(.audioDevicesChanged)
     }
 
-    public nonisolated func onMicUpdated(mic: MediaDeviceInfo?) {
+    nonisolated func onMicUpdated(mic: MediaDeviceInfo?) {
         continuation.yield(.audioDevicesChanged)
     }
 
-    public nonisolated func onSpeakerUpdated(speaker: MediaDeviceInfo?) {
+    nonisolated func onSpeakerUpdated(speaker: MediaDeviceInfo?) {
         continuation.yield(.audioDevicesChanged)
     }
 
-    public nonisolated func onError(message: RTVIMessageInbound) {
+    nonisolated func onError(message: RTVIMessageInbound) {
         continuation.yield(.error(.underlying(String(describing: message))))
     }
 }

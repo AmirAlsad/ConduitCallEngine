@@ -19,13 +19,14 @@ import ConduitCallEngine
 import LiveKit
 
 @MainActor
-public final class LiveKitTransport: NSObject, CallTransport {
+public final class LiveKitTransport: CallTransport {
     public nonisolated let events: AsyncStream<TransportEvent>
     private nonisolated let continuation: AsyncStream<TransportEvent>.Continuation
 
-    private var room: Room!
-    private var gate = LiveKitConnectGate()
-    private var wasBotSpeaking = false
+    private let room: Room
+    // `Room` holds its delegates weakly, so this strong reference keeps the mapper alive
+    // as long as the room. The mapper holds neither the room nor the transport.
+    private let roomEvents: RoomEventMapper
     private var routeObserver: NSObjectProtocol?
     /// Whether CallKit has activated the audio session (attach/detach edges).
     /// Activation and connect are unordered (see potential_skills/callkit.md):
@@ -34,16 +35,17 @@ public final class LiveKitTransport: NSObject, CallTransport {
     /// engine then never starts and the call has no mic.
     private var isSessionAttached = false
 
-    public override init() {
+    public init() {
         let (stream, continuation) = AsyncStream.makeStream(of: TransportEvent.self)
         self.events = stream
         self.continuation = continuation
-        super.init()
 
         // Manual audio: CallKit owns the AVAudioSession; the engine starts only
         // inside the CallKit activation window (see attachAudioSession).
         AudioManager.shared.audioSession.isAutomaticConfigurationEnabled = false
-        self.room = Room(delegate: self)
+        let roomEvents = RoomEventMapper(continuation: continuation)
+        self.roomEvents = roomEvents
+        self.room = Room(delegate: roomEvents)
 
         // The route can change from the native CallKit screen too — keep the in-app
         // picker in sync. Continuation is thread-safe, so yield directly.
@@ -61,8 +63,8 @@ public final class LiveKitTransport: NSObject, CallTransport {
     // MARK: - CallTransport
 
     public func connect(_ connection: CallConnection) async throws {
-        gate = LiveKitConnectGate()
-        wasBotSpeaking = false
+        roomEvents.gate = LiveKitConnectGate()
+        roomEvents.wasBotSpeaking = false
         do {
             // Engine off until CallKit activates — unless activation already
             // happened (also keeps the engine alive across a mid-call reconnect).
@@ -75,7 +77,7 @@ public final class LiveKitTransport: NSObject, CallTransport {
     }
 
     public func disconnect() async {
-        gate.userRequestedDisconnect = true
+        roomEvents.gate.userRequestedDisconnect = true
         await sendEndCallSignal()
         await room.disconnect()
     }
@@ -132,7 +134,30 @@ public final class LiveKitTransport: NSObject, CallTransport {
         catch { Log.error(.audio, "LiveKit setEngineAvailability(.none) error: \(error)") }
     }
 
-    // MARK: - Event mapping (main-actor)
+    private func mapConnectError(_ error: Error) -> TransportError {
+        if let lkError = error as? LiveKitError {
+            if lkError.type == .insufficientPermissions { return .authenticationFailed }
+            let description = String(describing: lkError).lowercased()
+            if ["unauthorized", "401", "permission", "token"].contains(where: description.contains) {
+                return .authenticationFailed
+            }
+        }
+        return .connectionFailed(String(describing: error))
+    }
+}
+
+/// Translates `Room`'s delegate callbacks into `TransportEvent`s. Kept out of the public
+/// type so hosts cannot invoke SDK callbacks on a live transport. The callbacks arrive off
+/// the main actor and hop to it before touching the gate.
+@MainActor
+private final class RoomEventMapper: NSObject, RoomDelegate {
+    private nonisolated let continuation: AsyncStream<TransportEvent>.Continuation
+    var gate = LiveKitConnectGate()
+    var wasBotSpeaking = false
+
+    init(continuation: AsyncStream<TransportEvent>.Continuation) {
+        self.continuation = continuation
+    }
 
     private func onRoomConnected(hasRemote: Bool) {
         if let event = gate.roomDidConnect() { continuation.yield(event) }
@@ -147,22 +172,7 @@ public final class LiveKitTransport: NSObject, CallTransport {
         if botSpeaking { continuation.yield(.remoteAudioLevel(level)) }
     }
 
-    private func mapConnectError(_ error: Error) -> TransportError {
-        if let lkError = error as? LiveKitError {
-            if lkError.type == .insufficientPermissions { return .authenticationFailed }
-            let description = String(describing: lkError).lowercased()
-            if ["unauthorized", "401", "permission", "token"].contains(where: description.contains) {
-                return .authenticationFailed
-            }
-        }
-        return .connectionFailed(String(describing: error))
-    }
-}
-
-// MARK: - RoomDelegate (called off the main actor → hop before touching state)
-
-extension LiveKitTransport: RoomDelegate {
-    public nonisolated func room(_ room: Room, didUpdateConnectionState state: ConnectionState, from oldState: ConnectionState) {
+    nonisolated func room(_ room: Room, didUpdateConnectionState state: ConnectionState, from oldState: ConnectionState) {
         switch state {
         case .connecting:
             continuation.yield(.connecting)
@@ -176,13 +186,13 @@ extension LiveKitTransport: RoomDelegate {
         }
     }
 
-    public nonisolated func room(_ room: Room, participantDidConnect participant: RemoteParticipant) {
+    nonisolated func room(_ room: Room, participantDidConnect participant: RemoteParticipant) {
         Task { @MainActor in
             if let event = self.gate.remoteDidJoin() { self.continuation.yield(event) }
         }
     }
 
-    public nonisolated func room(_ room: Room, participantDidDisconnect participant: RemoteParticipant) {
+    nonisolated func room(_ room: Room, participantDidDisconnect participant: RemoteParticipant) {
         let remotesRemain = !room.remoteParticipants.isEmpty
         Task { @MainActor in
             if let event = self.gate.remoteDidLeave(remotesRemain: remotesRemain) {
@@ -191,20 +201,20 @@ extension LiveKitTransport: RoomDelegate {
         }
     }
 
-    public nonisolated func room(_ room: Room, didStartReconnectWithMode mode: ReconnectMode) {
+    nonisolated func room(_ room: Room, didStartReconnectWithMode mode: ReconnectMode) {
         continuation.yield(.reconnecting)
     }
 
-    public nonisolated func room(_ room: Room, didCompleteReconnectWithMode mode: ReconnectMode) {
+    nonisolated func room(_ room: Room, didCompleteReconnectWithMode mode: ReconnectMode) {
         // The engine's `.reconnecting` display recovers on a fresh `.connected`.
         continuation.yield(.connected)
     }
 
-    public nonisolated func room(_ room: Room, didDisconnectWithError error: LiveKitError?) {
+    nonisolated func room(_ room: Room, didDisconnectWithError error: LiveKitError?) {
         Task { @MainActor in self.continuation.yield(self.gate.roomDidDisconnect()) }
     }
 
-    public nonisolated func room(_ room: Room, didUpdateSpeakingParticipants participants: [Participant]) {
+    nonisolated func room(_ room: Room, didUpdateSpeakingParticipants participants: [Participant]) {
         let remoteSpeakers = participants.compactMap { $0 as? RemoteParticipant }
         let botSpeaking = !remoteSpeakers.isEmpty
         let level = remoteSpeakers.map(\.audioLevel).max() ?? 0
