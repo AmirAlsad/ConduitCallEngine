@@ -524,4 +524,16 @@ struct CallEngineTests {
         await waitUntil { h.transports.made.first?.disconnectCount == 1 }
         #expect(h.transports.made.first?.disconnectCount == 1)
     }
+
+    @Test func connectedProjectionRefusesANonSimulatedEngine() {
+        let h = CallEngineHarness()
+        let call = ActiveCall(targetID: h.target.id, displayName: h.target.displayName, direction: .outgoing)
+
+        let presented = h.engine.presentConnectedProjection(call, secondsElapsed: 10, botSpeaking: true)
+
+        #expect(!presented)
+        #expect(h.engine.state == .idle)
+        #expect(h.engine.activeCall == nil)
+        #expect(!h.engine.isBotSpeaking)
+    }
 }

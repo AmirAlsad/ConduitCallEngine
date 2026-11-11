@@ -54,6 +54,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     private let policy: ReconnectionPolicy
     private let now: () -> Date
     private let sleep: (Duration) async throws -> Void
+    private let isSimulated: Bool
     private var isPushRegistrationStarted = false
 
     /// The caller name a ring shows until (unless) its target is resolved.
@@ -106,7 +107,8 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         pushRegistry: VoIPPushRegistering,
         policy: ReconnectionPolicy = .default,
         now: @escaping () -> Date,
-        sleep: @escaping (Duration) async throws -> Void
+        sleep: @escaping (Duration) async throws -> Void,
+        isSimulated: Bool = false
     ) {
         self.configuration = configuration
         self.callProvider = callProvider
@@ -116,6 +118,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         self.policy = policy
         self.now = now
         self.sleep = sleep
+        self.isSimulated = isSimulated
         callProvider.delegate = self
         interruptionObserver.delegate = self
     }
@@ -742,12 +745,23 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     /// Project a connected call onto the in-call surface without a real transport,
     /// so its look can be screenshotted in the simulator. Drives only the observed
     /// state the view reads — no CallKit, no media, and no delegate callbacks.
-    package func presentConnectedProjection(_ call: ActiveCall, secondsElapsed: TimeInterval, botSpeaking: Bool) {
+    /// Refuses (returns false) on an engine that is not simulated, where the
+    /// unannounced state change would corrupt a real call.
+    @discardableResult
+    package func presentConnectedProjection(_ call: ActiveCall, secondsElapsed: TimeInterval, botSpeaking: Bool) -> Bool {
+        guard isSimulated else {
+            Log.warning(.call, "Connected projection refused on a non-simulated engine")
+            return false
+        }
         activeCall = call
         callDirection = call.direction
         state = .connected(since: now().addingTimeInterval(-secondsElapsed))
         isBotSpeaking = botSpeaking
+        return true
     }
+
+    /// Whether a call currently has a transport whose events the engine consumes.
+    package var hasTransport: Bool { transport != nil }
 
     private var micShouldBeOn: Bool {
         !isMuted && !isPushToTalkEnabled()

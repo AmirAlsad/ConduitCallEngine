@@ -4,9 +4,10 @@
 //
 //  Stands in for CallKit, PushKit, the audio-interruption source, and ring-status
 //  receipts, so a host can run a `CallEngine` in the simulator and in its own tests.
-//  It drives what the system would do (deliver a push or a token, answer or end a
-//  call from the system UI, reset the provider, deliver a transport event) and
-//  exposes what the engine reported, in plain types.
+//  It drives what the system would do (deliver a push or a token, answer, end, or
+//  mute a call from the system UI, activate and deactivate the audio session,
+//  interrupt audio, reset the provider, deliver a transport event) and exposes what
+//  the engine reported, in plain types.
 //
 
 import Foundation
@@ -52,8 +53,12 @@ public final class SimulatedCallSystem {
         }
     }
 
-    /// When true, incoming reports complete only on `completeIncomingReports()`
-    /// (real CallKit completes later); when false they complete at once.
+    /// When true, incoming reports complete only on `completeIncomingReports()`;
+    /// when false (the default) they complete before the report returns. Real
+    /// CallKit always completes later, after the push callback has returned, so the
+    /// default trades realism for convenience: set this to exercise a host against
+    /// the ordering a device produces (for example, an answer that arrives before
+    /// CallKit has accepted the report).
     public var completesIncomingReportsLater: Bool {
         get { provider.completesIncomingReportsLater }
         set { provider.completesIncomingReportsLater = newValue }
@@ -76,6 +81,13 @@ public final class SimulatedCallSystem {
 
     public func releaseOutgoingStarts() {
         provider.releaseStart()
+    }
+
+    /// While set, every outgoing start throws this, as a rejected `CXStartCallAction`
+    /// does; the engine then fails the call.
+    public var outgoingStartError: (any Error)? {
+        get { provider.startError }
+        set { provider.startError = newValue }
     }
 
     // MARK: - System actions
@@ -106,19 +118,73 @@ public final class SimulatedCallSystem {
         provider.simulateEndCall(callID)
     }
 
+    /// The user toggled mute for `callID` from the system UI.
+    public func setMutedFromSystem(_ callID: UUID, muted: Bool) {
+        provider.simulateSetMuted(callID, muted: muted)
+    }
+
     /// The system reset the CallKit provider.
     public func resetProvider() {
         provider.simulateReset()
     }
 
-    /// The live call's transport emitted `event`, delivered synchronously.
-    public func deliverTransportEvent(_ event: TransportEvent) {
-        engine?.handle(event)
+    // MARK: - Audio session
+
+    /// CallKit activated the call's audio session; returns once the engine has
+    /// attached the live call's transport and applied its mic state. CallKit does
+    /// this once a started call is accepted, or once an incoming call is answered.
+    public func activateAudioSession() async {
+        provider.simulateActivate(FakeAudioSession())
+        await engine?.awaitPendingActivation()
+    }
+
+    /// CallKit deactivated the call's audio session. The engine detaches the live
+    /// call's transport on its next main-actor turn.
+    public func deactivateAudioSession() {
+        provider.simulateDeactivate(FakeAudioSession())
+    }
+
+    /// Another audio session (Siri, a phone call, navigation) interrupted the call.
+    /// The engine pauses the mic on its next main-actor turn.
+    public func beginAudioInterruption() {
+        interruptionObserver.simulateBegan()
+    }
+
+    /// The interruption ended. With `shouldResume`, the engine re-applies the mic
+    /// state on its next main-actor turn; without it, the mic stays paused.
+    public func endAudioInterruption(shouldResume: Bool) {
+        interruptionObserver.simulateEnded(shouldResume: shouldResume)
+    }
+
+    // MARK: - Transport
+
+    /// The live call's transport emitted `event`, delivered synchronously. Delivered
+    /// only while a call has a transport, the only time a real transport's events
+    /// reach the engine; returns whether it was delivered.
+    @discardableResult
+    public func deliverTransportEvent(_ event: TransportEvent) -> Bool {
+        guard let engine, engine.hasTransport else { return false }
+        engine.handle(event)
+        return true
     }
 
     /// Wait for the reconnect attempt in flight, if any.
     public func awaitPendingReconnect() async {
         await engine?.awaitPendingReconnect()
+    }
+
+    // MARK: - Screenshots
+
+    /// Show a connected call on the engine's observed state without CallKit, a
+    /// transport, or any delegate callback, so an in-call screen can be captured.
+    /// Returns false, and changes nothing, when no simulated engine is attached.
+    @discardableResult
+    public func presentConnectedCall(
+        _ call: ActiveCall,
+        secondsElapsed: TimeInterval = 154,
+        botSpeaking: Bool = true
+    ) -> Bool {
+        engine?.presentConnectedProjection(call, secondsElapsed: secondsElapsed, botSpeaking: botSpeaking) ?? false
     }
 
     // MARK: - Observations
@@ -128,6 +194,12 @@ public final class SimulatedCallSystem {
         public let id: UUID
         public let handle: String
         public let displayName: String
+
+        public init(id: UUID, handle: String, displayName: String) {
+            self.id = id
+            self.handle = handle
+            self.displayName = displayName
+        }
     }
 
     /// A ring-status receipt the engine sent.
@@ -137,6 +209,13 @@ public final class SimulatedCallSystem {
         public let callID: UUID
         public let endpoint: URL
         public let bearer: String
+
+        public init(status: String, callID: UUID, endpoint: URL, bearer: String) {
+            self.status = status
+            self.callID = callID
+            self.endpoint = endpoint
+            self.bearer = bearer
+        }
     }
 
     /// The CallKit ids of the outgoing calls the engine started, in order.
