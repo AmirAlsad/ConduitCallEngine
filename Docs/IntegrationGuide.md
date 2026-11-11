@@ -54,7 +54,7 @@ idle -> incomingRinging -> connecting -> ...   (after the user answers)
 | `.dialing` | `placeCall` was called; CallKit is starting the call. | true | false |
 | `.connecting` | CallKit has the call; credentials are being fetched and the transport is joining. | true | false |
 | `.connected(since:)` | Transport and agent ready. `since` is the first connection time and is kept across reconnects. | true | false |
-| `.reconnecting(attempt:)` | Media dropped while CallKit still shows the call. `attempt` is the engine's retry count; `0` means the transport is healing itself and no retry has been spent. | true | false |
+| `.reconnecting(attempt:)` | Media dropped while CallKit still shows the call. `attempt` is the engine's retry count; `0` means the transport reported a short interruption it is healing itself (LiveKit's own reconnect, or a lost network path on Daily, see [section 11](#11-what-the-server-side-must-do)) and no retry has been spent. | true | false |
 | `.ended(CallOutcome)` | Finished. | true | true |
 | `.failed(CallFailureReason)` | Could not be established or could not recover. | true | true |
 
@@ -288,7 +288,7 @@ Here `agents` and `callTarget(inline:)` are your own: the latter builds a `CallT
 
 **In-call UI.** Present your call screen while `engine.state.isActive` is true. That excludes `.incomingRinging`, where CallKit's ring is the interface, and includes terminal states, so a failed call can stay on screen with its reason until the user closes it; call `reset()` on dismiss. When the user taps End, call `markEndedByUser()` and dismiss in the same transaction, then `await engine.endCall()`; `endedByUser` lets you tell a call your user ended in-app (dismiss at once) from a remote end or failure (show a result). It is set only by `markEndedByUser()` and `endCall()`: a call ended from the system UI, such as the lock screen, leaves it false. Note that a ring for an unknown target ends in `.failed(.unknown)`, which is active: check `activeCall?.targetID` before presenting a call screen for it. Name the call from `activeCall?.displayName`.
 
-**Cues from transitions.** `didChangeStateFrom:to:` is synchronous and ordered, so it is the place for spoken or audible cues and anything else that must match the state exactly. A typical outgoing call delivers `idle -> dialing`, `dialing -> connecting`, `connecting -> connected`, then `connected -> ended(.completed)`. A drop delivers `connected -> reconnecting(attempt: 1)` and, on recovery, `reconnecting -> connected`. `reconnecting(attempt: 0)` means the transport is healing itself and the engine has spent no retry. A ring that arrives while a finished call is still terminal delivers `ended -> idle -> incomingRinging`.
+**Cues from transitions.** `didChangeStateFrom:to:` is synchronous and ordered, so it is the place for spoken or audible cues and anything else that must match the state exactly. A typical outgoing call delivers `idle -> dialing`, `dialing -> connecting`, `connecting -> connected`, then `connected -> ended(.completed)`. A drop delivers `connected -> reconnecting(attempt: 1)` and, on recovery, `reconnecting -> connected`. `reconnecting(attempt: 0)` means the transport is healing itself and the engine has spent no retry: a short interruption delivers `connected -> reconnecting(attempt: 0)` and then `reconnecting -> connected`, or, if the transport gives up, `reconnecting(attempt: 0) -> reconnecting(attempt: 1)` and the engine's own retries. Both adapters report short interruptions this way. A ring that arrives while a finished call is still terminal delivers `ended -> idle -> incomingRinging`.
 
 **Missed calls.** The engine posts no notifications. A record with a non-nil `missedReason` is a ring the user never saw: `.busy` (another call was up) or `.filteredByFocus`. Post a local notification for it if you want the user to know. Provisional notification authorization lets you deliver these quietly without an upfront permission prompt.
 
@@ -394,6 +394,7 @@ The engine joins whatever room `connect` returns. Your server must put an agent 
 - **End-call signal.** On a deliberate hangup the client sends an RTVI client message of type `end-call`, waits 200 ms for it to flush, then leaves. A Pipecat server sees it in the RTVI processor's client-message event. It is only sent once the bot is ready.
 - **Agent hangup.** When the bot leaves the room, the call ends as `.completed`.
 - **Drops.** When the client's transport disconnects without a hangup, the engine reconnects.
+- **Short interruptions.** Daily heals short outages inside its SDK without changing the Pipecat transport state, so the client reports nothing about them. The adapter infers them from the device's network path (`NWPathMonitor`) instead, while the call is connected: when the path stops being satisfied the call shows `reconnecting(attempt: 0)`, and when it is satisfied again the call returns to `.connected` at once, without spending a retry. If Daily gives up during the interruption and disconnects, the engine's reconnect takes over from `reconnecting(attempt: 0)` and the path coming back no longer reports `.connected` for that attempt. This reflects the device's network path, not Daily's media state, so it catches losing the network (airplane mode, leaving Wi-Fi with no cellular, a tunnel where the radio drops) but not a path that stays up while packets stop (a captive or dead Wi-Fi, very weak signal), and `.connected` can be announced a moment before Daily's audio has resumed. A change of network that keeps the path satisfied, such as Wi-Fi to cellular, is not reported.
 - **Errors.** The adapter maps every connect error to `TransportError.connectionFailed`, so Daily never reports bad credentials itself. Throw `TransportError.authenticationFailed` from your `connect` closure when your own credential endpoint returns 401 or 403.
 
 ### LiveKit (`LiveKitTransport`)
@@ -553,7 +554,7 @@ Audio:
 
 Network:
 
-- [ ] Airplane mode for about ten seconds mid-call: `reconnecting`, then `connected`, with audio back.
+- [ ] Airplane mode for about ten seconds mid-call, on each adapter you link: `reconnecting(attempt: 0)` when the network goes, then `connected` when it returns, with audio back.
 - [ ] Airplane mode for several minutes: the call fails as `.lostConnection` once the retries are spent.
 
 Incoming:
@@ -651,6 +652,7 @@ Fix: record only from `didFinish`; the engine already makes the end of a call id
 - **No timeout while connecting.** If the agent never becomes ready, the call stays in `.connecting` until the user ends it.
 - **A ring for an unknown target, or one CallKit refuses for a reason other than Focus, ends in `.failed(.unknown)`** (an active, terminal state) and sends no receipt.
 - **The native CallKit route button cannot move audio on the Daily adapter.** Use an in-app picker.
+- **Daily's short interruptions are inferred from the device's network path, not Daily's media state.** A path that stays satisfied while media stops is not reported until Daily disconnects, and recovery is announced when the path returns, possibly a moment before audio does.
 - **Daily never reports bad credentials itself.** Only your `connect` closure can produce `.badToken` on Daily.
 - **During reconnection, an authentication failure is retried** like any other failed attempt, and the call ends as `.lostConnection` rather than `.badToken`.
 - **Fixed policies.** The reconnection budget and backoff, the loudspeaker default, and the CallKit provider configuration (email handles, calls in the Phone app's Recents, no ringtone or icon customization) are not configurable.
