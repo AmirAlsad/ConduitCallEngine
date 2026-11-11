@@ -103,6 +103,27 @@ struct IncomingPushTests {
         #expect(h.pushCompletions == 1)
     }
 
+    @Test(arguments: [IncomingCallReportError.filteredByFocus, .failed("late")])
+    func lateVerdictForAnAnsweredCallLeavesItAlone(verdict: IncomingCallReportError) async throws {
+        let h = CallEngineHarness()
+        h.provider.completesIncomingReportsLater = true
+        h.provider.reportIncomingError = verdict
+        h.ring(statusURL: URL(string: "https://engine.example.com/inbound/status/live")!)
+        await h.engine.answer()
+        #expect(h.engine.state.isConnecting)
+        let transitionsBefore = h.delegate.transitions
+
+        h.provider.completeIncomingReports()
+
+        #expect(h.engine.state.isConnecting)
+        #expect(h.transport.connectCount == 1)
+        #expect(h.delegate.transitions == transitionsBefore)
+        #expect(h.delegate.records.isEmpty)
+        #expect(h.provider.reportedEnded.isEmpty)
+        #expect(h.ringStatusReporter.reports.map(\.status) == [.answered]) // no Focus receipt
+        #expect(h.pushCompletions == 1)
+    }
+
     @Test func answerForAnUnknownTargetDoesNothingAndTheVerdictFailsIt() async throws {
         let h = CallEngineHarness()
         h.provider.completesIncomingReportsLater = true
