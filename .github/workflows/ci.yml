@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Mondays 06:00 UTC. The scheduled run drops Package.resolved so upstream SDK
+    # releases (Daily, LiveKit, Pipecat) are resolved fresh and drift shows up here.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # LiveKit's manifest needs swift-tools 6.1, i.e. Xcode 16.3 or later. Xcode 16.4 is
+  # installed on the macos-15 image and ships Swift 6.1.
+  DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
+
+jobs:
+  package-tests:
+    name: Package tests
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve dependencies fresh (scheduled runs only)
+        if: github.event_name == 'schedule'
+        run: rm -f Package.resolved
+      - name: Show toolchain
+        run: xcodebuild -version && swift --version
+      - name: Test
+        run: |
+          xcodebuild \
+            -scheme ConduitCallEngine-Package \
+            -destination 'platform=iOS Simulator,name=iPhone 16,OS=18.6' \
+            test
+
+  examples:
+    name: Example apps (${{ matrix.adapter }})
+    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - adapter: daily
+            scheme: ExampleDaily
+          - adapter: livekit
+            scheme: ExampleLiveKit
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve dependencies fresh (scheduled runs only)
+        if: github.event_name == 'schedule'
+        run: rm -f Package.resolved
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate project
+        run: cd Example && xcodegen generate
+      - name: Reuse the pinned dependency versions (not on scheduled runs)
+        if: github.event_name != 'schedule'
+        run: |
+          pins=Example/ConduitCallEngineExample.xcodeproj/project.xcworkspace/xcshareddata/swiftpm
+          mkdir -p "$pins"
+          cp Package.resolved "$pins/Package.resolved"
+      - name: Build ${{ matrix.scheme }} for device (unsigned)
+        run: |
+          xcodebuild \
+            -project Example/ConduitCallEngineExample.xcodeproj \
+            -scheme ${{ matrix.scheme }} \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+      - name: Check linkage
+        run: Scripts/check-linkage.sh build/Build/Products/Debug-iphoneos/${{ matrix.scheme }}.app ${{ matrix.adapter }}

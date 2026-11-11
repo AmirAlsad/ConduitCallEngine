@@ -1,0 +1,63 @@
+name: ConduitCallEngineExample
+options:
+  bundleIdPrefix: com.example
+  deploymentTarget:
+    iOS: "18.0"
+  createIntermediateGroups: true
+
+packages:
+  ConduitCallEngine:
+    path: ..
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    IPHONEOS_DEPLOYMENT_TARGET: "18.0"
+    TARGETED_DEVICE_FAMILY: "1"
+    CODE_SIGN_STYLE: Automatic
+
+# Two apps over the same host code. Each links the core, ONE adapter, and the
+# Testing product (simulator fallback), so Scripts/check-linkage.sh can prove
+# that linking one adapter does not drag in the other SDK.
+targets:
+  ExampleDaily:
+    type: application
+    platform: iOS
+    sources:
+      - path: Shared
+      - path: ExampleDaily
+        excludes: ["Info.plist", "*.entitlements"]
+    dependencies:
+      - package: ConduitCallEngine
+        product: ConduitCallEngine
+      - package: ConduitCallEngine
+        product: ConduitCallEngineDaily
+      - package: ConduitCallEngine
+        product: ConduitCallEngineTesting
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.ConduitCallEngineExample.daily
+        INFOPLIST_FILE: ExampleDaily/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        CODE_SIGN_ENTITLEMENTS: ExampleDaily/ExampleDaily.entitlements
+
+  ExampleLiveKit:
+    type: application
+    platform: iOS
+    sources:
+      - path: Shared
+      - path: ExampleLiveKit
+        excludes: ["Info.plist", "*.entitlements"]
+    dependencies:
+      - package: ConduitCallEngine
+        product: ConduitCallEngine
+      - package: ConduitCallEngine
+        product: ConduitCallEngineLiveKit
+      - package: ConduitCallEngine
+        product: ConduitCallEngineTesting
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.ConduitCallEngineExample.livekit
+        INFOPLIST_FILE: ExampleLiveKit/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        CODE_SIGN_ENTITLEMENTS: ExampleLiveKit/ExampleLiveKit.entitlements
