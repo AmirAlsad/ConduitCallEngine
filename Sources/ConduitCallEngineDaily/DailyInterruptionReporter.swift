@@ -5,9 +5,11 @@
 //  Feeds the device's network path into `DailyInterruptionGate` and emits what it
 //  decides. The path is watched only while the gate needs it (from the call's
 //  connect until a disconnect or the next attempt). The monitor's first delivery
-//  after each start describes the path as it already is, not a change, so it is
-//  skipped. Deliveries hop to the main actor, and one that arrives after its
-//  monitor was cancelled or restarted is dropped.
+//  after each start describes the path as it already is: when that is satisfied
+//  it is not a change and is skipped; when it is unsatisfied the network dropped
+//  before the monitor started, and it is a loss like any other. Deliveries hop to
+//  the main actor, and one that arrives after its monitor was cancelled or
+//  restarted is dropped.
 //
 
 import ConduitCallEngine
@@ -81,7 +83,7 @@ final class DailyInterruptionReporter {
         guard run == self.run else { return }
         if awaitsInitialPath {
             awaitsInitialPath = false
-            return
+            if isSatisfied { return }
         }
         let event = isSatisfied ? gate.pathDidBecomeSatisfied() : gate.pathDidBecomeUnsatisfied()
         if let event { emit(event) }

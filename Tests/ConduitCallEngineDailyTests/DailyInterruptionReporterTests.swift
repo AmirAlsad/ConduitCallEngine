@@ -3,8 +3,8 @@
 //  ConduitCallEngineDailyTests
 //
 //  The wiring between the network-path seam and the gate: when the monitor runs,
-//  that its first delivery is skipped, that deliveries reach the gate on the main
-//  actor, and that a cancelled or replaced monitor can no longer emit. The real
+//  that a satisfied first delivery is skipped and an unsatisfied one is a loss,
+//  that deliveries reach the gate on the main actor, and that a cancelled or replaced monitor can no longer emit. The real
 //  `NWPathMonitor` is smoke-tested for its initial delivery; how real outages look
 //  to it is device-only.
 //
@@ -94,15 +94,16 @@ struct DailyInterruptionReporterTests {
         #expect(emitted.events == [.reconnecting, .connected])
     }
 
-    @Test func anUnsatisfiedInitialPathIsSkippedToo() async {
+    @Test func anUnsatisfiedInitialPathIsAnInterruption() async {
         reporter.callDidConnect()
 
-        monitor.deliver(false)
+        monitor.deliver(false) // the network dropped before the monitor started
         await drain()
+        #expect(emitted.events == [.reconnecting])
+
         monitor.deliver(true)
         await drain()
-
-        #expect(emitted.events.isEmpty)
+        #expect(emitted.events == [.reconnecting, .connected])
     }
 
     @Test func aSecondConnectDoesNotRestartMonitoring() async {
@@ -151,17 +152,17 @@ struct DailyInterruptionReporterTests {
 
         reporter.callDidConnect()
         #expect(monitor.startCount == 2)
-        monitor.deliver(false) // the new run's initial delivery
+        monitor.deliver(true) // the new run's initial delivery
         await drain()
         #expect(emitted.events == [.reconnecting])
 
-        monitor.deliver(true)
-        await drain()
         monitor.deliver(false)
         await drain()
         #expect(emitted.events == [.reconnecting, .reconnecting])
     }
 
+    /// Taken as the new run's first delivery, the stale "unsatisfied" would be a
+    /// loss and emit `.reconnecting`; only the run check keeps it out.
     @Test func aDeliveryFromAnEarlierRunIsNotTakenAsTheNewRunsInitialPath() async {
         await connectedReporter()
         reporter.connectDidStart()
@@ -169,11 +170,14 @@ struct DailyInterruptionReporterTests {
 
         monitor.deliverLate(fromRun: 0, false)
         await drain()
-        monitor.deliver(true) // still the new run's initial delivery
+        #expect(emitted.events.isEmpty)
+
+        monitor.deliver(true) // the new run's real first delivery
         await drain()
+        #expect(emitted.events.isEmpty)
+
         monitor.deliver(false)
         await drain()
-
         #expect(emitted.events == [.reconnecting])
     }
 
