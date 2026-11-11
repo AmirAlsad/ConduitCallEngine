@@ -1,0 +1,115 @@
+//
+//  FakeTransport.swift
+//  ConduitCallEngine
+//
+//  Fake conforming to `CallTransport`, for the simulator and tests. A test pushes
+//  events with `emit(_:)` and asserts the engine reacts.
+//
+
+import Foundation
+import ConduitCallEngine
+
+public final class FakeTransport: CallTransport, @unchecked Sendable {
+    public let events: AsyncStream<TransportEvent>
+    private let continuation: AsyncStream<TransportEvent>.Continuation
+
+    public private(set) var connectCount = 0
+    public private(set) var disconnectCount = 0
+    public private(set) var lastConnection: CallConnection?
+    public private(set) var isMicEnabled = false
+    public private(set) var setMicEnabledCallCount = 0
+    public private(set) var isAudioAttached = false
+
+    /// When set, the next `connect(_:)` throws this instead of succeeding.
+    public var connectError: TransportError?
+
+    /// When true, `connect(_:)` suspends until `releaseConnect()` — lets a test fail
+    /// and reset the call before `connect` resolves, exercising late-resolution races.
+    public var suspendConnect = false
+    private var connectContinuation: CheckedContinuation<Void, Never>?
+    private var connectReleased = false
+
+    public init() {
+        let (stream, continuation) = AsyncStream.makeStream(of: TransportEvent.self)
+        self.events = stream
+        self.continuation = continuation
+    }
+
+    public func connect(_ connection: CallConnection) async throws {
+        connectCount += 1
+        lastConnection = connection
+        if suspendConnect {
+            await withCheckedContinuation { cont in
+                if connectReleased { cont.resume() } else { connectContinuation = cont }
+            }
+        }
+        if let connectError { throw connectError }
+    }
+
+    /// Resume a `connect(_:)` suspended by `suspendConnect` (resolves on the next call
+    /// if it hasn't suspended yet).
+    public func releaseConnect() {
+        if let cont = connectContinuation {
+            connectContinuation = nil
+            cont.resume()
+        } else {
+            connectReleased = true
+        }
+    }
+
+    public func disconnect() async {
+        disconnectCount += 1
+    }
+
+    public func setMicEnabled(_ enabled: Bool) async {
+        isMicEnabled = enabled
+        setMicEnabledCallCount += 1
+    }
+
+    public var fakeAudioDevices: [AudioDeviceInfo] = [
+        AudioDeviceInfo(id: "speaker", name: "Speaker"),
+        AudioDeviceInfo(id: "receiver", name: "iPhone"),
+    ]
+    public private(set) var selectedAudioDeviceID = "speaker"
+
+    public func availableAudioDevices() async -> [AudioDeviceInfo] { fakeAudioDevices }
+    public func selectedAudioDevice() async -> AudioDeviceInfo? {
+        fakeAudioDevices.first { $0.id == selectedAudioDeviceID }
+    }
+    public func setAudioDevice(_ id: String) async { selectedAudioDeviceID = id }
+
+    /// When true, `attachAudioSession()` suspends until `releaseAttach()` — stands in
+    /// for a transport whose attach does real async work.
+    public var suspendAttach = false
+    public private(set) var pendingAttachCount = 0
+    private var attachContinuations: [CheckedContinuation<Void, Never>] = []
+
+    public func releaseAttach() {
+        let waiting = attachContinuations
+        attachContinuations = []
+        pendingAttachCount = 0
+        waiting.forEach { $0.resume() }
+    }
+
+    public func attachAudioSession() async {
+        if suspendAttach {
+            pendingAttachCount += 1
+            await withCheckedContinuation { attachContinuations.append($0) }
+        }
+        isAudioAttached = true
+    }
+
+    public func detachAudioSession() async {
+        isAudioAttached = false
+    }
+
+    /// Drive an event onto the stream from a test or the debug path.
+    public func emit(_ event: TransportEvent) {
+        continuation.yield(event)
+    }
+
+    /// Close the event stream (mirrors a fully torn-down transport).
+    public func finish() {
+        continuation.finish()
+    }
+}
