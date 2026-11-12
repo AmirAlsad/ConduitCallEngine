@@ -647,7 +647,7 @@ Fix: record only from `didFinish`; the engine already makes the end of a call id
 ## Known limitations
 
 - **One call at a time.** A second call during a live one is reported and ended as busy.
-- **No call-hold handling.** CallKit's hold action is not handled. An interruption by another call pauses the mic and resumes it afterwards; it does not hold the call.
+- **No call-hold handling.** CallKit's hold action is not handled, so the engine's call cannot be held. When the user places a cellular call during an engine call, iOS ends the engine's call (observed on iOS 27; the engine tears down normally and sends the end-call signal). Other audio interruptions pause the mic and resume it afterwards.
 - **No timeout for an unanswered ring**, and no way for the server to cancel one. It rings until the user answers or declines, or iOS ends it.
 - **No timeout while connecting.** If the agent never becomes ready, the call stays in `.connecting` until the user ends it.
 - **A ring for an unknown target, or one CallKit refuses for a reason other than Focus, ends in `.failed(.unknown)`** (an active, terminal state) and sends no receipt.
