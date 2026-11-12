@@ -8,7 +8,8 @@
 //  user wants it on (unmuted, or in push-to-talk mode the button held). Every
 //  input re-derives the mic from that rule, so the order the inputs arrive in
 //  never matters; the permutation tests drive every order against a reference
-//  model of the rule.
+//  model of the rule, including orders whose interruption never reports its end,
+//  and end each order by checking the call has a way out.
 //
 
 import Foundation
@@ -38,15 +39,81 @@ struct MicRuleTests {
     @Test func activationBeforeAnUnresumableEndReopensTheMic() async throws {
         let h = await liveCall()
         h.interruption.simulateBegan()
-        await activate(h) // CallKit hands the session back while still interrupted
+        await activate(h) // CallKit hands the session back before the end is reported
         await h.engine.awaitPendingMediaWork()
-        #expect(!h.transport.isMicEnabled)
+        #expect(!h.engine.isInterrupted)
+        #expect(h.transport.isMicEnabled)
 
         h.interruption.simulateEnded(shouldResume: false)
         await h.engine.awaitPendingMediaWork()
 
         #expect(!h.engine.isInterrupted)
         #expect(!h.engine.isMuted)
+        #expect(h.transport.isMicEnabled)
+    }
+
+    // MARK: - CallKit handing the audio back ends an interruption
+
+    /// iOS does not always report an interruption's end (it did not after a phone
+    /// call on iOS 27): CallKit activating the audio of a call that is not held is
+    /// the system giving the audio back.
+    @Test func anActivationOfACallThatIsNotHeldEndsTheInterruptionWithoutItsEnd() async throws {
+        let h = await liveCall()
+        h.interruption.simulateBegan()
+        h.provider.simulateDeactivate(FakeAudioSession())
+        await h.engine.awaitPendingMediaWork()
+        #expect(h.engine.isInterrupted)
+        #expect(!h.transport.isMicEnabled)
+
+        await activate(h)
+
+        #expect(!h.engine.isInterrupted)
+        #expect(h.transport.isAudioAttached)
+        #expect(h.transport.isMicEnabled)
+    }
+
+    @Test func anActivationWhileHeldEndsTheInterruptionAtTheResume() async throws {
+        let h = await liveCall()
+        h.interruption.simulateBegan()
+        h.provider.simulateSetHeld(h.callID, onHold: true)
+        h.provider.simulateDeactivate(FakeAudioSession())
+        await activate(h) // CallKit gives the held call its session back
+        #expect(h.engine.isInterrupted)
+        #expect(!h.transport.isMicEnabled)
+
+        h.provider.simulateSetHeld(h.callID, onHold: false)
+        await h.engine.awaitPendingMediaWork()
+
+        #expect(!h.engine.isInterrupted)
+        #expect(h.transport.isMicEnabled)
+    }
+
+    @Test func aResumeWithoutAnActivationSinceTheInterruptionKeepsItGoing() async throws {
+        let h = await liveCall()
+        h.provider.simulateSetHeld(h.callID, onHold: true)
+        h.interruption.simulateBegan()
+
+        h.provider.simulateSetHeld(h.callID, onHold: false)
+        await h.engine.awaitPendingMediaWork()
+
+        #expect(h.engine.isInterrupted)
+        #expect(!h.transport.isMicEnabled)
+    }
+
+    /// The documented case stays: an end without permission to resume does not
+    /// reopen the mic by itself, an activation after it does.
+    @Test func anUnresumableEndStillWaitsForTheActivationAfterADeactivation() async throws {
+        let h = await liveCall()
+        h.interruption.simulateBegan()
+        h.provider.simulateDeactivate(FakeAudioSession())
+        h.interruption.simulateEnded(shouldResume: false)
+        await h.engine.awaitPendingMediaWork()
+        #expect(h.engine.isInterrupted)
+        #expect(!h.transport.isMicEnabled)
+
+        await activate(h)
+
+        #expect(!h.engine.isInterrupted)
         #expect(h.transport.isMicEnabled)
     }
 
@@ -220,6 +287,22 @@ struct MicRuleTests {
         let events: [MicEvent] = [.connect, .activate, .hold, .unhold, .unmute, .withhold, .release]
         try await MicRuleScenario.runEveryOrder(of: events, shouldResume: true)
     }
+
+    /// 360 orders: the interruption's end never arrives (as after a phone call on
+    /// iOS 27), woven through activation, deactivation, a hold and an unmute. The
+    /// way-out check every run ends with shows none of them leaves the call stuck.
+    @Test func everyOrderWhoseInterruptionNeverEndsLeavesAWayOut() async throws {
+        let events: [MicEvent] = [.activate, .deactivate, .hold, .unhold, .interrupt, .unmute]
+        try await MicRuleScenario.runEveryOrder(of: events, shouldResume: false)
+    }
+
+    /// 60 orders: the edges of the device sequence (a system hold, an interruption
+    /// whose end never comes, a deactivation, the resume, an activation), in every
+    /// order with the hold before its release, on an unmuted call.
+    @Test func everyOrderOfAHeldCallsInterruptionWithoutAnEndLeavesAWayOut() async throws {
+        let events: [MicEvent] = [.hold, .interrupt, .deactivate, .unhold, .activate]
+        try await MicRuleScenario.runEveryOrder(of: events, shouldResume: false, unmuted: true)
+    }
 }
 
 /// An input to the mic rule, as the system or the user delivers it.
@@ -257,10 +340,12 @@ struct MicRuleModel {
         switch event {
         case .activate:
             isActivated = true
+            // The audio of a call that is not held, handed back: the interruption is over.
             switch interruption {
+            case .none: break
+            case _ where !isHeld: interruption = .none
             case .interrupted: interruption = .interrupted(reactivated: true)
             case .awaitingActivation: interruption = .none
-            case .none: break
             }
         case .deactivate:
             isActivated = false
@@ -279,6 +364,7 @@ struct MicRuleModel {
             isHeld = true
         case .unhold:
             isHeld = false
+            if isActivated, interruption == .interrupted(reactivated: true) { interruption = .none }
         case .connect:
             isConnected = true
         case .withhold:
@@ -295,21 +381,47 @@ struct MicRuleModel {
 enum MicRuleScenario {
     /// Drive one connected, muted call through `order` and compare the mic with
     /// the model after every step. Returns a description of the first mismatch.
-    static func run(_ order: [MicEvent], shouldResume: Bool) async -> String? {
+    static func run(_ order: [MicEvent], shouldResume: Bool, unmuted: Bool = false) async -> String? {
         // A sleep that lasts until the call's end cancels it, so the withhold's
         // bound never runs out by itself.
         let h = CallEngineHarness(sleep: { _ in try await Task.sleep(for: .seconds(24 * 60 * 60)) })
         await h.placeCall()
         if !order.contains(.connect) { h.engine.handle(.connected) }
-        await h.engine.setMuted(true)
-        let failure = await drive(h, through: order, shouldResume: shouldResume)
+        await h.engine.setMuted(!unmuted)
+        var failure = await drive(h, through: order, shouldResume: shouldResume, startsMuted: !unmuted)
+        if failure == nil { failure = await checkWayOut(h, after: order) }
         await h.engine.endCall()
         return failure
     }
 
-    private static func drive(_ h: CallEngineHarness, through order: [MicEvent], shouldResume: Bool) async -> String? {
+    /// Whatever the order left, the call is never stuck: once it is not held and
+    /// CallKit hands its audio back (as it does after a resume, which the user's
+    /// hold control or the engine's own re-request provokes), the mic is open and
+    /// nothing reports an interruption, whether or not the interruption's end ever
+    /// arrived; only a withhold the order leaves in place keeps it closed. Every
+    /// order unmutes and connects.
+    private static func checkWayOut(_ h: CallEngineHarness, after order: [MicEvent]) async -> String? {
+        if h.engine.isOnHold { h.provider.simulateSetHeld(h.callID, onHold: false) }
+        h.provider.simulateActivate(FakeAudioSession())
+        await h.engine.awaitPendingActivation()
+        await h.engine.awaitPendingMediaWork()
+        if h.engine.isInterrupted { return "\(order) way out: still interrupted after CallKit handed the audio back" }
+        if !h.transport.isAudioAttached { return "\(order) way out: media not attached" }
+        if h.transport.isMicEnabled == h.engine.isMicWithheld {
+            return "\(order) way out: mic \(h.transport.isMicEnabled) with the withhold \(h.engine.isMicWithheld)"
+        }
+        return nil
+    }
+
+    private static func drive(
+        _ h: CallEngineHarness,
+        through order: [MicEvent],
+        shouldResume: Bool,
+        startsMuted: Bool
+    ) async -> String? {
         var model = MicRuleModel(shouldResume: shouldResume)
         model.isConnected = !order.contains(.connect)
+        model.isMuted = startsMuted
 
         for (step, event) in order.enumerated() {
             switch event {
@@ -381,12 +493,12 @@ enum MicRuleScenario {
         }
     }
 
-    static func runEveryOrder(of events: [MicEvent], shouldResume: Bool) async throws {
+    static func runEveryOrder(of events: [MicEvent], shouldResume: Bool, unmuted: Bool = false) async throws {
         let orders = orders(of: events)
         try #require(!orders.isEmpty)
         var failures: [String] = []
         for order in orders {
-            if let failure = await run(order, shouldResume: shouldResume) { failures.append(failure) }
+            if let failure = await run(order, shouldResume: shouldResume, unmuted: unmuted) { failures.append(failure) }
         }
         #expect(failures.isEmpty, "\(failures.count) of \(orders.count) orders failed; first: \(failures.prefix(3))")
     }

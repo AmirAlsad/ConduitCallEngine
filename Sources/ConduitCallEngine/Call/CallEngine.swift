@@ -64,10 +64,13 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     public private(set) var isAudioActivated = false
     /// Whether an interruption by another audio session (Siri, a phone call,
     /// navigation) is keeping the mic closed. True from the interruption's start
-    /// until it ends with permission to resume, or, when it ends without that
-    /// permission, until CallKit activates the session again or the user unmutes
-    /// or presses push-to-talk. If CallKit activated the session during the
-    /// interruption, its end clears this either way.
+    /// until the first of: it ends with permission to resume; CallKit activates the
+    /// session of the call while it is not held (the system handing the audio back,
+    /// which iOS does not always follow with the interruption's end); the call is
+    /// resumed with a session CallKit activated during the hold; or the call ends.
+    /// When the interruption ends without permission to resume and CallKit has not
+    /// handed the audio back since it began, this stays true until CallKit
+    /// activates the session again or the user unmutes or presses push-to-talk.
     public var isInterrupted: Bool { interruption != .none }
     /// Whether the host is keeping the mic closed with `setMicWithheld(_:)`, for
     /// example while its own connected sound plays. Not mute: it
@@ -1643,9 +1646,17 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         }
         isAudioActivated = true
         switch interruption {
-        case .interrupted: interruption = .interrupted(reactivated: true)
-        case .endedAwaitingActivation: interruption = .none
-        case .none: break
+        case .none:
+            break
+        case _ where !isOnHold:
+            // CallKit giving a call that is not held its audio is the system handing
+            // the audio back; iOS does not always report the interruption's end.
+            Log.info(.call, "CallKit activated the audio of a call that is not held; the interruption is over")
+            interruption = .none
+        case .interrupted:
+            interruption = .interrupted(reactivated: true)
+        case .endedAwaitingActivation:
+            interruption = .none
         }
         // A call that connected before this activation is marked connected now.
         markConnectedIfDue()
@@ -1782,6 +1793,12 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         Log.info(.call, "Call resumed")
         isOnHold = false
         signalRetryCount = 0
+        if isAudioActivated, interruption == .interrupted(reactivated: true) {
+            // CallKit handed the session back during the hold; the resume is when
+            // the call takes it.
+            Log.info(.call, "Resumed with the audio CallKit handed back during the hold; the interruption is over")
+            interruption = .none
+        }
         if isAudioActivated { enqueueMedia { await $0.attachAudioSession() } }
         applyMic()
         syncHoldSignal()
@@ -1970,7 +1987,8 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     // A transient takeover (Siri, a navigation prompt that can't mix, a real phone
     // call): pause the mic while interrupted and re-apply it on resume. We never
     // touch the audio session — CallKit owns it and may activate it again around
-    // the interruption's end, in either order; each edge re-derives the mic.
+    // the interruption's end, in either order, or without reporting the end at all
+    // (as after a phone call on iOS 27); each edge re-derives the mic.
 
     package func audioInterruptionBegan() {
         guard state.isActive, !state.isTerminal else { return }
@@ -2194,7 +2212,8 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     private enum InterruptionPhase: Equatable {
         case none
         /// Another audio session took over. `reactivated` once CallKit has
-        /// activated the session again since the interruption began.
+        /// activated the session again since the interruption began, while the
+        /// call was held (an activation of a call that is not held ends it).
         case interrupted(reactivated: Bool)
         /// It ended without permission to resume before CallKit activated the
         /// session again: the mic waits for that activation, or for the user.

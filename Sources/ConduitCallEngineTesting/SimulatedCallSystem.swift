@@ -180,7 +180,10 @@ public final class SimulatedCallSystem {
     }
 
     /// Another audio session (Siri, a phone call, navigation) interrupted the call.
-    /// The engine pauses the mic on its next main-actor turn.
+    /// The engine pauses the mic on its next main-actor turn. The interruption
+    /// also ends without `endAudioInterruption(shouldResume:)`, as iOS can leave
+    /// that out: when the session is activated (`activateAudioSession()`) while
+    /// the call is not held, or the call is resumed after an activation during the hold.
     public func beginAudioInterruption() {
         interruptionObserver.simulateBegan()
     }
