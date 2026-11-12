@@ -711,12 +711,15 @@ Audio:
 - [ ] Place a phone call from the Phone app during an engine call: the engine call is held, and comes back when the phone call ends and the call is resumed.
 - [ ] Hold and resume from your own UI, if you offer it: the same as above, without a second call.
 - [ ] Stay on hold longer than a minute: the engine call survives (a connection that drops during the hold reconnects after the resume).
+- [ ] Hold before the agent is ready (place a call and hold it within a second or two, before the agent greets; on Daily the agent cannot get ready while held), stay held 40 seconds, resume: the call connects and the agent greets after the resume; it does not fail as `.agentUnreachable`.
+- [ ] After a resume, the agent's log shows `call-resumed` once, after the device's audio is back (Daily: after `Daily agent audio is subscribed` in Console). With the network degraded at the moment of the resume, Console may show `did not leave the device; sending the call's state again`, followed within a few seconds by the signal sent.
 - [ ] CarPlay, if you support driving: place, take and end calls from the car.
 
 Network:
 
 - [ ] Airplane mode for about ten seconds mid-call, on each adapter you link: `reconnecting(attempt: 0)` when the network goes, then `connected` when it returns, with audio back.
 - [ ] Airplane mode for several minutes: the call fails as `.lostConnection` once the retries are spent.
+- [ ] Daily, with a backend that answers the first reconnect request with a room whose bot never gets ready: after `joinTimeout` Console shows `Daily connect: the session's bot never got ready` and the next attempt joins the next room, and the call recovers, instead of every later attempt failing.
 
 Incoming:
 
@@ -735,7 +738,9 @@ Incoming:
 Pre-connect, for each transport whose `canConnectWhileRinging` you rely on, with an agent that plays audio as soon as the device joins (so anything audible during the ring is heard), and again with the app killed and the phone locked:
 
 - [ ] Ring with `"preconnect": "media"`: during the ring nothing from the app is audible, the ringtone and vibration are unaffected, no orange microphone indicator shows, and Console shows no audio-session activation by the app before CallKit's `didActivate`. The agent logs the device joining.
-- [ ] Answer: CallKit activates, two-way audio within a second, the agent receives `call-answered` after the activation, the route is right (AirPods when connected, speaker otherwise), and the in-app route picker works.
+- [ ] Answer: CallKit activates, two-way audio within a second, the agent receives `call-answered` after the activation, the route is right (AirPods when connected, speaker otherwise), and the in-app route picker works. A sound your host plays on `.moment(.connected)` is heard in full (it comes at CallKit's activation).
+- [ ] Ring with an agent that never joins the room, and answer after 10 seconds: the call stays connecting with the ringback, and about 20 seconds later (30 from the device's join) your backend gets an ordinary answered credential request and the call connects to the agent it returns.
+- [ ] LiveKit: decline a pre-connected ring the instant it starts ringing, and end an outgoing call the instant after placing it: the agent's log shows the device leaving (with `end-call` if it had joined); the device is never left in the room.
 - [ ] Decline, let it time out, and send a cancel push: the agent gets `end-call` or sees the participant leave within a second; no audio or microphone indicator remains.
 - [ ] End the agent during the ring: the ring stops, a `.canceledByCaller` record, a `canceled` receipt.
 - [ ] Ring for a minute, locked: the device stays in the room the whole time (no drop in the agent's log), then answer.
