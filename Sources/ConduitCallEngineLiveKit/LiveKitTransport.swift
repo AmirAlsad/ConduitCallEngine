@@ -62,6 +62,21 @@ public final class LiveKitTransport: CallTransport {
     // MARK: - CallTransport
 
     public func connect(_ connection: CallConnection) async throws {
+        let plan = roomEvents.gate.planConnect(
+            roomPhase: LiveKitEndCallSignal.RoomPhase(room.connectionState),
+            remotesPresent: !room.remoteParticipants.isEmpty
+        )
+        switch plan {
+        case .join:
+            break
+        case .reportConnected:
+            Log.info(.transport, "LiveKit connect: the room healed by itself; reporting it connected")
+            continuation.yield(.connected)
+            return
+        case .refuse:
+            Log.warning(.transport, "LiveKit connect: the room is still reconnecting; not rejoining")
+            throw TransportError.connectionFailed("LiveKit is still reconnecting")
+        }
         roomEvents.gate = LiveKitConnectGate()
         roomEvents.wasBotSpeaking = false
         do {
