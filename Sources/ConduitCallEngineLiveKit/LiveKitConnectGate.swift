@@ -23,7 +23,10 @@
 //  (client-sdk-swift PR #1144). A failed full reconnect has cleared the remotes, so
 //  on those versions a completion with the room connected and no remote is taken as
 //  that drop, and the room, which still claims to be connected, must be reset
-//  before the engine's next connect. From 2.18.0 that completion is a real one.
+//  before the engine's next connect. From 2.18.0 that completion is a real one: the
+//  rejoin succeeded and the agent is not in the room, so it left while the device
+//  was offline, and the call ends as `.botLeft`, as it would had the agent left a
+//  connected call or had a quick reconnect brought the news.
 //
 //  An attempt is over once it has reported a disconnect (a drop, an abandoned
 //  reconnect, or the agent leaving) or the host has asked to disconnect. From then
@@ -93,10 +96,10 @@ struct LiveKitConnectGate {
     }
 
     /// The SDK reports a reconnect complete. `roomConnected` and `remotesPresent` are
-    /// the room's state at that moment. A `.disconnected` result means the reconnect
-    /// was abandoned: the room must be disconnected before the next connect.
+    /// the room's state at that moment. After a `.disconnected` result, check
+    /// `roomNeedsReset` before the next connect.
     mutating func reconnectDidComplete(roomConnected isRoomConnected: Bool, remotesPresent: Bool) -> TransportEvent? {
-        guard !userRequestedDisconnect, !hasReportedDisconnect else { return nil }
+        guard !isAttemptOver else { return nil }
         guard isRoomConnected else { return abandonReconnect() }
         roomConnected = true
         guard reportedConnected else {
@@ -104,7 +107,11 @@ struct LiveKitConnectGate {
             return readyEvent()
         }
         guard remotesPresent else {
-            roomNeedsReset = abandonedReconnectsLookComplete
+            guard abandonedReconnectsLookComplete else {
+                hasReportedDisconnect = true
+                return .disconnected(reason: .botLeft)
+            }
+            roomNeedsReset = true
             return abandonReconnect()
         }
         hasRemote = true

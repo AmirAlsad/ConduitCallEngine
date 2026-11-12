@@ -244,12 +244,13 @@ private final class RoomEventMapper: NSObject, RoomDelegate {
 
     nonisolated func room(_ room: Room, didCompleteReconnectWithMode mode: ReconnectMode) {
         // The engine's `.reconnecting` display recovers on a fresh `.connected`, but
-        // only if the gate finds the room usable; otherwise this is the drop.
+        // only if the gate finds the room usable. The connection state is the one this
+        // completion was reported with. The remotes are read after the hop: LiveKit
+        // applies a full reconnect's join response in a detached task.
         let isRoomConnected = room.connectionState == .connected
-        let remotesPresent = !room.remoteParticipants.isEmpty
         Task { @MainActor in
             guard let event = self.gate.reconnectDidComplete(
-                roomConnected: isRoomConnected, remotesPresent: remotesPresent
+                roomConnected: isRoomConnected, remotesPresent: !room.remoteParticipants.isEmpty
             ) else { return }
             if self.gate.roomNeedsReset {
                 self.roomReset = Task { await room.disconnect() }
