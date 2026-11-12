@@ -303,7 +303,7 @@ A transport carries audio between the device and the agent. Conform to `CallTran
 | Requirement | Contract |
 |---|---|
 | `events: AsyncStream<TransportEvent>` | The only way state leaves the transport. The engine reads it once per call, from creation until teardown. |
-| `connect(_:) async throws` | Join `connection.url` with `connection.token`. Called once per attempt: first connect, then once per engine reconnect attempt, on the same instance. Throw `TransportError.authenticationFailed` for rejected credentials. |
+| `connect(_:) async throws` | Join `connection.url` with `connection.token`. Called once per attempt: first connect, then once per engine reconnect attempt, on the same instance, which can be while your SDK is still healing the previous session (see the rules below). Throw `TransportError.authenticationFailed` only for credentials the server rejected; it ends the call at once, even mid-reconnect. |
 | `disconnect() async` | Leave because the call is over. If your protocol has an explicit "end call" signal, send it here (see [section 11](#11-what-the-server-side-must-do)). |
 | `setMicEnabled(_:) async` | Capture on or off. Can arrive before `connect` finishes; it must be harmless then, because the engine sets it again after `.connected`. Also used to pause the mic during interruptions. |
 | `availableAudioDevices() async`, `selectedAudioDevice() async`, `setAudioDevice(_:) async` | The routes the user can pick, and switching between them, through your SDK so it does not revert the choice. |
@@ -314,7 +314,13 @@ Rules that come from the device bugs this code survived:
 
 - **`connect` must not undo an attach.** If attach can come before or during connect, track whether you are attached and have `connect` apply the current state, rather than resetting audio to "off" unconditionally. An unconditional reset after a slow credential fetch is what produced a dead mic on the first call after launch.
 - **Emit `.connected` once the agent can hear the user**, not when the network connection opens. It drives the call timer, the user's "connected" cue, and the engine's mic re-apply.
-- **Follow `.reconnecting` with `.connected` or `.disconnected`.** The engine shows reconnecting while your SDK heals itself and waits up to 30 seconds for one of the two. After that it treats the transport as dropped: it does not call `disconnect()`, but runs its own reconnect, calling the target's `connect` for fresh credentials and then your `connect(_:)` on the same instance, possibly while your SDK is still trying to heal. Make `connect(_:)` take over from an SDK reconnect in progress. If `.connected` arrives during the engine's attempt, the call recovers as usual.
+- **Follow `.reconnecting` with `.connected` or `.disconnected`.** The engine shows reconnecting while your SDK heals itself and waits up to 30 seconds for one of the two. After that it treats the transport as dropped: it does not call `disconnect()`, but runs its own reconnect, calling the target's `connect` for fresh credentials and then your `connect(_:)` on the same instance, possibly while your SDK is still trying to heal. If `.connected` arrives during the engine's attempt, the call recovers as usual.
+- **`connect(_:)` must handle a session that is still up.** When it is called while your SDK is still healing the previous session (or has just healed it), it must leave the transport able to report how the call goes on. It is required to do one of these:
+  - Report `.connected` and return, if the session has healed and the agent is there.
+  - Take the session over: end it without the end-call signal (the call is continuing), make sure its late callbacks can no longer emit events, and join afresh with the new connection.
+  - Throw a `TransportError` other than `.authenticationFailed`, without changing anything the SDK's heal still reports through. The engine counts the attempt and retries with backoff; the heal's own `.connected` recovers the call, and its failure must still arrive as `.disconnected(reason: .networkDropped)`.
+
+  Never reset your reporting state for a connect that then does not join (the heal's outcome would go unreported and every later attempt would fail the same way), and never return normally without a join under way: after a reconnect attempt returns, the engine waits for `.connected` or `.disconnected` with no deadline. Both bundled adapters throw while their SDK is still healing (see [section 11](#11-what-the-server-side-must-do)), because leaving and rejoining discards the SDK's own recovery and shows the agent a departure.
 
 **Events.**
 
