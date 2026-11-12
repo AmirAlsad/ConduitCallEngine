@@ -181,6 +181,7 @@ struct CallEngineTests {
         await h.transport.setAudioDevice("receiver") // start on the earpiece
         await h.placeCall()
         h.engine.handle(.connected)
+        await h.engine.activate(FakeAudioSession())
 
         await waitUntil { h.transport.selectedAudioDeviceID == "speaker" }
         #expect(h.transport.selectedAudioDeviceID == "speaker")
@@ -196,6 +197,7 @@ struct CallEngineTests {
         await h.transport.setAudioDevice("bluetooth") // on AirPods
         await h.placeCall()
         h.engine.handle(.connected)
+        await h.engine.activate(FakeAudioSession())
 
         await waitUntil { h.engine.audioDevices.contains { $0.id == "bluetooth" } }
         #expect(h.transport.selectedAudioDeviceID == "bluetooth") // didn't yank to speaker

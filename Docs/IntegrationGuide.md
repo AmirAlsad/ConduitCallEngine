@@ -97,7 +97,7 @@ A call that reaches `.ended(outcome)` is recorded with the same outcome, so a ho
 | `setMuted(_:) async` | Mute or unmute; mirrored to CallKit. Unmuting turns the transport's mic on once CallKit has activated the session and while no interruption is in progress (see [section 4](#4-audio-session-ownership)). |
 | `setPushToTalkActive(_:) async` | With push-to-talk enabled in the configuration, `true` holds the talk button and `false` releases it. The mic is on while the button is held, once CallKit has activated the session and while no interruption is in progress. Does nothing when push-to-talk is disabled. |
 | `setOnHold(_:) async` | Hold or resume the call from your own UI. The engine asks CallKit, which performs the hold through the engine, as it does for the system UI; `isOnHold` changes then, which on a device can be just after this returns. Does nothing unless the call is connecting, connected or reconnecting, or when `supportsHolding` is off. See [Call hold](#call-hold). |
-| `selectAudioDevice(_:) async` | Route audio to one of `audioDevices`. |
+| `selectAudioDevice(_:) async` | Route audio to one of `audioDevices`. Ignored until CallKit has activated the session (`audioDevices` is empty until then). |
 | `reset()` | Return to idle from a terminal state. |
 | `state`, `activeCall`, `isMuted`, `isOnHold`, `isBotSpeaking`, `isAudioActivated`, `isInterrupted`, `audioDevices`, `selectedAudioDeviceID`, `endedByUser` | Observable state for your UI. `activeCall` carries the target id, display name and direction of the current call. |
 | `repeatingCue` | The looping cue that should be playing now (`.connecting`, `.retrying`, or nil), for a UI that attaches mid-call. See [Cues](#cues). |
@@ -207,11 +207,11 @@ On resume, `isOnHold` clears; the engine calls `attachAudioSession()` if CallKit
 
 What CallKit does to the audio session around a hold is not documented by Apple. The engine is built so that any order works: whether CallKit deactivates the session on hold and activates it again on resume, sends interruptions around them, or does neither, media runs only while the session is activated and the call is not held, and the mic follows the rule above.
 
-**Hands-free default.** Once per call, after it connects and the transport's device list is available, the engine selects the loudspeaker if the transport lists no Bluetooth or wired route. A call with nothing connected therefore plays on the speaker rather than the earpiece, and a call in the car stays in the car. This is not configurable in this version; the user can change routes afterwards.
+**Hands-free default.** Once per call, after it connects and the transport's device list is available, the engine selects the loudspeaker if the transport lists no Bluetooth or wired route. Like attach and the mic, all route work waits for CallKit's activation: before it (and after a deactivation, until the next activation) the engine reads no routes, applies no default and ignores `selectAudioDevice(_:)`, since an output-port override on a session that is not active is lost; a call that connects before CallKit activates gets its route list and the default at the activation. A call with nothing connected therefore plays on the speaker rather than the earpiece, and a call in the car stays in the car. This is not configurable in this version; the user can change routes afterwards.
 
 **Your own audio during a call.** Do not change the session category or call `setActive` while a call is up. If you play audio cues during a call, play them into the session as it is.
 
-**Pre-connected rings.** A ring prepared at the `.media` tier ([pre-connect](#pre-connect)) has a transport that joins while the phone rings. The engine keeps that transport apart from the call until the answer: it gets no `attachAudioSession()`, no `setMicEnabled(_:)`, no route reads or changes and no signals, mute and route requests do not reach it, and an activation during the ring, which can only be left over from an earlier call, is ignored. Once the user answers, the transport becomes the call's, and everything above applies; for a prepared call, the route list refresh and the hands-free default also wait for CallKit's activation, since such a call can be connected before it.
+**Pre-connected rings.** A ring prepared at the `.media` tier ([pre-connect](#pre-connect)) has a transport that joins while the phone rings. The engine keeps that transport apart from the call until the answer: it gets no `attachAudioSession()`, no `setMicEnabled(_:)`, no route reads or changes and no signals, mute and route requests do not reach it, and an activation during the ring, which can only be left over from an earlier call, is ignored. Once the user answers, the transport becomes the call's, and everything above applies, including route work waiting for CallKit's activation, which matters most here since such a call can be connected before it.
 
 What a custom transport must do is in [section 10](#10-writing-your-own-transport).
 
@@ -439,7 +439,7 @@ Rules that come from the device bugs this code survived:
 | `.error(.authenticationFailed)` | While connecting or reconnecting: `failed(.badToken)`. Otherwise logged. |
 | `.error(_)` | While connecting: `failed(.transportError)`. Otherwise logged; a mid-call error does not end the call. |
 | `.botStartedSpeaking`, `.botStoppedSpeaking` | Update `isBotSpeaking`. |
-| `.audioDevicesChanged` | Refresh `audioDevices` and `selectedAudioDeviceID`, and apply the hands-free default if not yet applied. |
+| `.audioDevicesChanged` | Refresh `audioDevices` and `selectedAudioDeviceID`, and apply the hands-free default if not yet applied, once CallKit has activated the session (before that, ignored: the activation refreshes them). |
 | `.userStartedSpeaking`, `.userStoppedSpeaking`, `.remoteAudioLevel` | Not exposed to hosts in this version. |
 
 "Bot left" versus "network dropped" is the decision that matters most. Report `.botLeft` only when the agent has deliberately left a call that was established (the call then ends normally). Report `.networkDropped` when the connection was lost (the engine reconnects). Report `.requestedByUser` for a disconnect that follows your own `disconnect()`. Mixing them up either turns a recoverable drop in a tunnel into a dead call, or keeps redialing an agent that hung up.

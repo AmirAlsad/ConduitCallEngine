@@ -13,15 +13,16 @@
 //  only once CallKit has activated the session and only while the call is not on
 //  hold — from `activate(_:)` (the `providerDidActivate` callback), when a
 //  transport is created after that activation already happened, or on resume —
-//  and the mic is never enabled before activation (see `micShouldBeOn`).
+//  the mic is never enabled before activation (see `micShouldBeOn`), and no route
+//  is read or changed while the session is not activated (`scheduleAudioDeviceUpdate`).
 //  CallKit owns the session; the transport attaches to it.
 //
 //  PRE-CONNECT: a ring may join its transport before the answer (`ringTransport`).
 //  That transport is kept apart from `transport`, so no attach, mic, route or
 //  signal path reaches it, and its events steer only the ring's preparation,
 //  never the ring, except that the agent leaving a ready ring is the caller
-//  cancelling it. The answer adopts it; a prepared call's route work then waits
-//  for CallKit's activation too (`routeWaitsForActivation`). A preparation never
+//  cancelling it. The answer adopts it; its route work waits for CallKit's
+//  activation, as every call's does, though it can be connected first. A preparation never
 //  makes the answered call worse than none: a ring's join is bounded by the join
 //  deadline, and whatever the ring prepared failing after the answer, before the
 //  agent was there, sends the call down the unprepared path once
@@ -202,10 +203,6 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     /// Identifies the unprepared connect a failed preparation started, while its
     /// credential fetch or its transport's connect is under way.
     private var freshConnectID: UUID?
-    /// A call answered with a prepared ring refreshes routes and applies the
-    /// hands-free default only once CallKit has activated the session: it can be
-    /// connected (and its transport report route changes) before that.
-    private var routeWaitsForActivation = false
 
     /// The real engine: CallKit, the system audio-interruption observer, PushKit,
     /// and HTTP ring-status receipts. Device-only (CallKit doesn't run in the simulator).
@@ -672,7 +669,6 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
             ringStatusURL = nil
         }
         let preparation = takeRingPreparation()
-        if preparation.isPrepared { routeWaitsForActivation = !isAudioActivated }
         switch preparation {
         case .none:
             transition(to: .connecting)
@@ -688,7 +684,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
             startSignalConnection()
             sendAnswerSignalIfDue()
             syncHoldSignal()
-            if !routeWaitsForActivation { scheduleAudioDeviceUpdate() }
+            scheduleAudioDeviceUpdate()
             Log.info(.call, "Connected (prepared during the ring)")
 
         case .joining(let transport, let hasJoined):
@@ -898,10 +894,6 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         case fetching(Task<CallConnection, any Error>, transport: CallTransport?, isSubscribed: Bool)
         /// The credentials, and the transport made for the ring, if any.
         case credentials(CallConnection, transport: CallTransport?)
-
-        var isPrepared: Bool {
-            if case .none = self { false } else { true }
-        }
     }
 
     /// Hand the ring's preparation to the answer, leaving none behind.
@@ -1433,8 +1425,6 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
             return
         }
         isAudioActivated = true
-        let routeWaited = routeWaitsForActivation
-        routeWaitsForActivation = false
         switch interruption {
         case .interrupted: interruption = .interrupted(reactivated: true)
         case .endedAwaitingActivation: interruption = .none
@@ -1452,7 +1442,9 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         // After the attach and the mic, so an agent waiting for the answer starts
         // speaking into a running audio engine.
         sendAnswerSignalIfDue()
-        if routeWaited, case .connected = state {
+        // Route work waited for this activation; a call already connected gets the
+        // hands-free default now, one still connecting gets it when it connects.
+        if case .connected = state {
             scheduleAudioDeviceUpdate()
         } else {
             await refreshAudioDevices(of: transport)
@@ -1817,8 +1809,14 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
 
     // MARK: - Audio route (driven through the transport so the SDK honors it)
 
+    /// Route audio to one of `audioDevices`. Ignored until CallKit has activated
+    /// the call's session (`isAudioActivated`): `audioDevices` is empty until then.
     public func selectAudioDevice(_ id: String) async {
         guard let transport else { return }
+        guard isAudioActivated else {
+            Log.warning(.audio, "selectAudioDevice(\(id)) ignored: CallKit has not activated the session")
+            return
+        }
         await transport.setAudioDevice(id)
         await refreshAudioDevices(of: transport)
     }
@@ -1834,10 +1832,12 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     }
 
     /// Refresh the route list (keeps the picker live) and apply the hands-free
-    /// default once it's available. Runs on connect and on device changes, for the
-    /// transport live when it was scheduled.
+    /// default once it's available. Runs on connect, on device changes, and on
+    /// CallKit's activation, for the transport live when it was scheduled; never
+    /// while the session is not activated, when a route read is meaningless and an
+    /// output-port override is lost (and the default would count as applied).
     private func scheduleAudioDeviceUpdate() {
-        guard let transport, !routeWaitsForActivation else { return }
+        guard let transport, isAudioActivated else { return }
         Task { [weak self] in
             await self?.refreshAudioDevices(of: transport)
             await self?.applyHandsFreeDefaultIfNeeded(on: transport)
@@ -1988,7 +1988,6 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         isAwaitingAgent = false
         isPreparedConnect = false
         freshConnectID = nil
-        routeWaitsForActivation = false
         cancelRingPreparation()
         activeCallID = nil
         let outgoing = transport
@@ -2030,7 +2029,6 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         isAnswerRequested = false
         signalsAnswer = false
         isAnswerSignalSent = false
-        routeWaitsForActivation = false
         cancelRingPreparation()
         cancelRingTimer()
         transition(to: .idle)
