@@ -56,8 +56,17 @@ public struct ConnectRequest: Equatable, Sendable {
     /// for an incoming call, reconnects included; nil for an outgoing call. When you
     /// send it to your server, write it as `uuidString.lowercased()`, the form the
     /// engine's ring-status receipts use (`uuidString` is uppercase).
+    ///
+    /// The engine guarantees it is never nil when `purpose` is `.answered` or
+    /// `.ringing(joinsBeforeAnswer:)`, and always nil for `.outgoing`; for
+    /// `.reconnect(attempt:)` it is nil exactly when the call is outgoing. So in
+    /// those two cases you can unwrap it (`request.callID!`) or treat nil as a
+    /// programming error. The initializer does not enforce this, so tests can build
+    /// any request.
     public let callID: UUID?
 
+    /// A request as the engine makes it. The engine never pairs `.answered` or
+    /// `.ringing` with a nil `callID`; see `callID`.
     public init(purpose: Purpose, callID: UUID?) {
         self.purpose = purpose
         self.callID = callID
