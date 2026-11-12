@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- A push carrying the `call_id` of the call that is ringing or in progress is treated as a duplicate delivery: it is reported to CallKit, as PushKit requires, and otherwise ignored. It used to take the busy path, producing a missed-call record and a `busy` receipt for a call that was ringing or live. (#7)
+
 - CallKit answer and mute actions now apply only to the call they name. An answer for a busy ring that CallKit still showed answered the ringing call, and a mute for another call's id muted the live one. (#6)
 
 - A CallKit provider reset now ends the call the way any other failure does: a call that is dialing, connecting, connected or reconnecting moves to `.failed(.unknown)` (so a host's transition-driven cues stop) and a ringing call returns to `.idle`; both produce a `CallRecord` (`outcome: .failed`, `failureReason: .unknown`). Before, the engine went to `.idle` with no terminal transition and no record. Nothing is reported back to CallKit, which has already ended the call, and no receipt is sent. (#5)

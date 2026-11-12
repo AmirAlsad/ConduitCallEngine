@@ -70,7 +70,7 @@ Only `target_id` is required, but the smallest useful ring is `{"target_id": "..
 1. Reports the incoming call to CallKit immediately, inside the PushKit callback, under the push's own `display_name` and `handle` (or their fallbacks). iOS terminates any app that receives a VoIP push without reporting a call, so this happens before the app is consulted.
 2. Asks the app to resolve `target_id` to one of its targets. Once CallKit accepts the report, if the target's name or handle differ from what the ring showed, the ring is updated in place.
 3. If the app does not know the target, the call is ended as failed and recorded as a failed incoming call. No receipt is sent.
-4. If the device is already in a call (ringing, dialing, connecting, connected or reconnecting), the new ring is reported and ended at once as unanswered. The live call is not touched, the engine reports a missed call to the app, and a `busy` receipt is sent.
+4. If the device is already in a call (ringing, dialing, connecting, connected or reconnecting), the new ring is reported and ended at once as unanswered. The live call is not touched, the engine reports a missed call to the app, and a `busy` receipt is sent. A push whose `call_id` is the call already in progress (a second delivery of the same ring) is not a new ring: it is reported, because iOS requires it, and otherwise ignored, with no missed call and no receipt.
 5. If Focus or Do Not Disturb filters the ring, the phone never rings. The engine reports a missed call to the app and a `suppressed_by_focus` receipt is sent.
 6. When the user answers, the engine joins the room: `room_url` and `token` from the push if both were present, otherwise whatever the app's own credential code returns. The call then behaves like an outgoing call, including reconnection.
 
@@ -115,7 +115,7 @@ Details:
 
 ## Guidance
 
-- **Mint a fresh `call_id` for every ring** and keep it unique. It is the CallKit call id and the key in every receipt. A push that reuses the id of a call that is still ringing is handled as busy: CallKit refuses the duplicate report, but the engine still reports a missed call to the app and you still get a `busy` receipt for that id, which then looks like a receipt for the original ring.
+- **Mint a fresh `call_id` for every ring** and keep it unique. It is the CallKit call id and the key in every receipt. A push that repeats the id of the call still ringing or in progress is treated as a second delivery of that ring and ignored, so it cannot be used to ring again.
 - **Do not ring again until the previous ring has resolved** (a receipt arrived, or enough time passed that it has clearly ended). A second ring while the first is still ringing is reported and ended immediately as busy, and the user may see it flash.
 - **There is no way to cancel a ring.** No payload stops a ring that is already showing, and the engine sets no timeout of its own; it rings until the user answers or declines, or iOS ends it. Do not rely on ringing for something time-critical that may be over before the user picks up.
 - **Always include `display_name`** when you have it, so the ring shows the right name from the first frame.

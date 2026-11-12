@@ -238,6 +238,10 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         case .idle, .ended, .failed: isBusy = false
         default: isBusy = true
         }
+        // A second delivery of the push for the call in progress is not another
+        // ring. It is reported, because PushKit requires it, and nothing else: no
+        // end (it would end the call in progress), no record, no receipt.
+        let isDuplicate = isBusy && incoming.callID == activeCallID
 
         // The report's completion may arrive before this method finishes (a fake
         // completes synchronously); hold it until the ring is set up.
@@ -245,7 +249,9 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         var earlyResult: IncomingCallReportError??
         var ringTarget: CallTarget?
         let finishRing: (IncomingCallReportError?) -> Void = { [self] result in
-            if isBusy {
+            if isDuplicate {
+                Log.info(.call, "Duplicate push for call \(incoming.callID); report result: \(String(describing: result))")
+            } else if isBusy {
                 completeBusyRing(incoming, payload: payload, result: result)
             } else {
                 completeRing(incoming, target: ringTarget, result: result)
@@ -260,7 +266,9 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
             if ringIsSetUp { finishRing(result) } else { earlyResult = .some(result) }
         }
 
-        if isBusy {
+        if isDuplicate {
+            Log.warning(.call, "Duplicate VoIP push for the call in progress; reported call \(incoming.callID), ignoring it")
+        } else if isBusy {
             Log.warning(.call, "Busy on VoIP push; reported call \(incoming.callID), ending it")
         } else {
             ringTarget = beginRing(incoming, payload: payload)

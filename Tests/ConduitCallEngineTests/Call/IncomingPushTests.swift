@@ -272,15 +272,45 @@ struct IncomingPushTests {
     @Test func busyRingWhoseReportFailsIsNotEnded() async throws {
         let h = CallEngineHarness()
         await h.placeCall()
-        h.provider.reportIncomingError = .failed("duplicate")
-        // A duplicate delivery of the live call's own id: ending it would end the live call.
-        h.ring(callID: h.callID, statusURL: URL(string: "https://engine.example.com/inbound/status/live")!)
+        h.provider.reportIncomingError = .failed("refused")
+        // CallKit created no call, so there is nothing to end.
+        h.ring(statusURL: URL(string: "https://engine.example.com/inbound/status/live")!)
 
         #expect(h.provider.reportedEnded.isEmpty)
         #expect(h.engine.state.isConnecting)
         #expect(h.delegate.records.map(\.missedReason) == [.busy]) // record and receipt as before
         #expect(h.ringStatusReporter.reports.map(\.status) == [.busy])
         #expect(h.pushCompletions == 1)
+    }
+
+    enum DuplicateOf: String, CaseIterable, Sendable {
+        case ringingCall, answeredCall, connectedCall
+    }
+
+    /// A second delivery of the push for the call in progress is not another ring:
+    /// it is reported (PushKit requires it) and otherwise ignored, whether or not
+    /// CallKit refuses the duplicate report.
+    @Test(arguments: DuplicateOf.allCases, [true, false])
+    func duplicatePushForTheCallInProgressIsReportedAndIgnored(of: DuplicateOf, callKitRefuses: Bool) async throws {
+        let h = CallEngineHarness()
+        let callID = UUID()
+        let status = URL(string: "https://engine.example.com/inbound/status/live")!
+        h.ring(callID: callID, statusURL: status)
+        if of != .ringingCall { await h.engine.answer() }
+        if of == .connectedCall { h.engine.handle(.connected) }
+        let state = h.engine.state
+        let events = h.delegate.events
+        let receipts = h.ringStatusReporter.reports
+        if callKitRefuses { h.provider.reportIncomingError = .failed("call UUID already exists") }
+
+        h.ring(callID: callID, statusURL: status)
+
+        #expect(h.provider.reportedIncoming.map(\.id) == [callID, callID])
+        #expect(h.provider.reportedEnded.isEmpty) // ending it would end the call in progress
+        #expect(h.engine.state == state)
+        #expect(h.delegate.events == events) // no record, no resolve, no transition
+        #expect(h.ringStatusReporter.reports == receipts) // no busy receipt
+        #expect(h.pushCompletions == 2)
     }
 
     @Test func busyRingWithMatchingIdentityIsNotCorrected() async throws {

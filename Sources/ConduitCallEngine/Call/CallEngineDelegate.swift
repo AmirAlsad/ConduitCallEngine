@@ -13,7 +13,8 @@ import Foundation
 
 @MainActor
 public protocol CallEngineDelegate: AnyObject {
-    /// Once per push, after its CallKit report is issued: synchronously for a ring
+    /// Once per push (not for a duplicate of the call in progress), after its
+    /// CallKit report is issued: synchronously for a ring
     /// (CallKit may not have accepted the report yet), or once CallKit accepts it
     /// for a push that arrives during another call. nil means the target is
     /// unknown: once CallKit accepts its report the ring is ended, recorded as
