@@ -165,6 +165,16 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     private var activationTask: Task<Void, Never>?
     /// Ends the ring if nobody answers it in time; see `startRingTimer`.
     private var ringTimerTask: Task<Void, Never>?
+    /// What each running timer does when its wait is over, so a simulated system
+    /// can run one out early (`fireTimer(_:)`).
+    private var timerExpiries: [EngineTimer: @MainActor () -> Void] = [:]
+    /// Work the engine starts and does not await (a call's transport teardown, a ring
+    /// transport's disconnect, a route refresh, the connect after a failed
+    /// preparation), so a simulated system can wait for it (`awaitPendingWork()`).
+    private var detachedWork: [UUID: Task<Void, Never>] = [:]
+    /// Counts the work started, media and signal commands included, so
+    /// `awaitPendingWork()` can tell when none was added while it waited.
+    private var workCount = 0
     /// Set the moment CallKit delivers the answer action for the ringing call, before
     /// `answer()` runs, so neither the ring timer nor a cancel ends an answered ring.
     private var isAnswerRequested = false
@@ -543,17 +553,15 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
 
     private func startRingTimer(for id: UUID, after timeout: Duration) {
         cancelRingTimer()
-        let sleep = self.sleep
-        ringTimerTask = Task { [weak self] in
-            try? await sleep(timeout)
-            guard let self, !Task.isCancelled else { return }
-            self.ringTimedOut(id)
+        ringTimerTask = startTimer(.ringTimeout, after: timeout) { [weak self] in
+            self?.ringTimedOut(id)
         }
     }
 
     private func cancelRingTimer() {
         ringTimerTask?.cancel()
         ringTimerTask = nil
+        timerExpiries[.ringTimeout] = nil
     }
 
     /// Only the same ring, still ringing, with no answer action delivered, times out.
@@ -890,7 +898,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         transportForAnswer = nil
         isRingTransportJoined = false
         guard !transports.isEmpty else { return }
-        Task {
+        startDetachedWork {
             for transport in transports { await transport.disconnect() }
         }
     }
@@ -1021,7 +1029,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         cancelJoinDeadline()
         let id = UUID()
         freshConnectID = id
-        Task { [weak self] in await self?.connectAfresh(on: transport, target: target, id: id) }
+        startDetachedWork { [weak self] in await self?.connectAfresh(on: transport, target: target, id: id) }
     }
 
     private func connectAfresh(on transport: CallTransport, target: CallTarget, id: UUID) async {
@@ -1232,9 +1240,8 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         cancelSelfHealDeadline()
         guard let transport else { return }
         let timeout = policy.selfHealTimeout
-        selfHealDeadlineTask = Task { [weak self] in
-            try? await self?.sleep(timeout)
-            guard let self, !Task.isCancelled, self.transport === transport,
+        selfHealDeadlineTask = startTimer(.selfHealTimeout, after: timeout) { [weak self] in
+            guard let self, self.transport === transport,
                   self.state == .reconnecting(attempt: 0), self.reconnectTask == nil
             else { return }
             Log.warning(.call, "Transport still healing after \(timeout); reconnecting")
@@ -1246,6 +1253,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     private func cancelSelfHealDeadline() {
         selfHealDeadlineTask?.cancel()
         selfHealDeadlineTask = nil
+        timerExpiries[.selfHealTimeout] = nil
     }
 
     /// Schedule the next attempt after its backoff, or `immediately`; while the
@@ -1272,11 +1280,24 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         let id = UUID()
         reconnectAttemptID = id
         reconnectTask?.cancel()
+        timerExpiries[.reconnectBackoff] = nil
         let sleep = self.sleep
-        reconnectTask = Task { [weak self] in
-            if let delay { try? await sleep(delay) }
+        let run: @MainActor () async -> Void = { [weak self] in
             guard let self, !Task.isCancelled, self.reconnectAttemptID == id else { return }
             await self.retryConnect(id, attempt: attempt)
+        }
+        if delay != nil {
+            // Run out early, the attempt starts at once, in a task of its own.
+            timerExpiries[.reconnectBackoff] = { [weak self] in
+                guard let self else { return }
+                self.reconnectTask?.cancel()
+                self.reconnectTask = Task { await run() }
+            }
+        }
+        reconnectTask = Task { [weak self] in
+            if let delay { try? await sleep(delay) }
+            if !Task.isCancelled { self?.timerExpiries[.reconnectBackoff] = nil }
+            await run()
         }
     }
 
@@ -1329,6 +1350,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         }
         reconnectAttemptID = nil
         reconnectTask = nil
+        timerExpiries[.reconnectBackoff] = nil
         cancelJoinDeadline()
     }
 
@@ -1353,10 +1375,8 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         guard let timeout = configuration.joinTimeout else { return }
         let waitingIn = state
         let attemptID = reconnectAttemptID
-        let sleep = self.sleep
-        joinDeadlineTask = Task { [weak self] in
-            try? await sleep(timeout)
-            guard let self, !Task.isCancelled, self.transport === transport,
+        joinDeadlineTask = startTimer(.joinTimeout, after: timeout) { [weak self] in
+            guard let self, self.transport === transport,
                   self.state == waitingIn, self.reconnectAttemptID == attemptID
             else { return }
             self.joinDeadlineTask = nil
@@ -1371,10 +1391,8 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     private func startRingJoinDeadline(for transport: CallTransport) {
         cancelJoinDeadline()
         guard let timeout = configuration.joinTimeout else { return }
-        let sleep = self.sleep
-        joinDeadlineTask = Task { [weak self] in
-            try? await sleep(timeout)
-            guard let self, !Task.isCancelled else { return }
+        joinDeadlineTask = startTimer(.joinTimeout, after: timeout) { [weak self] in
+            guard let self else { return }
             self.joinDeadlineTask = nil
             if transport === self.ringTransport {
                 guard self.state == .incomingRinging, self.ringPreparationPhase == .connecting else { return }
@@ -1389,6 +1407,48 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     private func cancelJoinDeadline() {
         joinDeadlineTask?.cancel()
         joinDeadlineTask = nil
+        timerExpiries[.joinTimeout] = nil
+    }
+
+    /// Run `expire` once `duration` has passed on the injected sleep, unless the
+    /// returned task is cancelled first; until then `fireTimer(timer)` can run it out.
+    private func startTimer(
+        _ timer: EngineTimer,
+        after duration: Duration,
+        expire: @escaping @MainActor () -> Void
+    ) -> Task<Void, Never> {
+        timerExpiries[timer] = expire
+        let sleep = self.sleep
+        return Task { [weak self] in
+            try? await sleep(duration)
+            guard let self, !Task.isCancelled else { return }
+            self.timerExpiries[timer] = nil
+            expire()
+        }
+    }
+
+    /// Test hook: run `timer` out now, as if its wait were over, when it is running.
+    /// Returns whether it was.
+    package func fireTimer(_ timer: EngineTimer) -> Bool {
+        guard let expire = timerExpiries.removeValue(forKey: timer) else { return false }
+        switch timer {
+        case .ringTimeout:
+            ringTimerTask?.cancel()
+            ringTimerTask = nil
+        case .joinTimeout:
+            joinDeadlineTask?.cancel()
+            joinDeadlineTask = nil
+        case .selfHealTimeout:
+            selfHealDeadlineTask?.cancel()
+            selfHealDeadlineTask = nil
+        case .signalRetry:
+            signalRetryTask?.cancel()
+            signalRetryTask = nil
+        case .reconnectBackoff:
+            break // its expiry replaces the waiting task itself
+        }
+        expire()
+        return true
     }
 
     /// A call that never connected has nothing to retry: the agent never became
@@ -1417,6 +1477,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
 
     package func providerDidActivate(_ audioSession: AudioSessionActivating) {
         Log.info(.callKit, "Audio session activated")
+        workCount += 1
         activationTask = Task { [weak self] in await self?.activate(audioSession) }
     }
 
@@ -1655,10 +1716,8 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         }
         let delay = Self.signalRetryDelays[signalRetryCount]
         signalRetryCount += 1
-        let sleep = self.sleep
-        signalRetryTask = Task { [weak self] in
-            try? await sleep(delay)
-            guard let self, !Task.isCancelled else { return }
+        signalRetryTask = startTimer(.signalRetry, after: delay) { [weak self] in
+            guard let self else { return }
             self.signalRetryTask = nil
             guard case .connected = self.state else { return }
             self.syncHoldSignal()
@@ -1669,6 +1728,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     private func cancelSignalRetry() {
         signalRetryTask?.cancel()
         signalRetryTask = nil
+        timerExpiries[.signalRetry] = nil
         signalRetryCount = 0
     }
 
@@ -1681,6 +1741,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         delivered: (@MainActor (CallSignalDelivery) -> Void)? = nil
     ) {
         guard let transport else { return }
+        workCount += 1
         let previous = signalTask
         signalTask = Task { [weak self] in
             await previous?.value
@@ -1719,6 +1780,33 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     /// Test hook: await every call-control signal sent so far.
     package func awaitPendingSignals() async {
         await signalTask?.value
+    }
+
+    /// Start `operation` in a task of its own and keep it until it is done, so
+    /// `awaitPendingWork()` can wait for it.
+    private func startDetachedWork(_ operation: @escaping @MainActor () async -> Void) {
+        let id = UUID()
+        workCount += 1
+        detachedWork[id] = Task { [weak self] in
+            await operation()
+            self?.detachedWork[id] = nil
+        }
+    }
+
+    /// Test hook: await the work the engine has started by itself (the activation,
+    /// media and signal commands, route refreshes, teardowns, the connect after a
+    /// failed preparation) and whatever that work starts in turn, until none is left.
+    /// Not the reconnect attempt or the ring's preparation, nor anything waiting on
+    /// a timer.
+    package func awaitPendingWork() async {
+        var seen = -1
+        while seen != workCount {
+            seen = workCount
+            await activationTask?.value
+            await mediaTask?.value
+            await signalTask?.value
+            for task in Array(detachedWork.values) { await task.value }
+        }
     }
 
     /// The reset already ended every call in CallKit, so nothing is reported back
@@ -1860,7 +1948,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     /// output-port override is lost (and the default would count as applied).
     private func scheduleAudioDeviceUpdate() {
         guard let transport, isAudioActivated else { return }
-        Task { [weak self] in
+        startDetachedWork { [weak self] in
             await self?.refreshAudioDevices(of: transport)
             await self?.applyHandsFreeDefaultIfNeeded(on: transport)
         }
@@ -1933,6 +2021,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     @discardableResult
     private func enqueueMedia(_ command: @escaping @MainActor (CallTransport) async -> Void) -> Task<Void, Never>? {
         guard let transport else { return nil }
+        workCount += 1
         let previous = mediaTask
         let task = Task { [weak self] in
             await previous?.value
@@ -1996,6 +2085,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         joiningAttemptID = nil
         reconnectTask?.cancel()
         reconnectTask = nil
+        timerExpiries[.reconnectBackoff] = nil
         cancelSelfHealDeadline()
         cancelJoinDeadline()
         eventTask?.cancel()
@@ -2014,7 +2104,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         activeCallID = nil
         let outgoing = transport
         transport = nil
-        Task {
+        startDetachedWork {
             await outgoing?.detachAudioSession()
             await outgoing?.disconnect()
         }

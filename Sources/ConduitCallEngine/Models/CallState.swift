@@ -59,6 +59,12 @@ extension CallState {
         }
     }
 
+    /// Whether the call is `.connected(since:)`: false while it is reconnecting.
+    public var isConnected: Bool {
+        if case .connected = self { return true }
+        return false
+    }
+
     /// Whether the call has reached a terminal state.
     public var isTerminal: Bool {
         switch self {

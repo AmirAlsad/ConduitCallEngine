@@ -191,9 +191,74 @@ public final class SimulatedCallSystem {
         return true
     }
 
-    /// Wait for the reconnect attempt in flight, if any.
+    /// Wait for the reconnect attempt in flight, if any: the target's `connect` and
+    /// the transport's `connect(_:)`, and its backoff unless the attempt is still
+    /// waiting it out (run that out with `fireTimer(.reconnectBackoff)` first, or
+    /// give `CallEngine.simulated` a `sleep` that returns at once).
     public func awaitPendingReconnect() async {
         await engine?.awaitPendingReconnect()
+    }
+
+    /// Wait until the engine has finished the work it started by itself, and the
+    /// work that work started: CallKit's audio activation, every attach, detach and
+    /// mic command, every call-control signal, route refreshes and the hands-free
+    /// default, a call's transport teardown (`detachAudioSession()` and
+    /// `disconnect()`), a ring transport's disconnect, and the unprepared connect
+    /// after a failed preparation. Call it after any action whose effects reach the
+    /// transport on a later main-actor turn: `endCallFromSystem(_:)`,
+    /// `setMutedFromSystem(_:muted:)`, `deactivateAudioSession()`, the interruption
+    /// methods, `resetProvider()`, `CallEngine.setOnHold(_:)`, `fireTimer(_:)`,
+    /// `deliverTransportEvent(_:)`.
+    ///
+    /// It does not wait for the reconnect attempt (`awaitPendingReconnect()`), the
+    /// ring's preparation (`awaitRingPreparation()`), anything waiting on a timer
+    /// (`fireTimer(_:)`), or events emitted with `FakeTransport.emit(_:)`. A
+    /// `connect` or attach the test holds open (`FakeTransport.suspendConnect`,
+    /// `suspendAttach`) keeps it waiting until released.
+    public func awaitPendingWork() async {
+        await engine?.awaitPendingWork()
+    }
+
+    // MARK: - Timers
+
+    /// The engine's timers. Each waits on the `sleep` given to `CallEngine.simulated`,
+    /// real time by default, so a test can leave them running and end the one it
+    /// wants with `fireTimer(_:)`.
+    ///
+    /// Open: later versions may add cases.
+    public enum EngineTimer: CaseIterable, Sendable {
+        /// The ring timeout: `CallEngineConfiguration.ringTimeout`, or the push's
+        /// shorter `ring_timeout`.
+        case ringTimeout
+        /// `CallEngineConfiguration.joinTimeout`: the wait for the agent once a
+        /// transport's `connect(_:)` has returned, on a call's first connect, a
+        /// reconnect attempt, or a ring's join.
+        case joinTimeout
+        /// The 30 seconds a transport that reported `.reconnecting` is given before
+        /// the engine reconnects by itself.
+        case transportHealTimeout
+        /// The backoff before the next reconnect attempt.
+        case reconnectBackoff
+        /// The wait before the engine sends the call's state again after a signal
+        /// did not leave the device (`CallSignalDelivery.failed`).
+        case signalRetry
+    }
+
+    /// Run `timer` out now, as if its wait were over, if it is running: the engine
+    /// does exactly what it does when that wait ends, at this moment. Returns whether
+    /// the timer was running. Its effects that reach the transport come on later
+    /// main-actor turns; wait for them with `awaitPendingWork()`, or, for
+    /// `.reconnectBackoff`, `awaitPendingReconnect()`.
+    @discardableResult
+    public func fireTimer(_ timer: EngineTimer) -> Bool {
+        guard let engine else { return false }
+        switch timer {
+        case .ringTimeout: return engine.fireTimer(.ringTimeout)
+        case .joinTimeout: return engine.fireTimer(.joinTimeout)
+        case .transportHealTimeout: return engine.fireTimer(.selfHealTimeout)
+        case .reconnectBackoff: return engine.fireTimer(.reconnectBackoff)
+        case .signalRetry: return engine.fireTimer(.signalRetry)
+        }
     }
 
     /// Wait until the ringing call's preparation (pre-connect, `RingPreparation`) has

@@ -49,7 +49,7 @@ package final class FakeCallProvider: CallProviding {
     /// Receives a label for each call into the provider, so a test can assert the
     /// order of provider calls against other events in one log.
     package var onEvent: ((String) -> Void)?
-    /// The UUID handed back from the next `startOutgoingCall`.
+    /// The UUID handed back from the next `startOutgoingCall`; a new one after each.
     package var nextCallID = UUID()
 
     /// When true, `startOutgoingCall` suspends until `releaseStart()` — lets a test
@@ -74,6 +74,7 @@ package final class FakeCallProvider: CallProviding {
 
     package func startOutgoingCall(handle: CallHandle, displayName: String) async throws -> UUID {
         let id = nextCallID
+        nextCallID = UUID()
         if suspendStart {
             pendingStartCount += 1
             await withCheckedContinuation { startContinuations.append($0) }

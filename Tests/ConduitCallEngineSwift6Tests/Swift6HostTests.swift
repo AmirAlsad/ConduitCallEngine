@@ -376,10 +376,28 @@ struct Swift6HostTests {
 
         await system.answerIncomingCall()
         await system.activateAudioSession()
+        await system.awaitPendingWork()
+        #expect(engine.state.isConnected)
+        #expect(transport.sentSignals == [.answered])
         #expect(engine.activeCall?.direction == .incoming)
         #expect(host.phases == [.fetchingCredentials, .connecting, .ready, .idle])
         system.endCallFromSystem(callID)
+        await system.awaitPendingWork()
+        #expect(transport.disconnectCount == 1)
         #expect(host.records.first?.direction == .incoming)
+    }
+
+    @Test func timersRunOutWhenTheHostSays() async throws {
+        let system = SimulatedCallSystem()
+        let engine = CallEngine.simulated(system: system)
+        engine.delegate = host
+        engine.startPushRegistration()
+        host.targets[HostTargets.agentID] = HostTargets.fake
+        system.deliverPush(["target_id": HostTargets.agentID.uuidString, "call_id": UUID().uuidString]) {}
+        #expect(system.fireTimer(.ringTimeout))
+        #expect(host.records.last?.missedReason == .ringTimedOut)
+        #expect(SimulatedCallSystem.EngineTimer.allCases.allSatisfy { !system.fireTimer($0) })
+        _ = FakeTransport(reportsConnectedAfter: .seconds(1)).reportsConnectedAfter
     }
 
     @Test func aHostClockDrivesTheEngine() async throws {

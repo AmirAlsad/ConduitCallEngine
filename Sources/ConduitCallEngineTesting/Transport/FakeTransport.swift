@@ -50,10 +50,18 @@ public final class FakeTransport: CallTransport {
     private var connectContinuation: CheckedContinuation<Void, Never>?
     private var connectReleased = false
 
-    public nonisolated init() {
+    /// How long after each successful `connect(_:)` the transport reports
+    /// `.connected` by itself, in real time; nil (the default) never does. For a
+    /// simulator build, so a call gets past "connecting" with no code of the host's.
+    public nonisolated let reportsConnectedAfter: Duration?
+
+    /// A transport that reports `.connected` by itself `reportsConnectedAfter` each
+    /// successful connect, or, with nil (the default), only when told to.
+    public nonisolated init(reportsConnectedAfter: Duration? = nil) {
         let (stream, continuation) = AsyncStream.makeStream(of: TransportEvent.self)
         self.events = stream
         self.continuation = continuation
+        self.reportsConnectedAfter = reportsConnectedAfter
     }
 
     public func connect(_ connection: CallConnection) async throws {
@@ -66,6 +74,12 @@ public final class FakeTransport: CallTransport {
         }
         if Task.isCancelled { cancelledConnectCount += 1 }
         if let connectError { throw connectError }
+        if let delay = reportsConnectedAfter {
+            Task { [continuation] in
+                try? await Task.sleep(for: delay)
+                continuation.yield(.connected)
+            }
+        }
     }
 
     /// Resume a `connect(_:)` suspended by `suspendConnect` (resolves on the next call

@@ -15,12 +15,7 @@ enum ExampleAgent {
         // lands while credentials are still loading finds a transport to attach to.
         makeTransport: {
             #if targetEnvironment(simulator)
-            let transport = FakeTransport()
-            Task {
-                try? await Task.sleep(for: .seconds(1))
-                transport.emit(.connected)
-            }
-            return transport
+            return FakeTransport(reportsConnectedAfter: .seconds(1))
             #else
             return makeTransport()
             #endif
