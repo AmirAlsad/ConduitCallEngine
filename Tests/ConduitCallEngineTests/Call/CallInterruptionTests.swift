@@ -95,6 +95,103 @@ struct CallInterruptionTests {
         #expect(!h.transport.isMicEnabled)
     }
 
+    // MARK: - The user's mic controls are gated too
+
+    enum Unmute: String, CaseIterable, Sendable {
+        case inApp, fromTheSystem
+    }
+
+    private func unmute(_ h: CallEngineHarness, _ how: Unmute) async {
+        switch how {
+        case .inApp:
+            await h.engine.setMuted(true)
+            await h.engine.setMuted(false)
+        case .fromTheSystem:
+            h.engine.providerPerformSetMuted(h.callID, muted: true)
+            h.engine.providerPerformSetMuted(h.callID, muted: false)
+            let calls = h.transport.setMicEnabledCallCount
+            await waitUntil { h.transport.setMicEnabledCallCount >= calls + 2 }
+        }
+    }
+
+    @Test(arguments: Unmute.allCases)
+    func unmuteBeforeActivationKeepsTheMicClosed(how: Unmute) async throws {
+        let h = CallEngineHarness()
+        await h.placeCall()
+        h.engine.handle(.connected)
+
+        await unmute(h, how)
+
+        #expect(!h.engine.isMuted)
+        #expect(!h.transport.isMicEnabled)
+
+        await h.engine.activate(FakeAudioSession())
+        #expect(h.transport.isMicEnabled)
+    }
+
+    @Test(arguments: Unmute.allCases)
+    func unmuteDuringAnInterruptionKeepsTheMicClosed(how: Unmute) async throws {
+        let h = await connectedCall()
+        h.interruption.simulateBegan()
+        await waitUntil { !h.transport.isMicEnabled }
+
+        await unmute(h, how)
+
+        #expect(!h.engine.isMuted)
+        #expect(!h.transport.isMicEnabled)
+
+        h.interruption.simulateEnded(shouldResume: true)
+        await waitUntil { h.transport.isMicEnabled }
+        #expect(h.transport.isMicEnabled)
+    }
+
+    @Test func pushToTalkBeforeActivationKeepsTheMicClosed() async throws {
+        let h = CallEngineHarness(pushToTalk: true)
+        await h.placeCall()
+        h.engine.handle(.connected)
+
+        await h.engine.setPushToTalkActive(true)
+        #expect(!h.transport.isMicEnabled)
+
+        // Still held when CallKit activates the session: the user is talking.
+        await h.engine.activate(FakeAudioSession())
+        #expect(h.transport.isMicEnabled)
+
+        await h.engine.setPushToTalkActive(false)
+        #expect(!h.transport.isMicEnabled)
+    }
+
+    @Test func pushToTalkDuringAnInterruptionKeepsTheMicClosed() async throws {
+        let h = await connectedCall(pushToTalk: true)
+        h.interruption.simulateBegan()
+
+        await h.engine.setPushToTalkActive(true)
+        await waitUntil { h.transport.setMicEnabledCallCount > 0 && !h.transport.isMicEnabled }
+        #expect(!h.transport.isMicEnabled)
+
+        h.interruption.simulateEnded(shouldResume: true)
+        await waitUntil { h.transport.isMicEnabled }
+        #expect(h.transport.isMicEnabled) // still held
+
+        await h.engine.setPushToTalkActive(false)
+        #expect(!h.transport.isMicEnabled)
+    }
+
+    @Test func connectingDuringAnInterruptionKeepsTheMicClosed() async throws {
+        let h = CallEngineHarness()
+        await h.placeCall()
+        await h.engine.activate(FakeAudioSession()) // CallKit activated before the join
+        h.interruption.simulateBegan()
+        await waitUntil { h.transport.setMicEnabledCallCount >= 2 }
+        let calls = h.transport.setMicEnabledCallCount
+
+        h.engine.handle(.connected)
+        await waitUntil { h.transport.setMicEnabledCallCount > calls }
+
+        #expect(h.transport.setMicEnabledCallCount > calls)
+        #expect(!h.transport.isMicEnabled)
+    }
+
     @Test func endedWithoutBeganIsIgnored() async throws {
         let h = await connectedCall()
         #expect(h.transport.isMicEnabled)

@@ -93,8 +93,8 @@ A call that reaches `.ended(outcome)` is recorded with the same outcome, so a ho
 | `placeCall(_:) async` | Start an outgoing call to a target. Ignored unless the engine is idle or terminal. Returns after the first connect attempt has run, not when the call connects. |
 | `endCall() async` | End the live call. Ignored while ringing (the user declines from the system UI). |
 | `markEndedByUser()` | Set `endedByUser` synchronously, so your UI can dismiss in the same transaction as the tap, before `endCall()` runs. |
-| `setMuted(_:) async` | Mute or unmute; mirrored to CallKit. Unmuting turns the transport's mic on at once (see [section 4](#4-audio-session-ownership) for what is and is not gated). |
-| `setPushToTalkActive(_:) async` | With push-to-talk enabled in the configuration, `true` turns the transport's mic on and `false` turns it off. Does nothing when push-to-talk is disabled. |
+| `setMuted(_:) async` | Mute or unmute; mirrored to CallKit. Unmuting turns the transport's mic on once CallKit has activated the session and while no interruption is in progress (see [section 4](#4-audio-session-ownership)). |
+| `setPushToTalkActive(_:) async` | With push-to-talk enabled in the configuration, `true` holds the talk button and `false` releases it. The mic is on while the button is held, once CallKit has activated the session and while no interruption is in progress. Does nothing when push-to-talk is disabled. |
 | `selectAudioDevice(_:) async` | Route audio to one of `audioDevices`. |
 | `reset()` | Return to idle from a terminal state. |
 | `state`, `activeCall`, `isMuted`, `isBotSpeaking`, `isAudioActivated`, `isInterrupted`, `audioDevices`, `selectedAudioDeviceID`, `endedByUser` | Observable state for your UI. `activeCall` carries the target id, display name and direction of the current call. |
@@ -167,7 +167,7 @@ CallKit owns the audio session during a call. It activates the session when the 
 What the engine does:
 
 1. Before reporting a call, it sets the session category to `.playAndRecord` with mode `.voiceChat` and options for Bluetooth HFP, Bluetooth A2DP and ducking other audio. It does not activate the session.
-2. When CallKit activates the session, the engine calls `transport.attachAudioSession()` and then `transport.setMicEnabled(_:)` (on unless the user muted or push-to-talk is enabled).
+2. When CallKit activates the session, the engine calls `transport.attachAudioSession()` and then `transport.setMicEnabled(_:)` (on unless the user muted, or with push-to-talk enabled, only while the button is held).
 3. When CallKit deactivates it, the engine calls `transport.detachAudioSession()`.
 4. At teardown it calls `detachAudioSession()`, then `disconnect()`.
 
@@ -183,7 +183,7 @@ How each adapter honors this:
 - **LiveKit** runs in LiveKit's manual-audio mode: `LiveKitTransport` turns off LiveKit's automatic `AVAudioSession` configuration and keeps LiveKit's audio engine disabled until `attachAudioSession()`. Because CallKit then really owns the session, the native call screen's audio route button works on LiveKit calls. The setting is process-wide in the LiveKit SDK; if your app also uses LiveKit outside these calls, account for it.
 - **Daily** manages `AVAudioSession` itself and has no hook to defer to CallKit. `PipecatDailyTransport` joins with the mic disabled and enables it only through `setMicEnabled`, which the engine calls only after activation. Its `attachAudioSession()` and `detachAudioSession()` do nothing. One consequence is that the native call screen's route button cannot move Daily's audio (see [troubleshooting](#14-troubleshooting)); route through `engine.selectAudioDevice(_:)` from an in-app picker instead.
 
-**What is gated on activation, and what is not.** The engine waits for CallKit's activation before it turns the mic on by itself: on activation, when the transport reports `.connected` (first connect or reconnect), and when an interruption ends with `shouldResume`. The user's own mic controls are not gated. `setMuted(false)`, and unmuting from the system call UI, call `setMicEnabled(true)` on the transport straight away (unless push-to-talk is enabled), and `setPushToTalkActive(true)` does the same regardless of mute. None of these check `isAudioActivated` or `isInterrupted`, so an unmute or a push-to-talk press before CallKit has activated the session, or during an interruption, opens the transport's mic then. Muting, releasing push-to-talk (`setPushToTalkActive(false)`) and the start of an interruption only ever turn the mic off. If your UI offers mute or push-to-talk while a call is still dialing or connecting, or while `isInterrupted` is true, consider disabling those controls until `isAudioActivated` is true and `isInterrupted` is false.
+**The mic is gated on activation and interruptions.** Every path that sets the transport's mic (activation, the transport reporting `.connected`, the end of an interruption with `shouldResume`, `setMuted(_:)`, a mute from the system call UI, and `setPushToTalkActive(_:)`) turns it on only when CallKit has activated the session (`isAudioActivated`) and no interruption is in progress (`isInterrupted` is false). Beyond that the mic follows mute, or in push-to-talk mode whether the button is held (push-to-talk ignores mute). An unmute or a push-to-talk press before activation, or during an interruption, is remembered and takes effect when the session is activated or the interruption ends with `shouldResume`. Muting, releasing push-to-talk and the start of an interruption turn the mic off at once.
 
 **Hands-free default.** Once per call, after it connects and the transport's device list is available, the engine selects the loudspeaker if the transport lists no Bluetooth or wired route. A call with nothing connected therefore plays on the speaker rather than the earpiece, and a call in the car stays in the car. This is not configurable in this version; the user can change routes afterwards.
 
@@ -657,6 +657,5 @@ Fix: record only from `didFinish`; the engine already makes the end of a call id
 - **No programmatic answer.** Incoming calls are answered from the system UI only.
 - **Not exposed:** the remote audio level, user-speaking events, and PushKit token invalidation (logged only).
 - **`CallFailureReason.agentUnreachable`** exists but is never produced.
-- **The user's mic controls are not gated on audio activation or interruptions.** Unmuting (in-app or from the system UI) and pressing push-to-talk enable the transport's mic immediately, even before CallKit has activated the session or while `isInterrupted` is true. See [section 4](#4-audio-session-ownership).
 - **An engine that has started push registration is never deallocated.** It keeps itself alive so every push is reported.
 - **The delegate must be set before `startPushRegistration()`.** A push waiting at launch can be delivered as soon as the registry exists, and a push handled with no delegate fails as an unknown target.

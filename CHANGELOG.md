@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- The mic is gated on audio activation and interruptions on every path. `setMuted(false)`, an unmute from the system call UI and `setPushToTalkActive(true)` used to open the transport's mic at once, even before CallKit activated the session or during an interruption, and the mic re-apply on `.connected` ignored interruptions. They now take effect only once the session is active and no interruption is in progress, and are applied when that becomes true. A push-to-talk button still held when the session activates or an interruption ends now opens the mic. (#19)
+
 - Once `startPushRegistration()` has run, the engine keeps itself alive for the rest of the process (its PushKit registry holds it strongly). Before, a host that released the engine left PushKit's callback with nothing to report the call, and iOS terminates an app that does not report a VoIP push. (#17)
 
 - `TransportError.authenticationFailed` during a reconnect attempt (thrown by the target's `connect` or by the transport's), and an `.error(.authenticationFailed)` event while reconnecting, now fail the call at once as `.badToken`. They were retried like any other failed attempt until the budget ran out and the call failed as `.lostConnection`. (#11)

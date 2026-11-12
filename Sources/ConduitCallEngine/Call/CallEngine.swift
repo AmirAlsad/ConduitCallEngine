@@ -79,6 +79,8 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     private var firstConnectedAt: Date?
     private var reconnectAttempt = 0
     private var didApplyHandsFreeDefault = false
+    /// Whether the push-to-talk button is held (push-to-talk mode only).
+    private var isPushToTalkHeld = false
     private var eventTask: Task<Void, Never>?
     package private(set) var reconnectTask: Task<Void, Never>?
     private var activationTask: Task<Void, Never>?
@@ -771,6 +773,8 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         if let id { await callProvider.endCall(id) }
     }
 
+    /// Mute or unmute, mirrored to CallKit. Unmuting opens the mic only once CallKit
+    /// has activated the session and while nothing interrupts it.
     public func setMuted(_ muted: Bool) async {
         isMuted = muted
         // Captured first: after the await below this may be a newer call.
@@ -779,10 +783,12 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         if let id { await callProvider.setMuted(id, muted: muted) }
     }
 
-    /// Push-to-talk: open the mic only while the button is held (PTT mode only).
+    /// Push-to-talk: open the mic only while the button is held (PTT mode only),
+    /// and only once CallKit has activated the session and nothing interrupts it.
     public func setPushToTalkActive(_ active: Bool) async {
         guard isPushToTalkEnabled() else { return }
-        await transport?.setMicEnabled(active)
+        isPushToTalkHeld = active
+        await transport?.setMicEnabled(micShouldBeOn)
     }
 
     // MARK: - Audio route (driven through the transport so the SDK honors it)
@@ -842,8 +848,12 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     /// Whether a call currently has a transport whose events the engine consumes.
     package var hasTransport: Bool { transport != nil }
 
+    /// Every path that sets the mic goes through this: it opens only on a session
+    /// CallKit has activated and no other audio has taken over, then follows mute,
+    /// or in push-to-talk mode the button.
     private var micShouldBeOn: Bool {
-        !isMuted && !isPushToTalkEnabled()
+        guard isAudioActivated, !isInterrupted else { return false }
+        return isPushToTalkEnabled() ? isPushToTalkHeld : !isMuted
     }
 
     // MARK: - Terminal transitions
@@ -925,6 +935,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         audioDevices = []
         selectedAudioDeviceID = nil
         didApplyHandsFreeDefault = false
+        isPushToTalkHeld = false
         endedByUser = false
         transition(to: .idle)
     }
