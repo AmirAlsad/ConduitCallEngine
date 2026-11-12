@@ -28,7 +28,7 @@ Contents:
 - **PushKit.** Registers for VoIP pushes, reports every push as a call (iOS requires it), and passes you the VoIP token.
 - **The call state machine.** One call at a time, with the states below, and a `CallRecord` when each call finishes.
 - **Audio-session policy.** Configures the session for voice chat, lets CallKit activate it, attaches the transport only after activation, keeps the mic off until then, pauses the mic during interruptions (Siri, a phone call), and routes to the loudspeaker by default when no headset or car is connected.
-- **Reconnection.** After a mid-call network drop it retries with exponential backoff (six attempts, waiting 1, 2, 4, 8, 16 and 30 seconds) while CallKit keeps showing the call, and fails with `.lostConnection` when the budget runs out.
+- **Reconnection.** After a mid-call network drop it retries with exponential backoff (six attempts, waiting 1, 2, 4, 8, 16 and 30 seconds) while CallKit keeps showing the call, and fails with `.lostConnection` when the budget runs out. A transport that says it is healing itself is given 30 seconds before the engine treats it as dropped and starts those retries.
 - **Ring-status receipts.** When a push asks for them, it POSTs the ring's outcome to your server.
 
 It does not: show any in-app UI, store anything, know what an agent or account is, fetch credentials, deliver the VoIP token to your server, or send pushes. Those are yours.
@@ -54,7 +54,7 @@ idle -> incomingRinging -> connecting -> ...   (after the user answers)
 | `.dialing` | `placeCall` was called; CallKit is starting the call. | true | false |
 | `.connecting` | CallKit has the call; credentials are being fetched and the transport is joining. | true | false |
 | `.connected(since:)` | Transport and agent ready. `since` is the first connection time and is kept across reconnects. | true | false |
-| `.reconnecting(attempt:)` | Media dropped while CallKit still shows the call. `attempt` is the engine's retry count; `0` means the transport reported a short interruption it is healing itself (LiveKit's own reconnect, or a lost network path on Daily, see [section 11](#11-what-the-server-side-must-do)) and no retry has been spent. | true | false |
+| `.reconnecting(attempt:)` | Media dropped while CallKit still shows the call. `attempt` is the engine's retry count; `0` means the transport reported a short interruption it is healing itself (LiveKit's own reconnect, or a lost network path on Daily, see [section 11](#11-what-the-server-side-must-do)) and no retry has been spent; after 30 seconds without recovery the engine moves to `1` and reconnects itself. | true | false |
 | `.ended(CallOutcome)` | Finished. | true | true |
 | `.failed(CallFailureReason)` | Could not be established or could not recover. | true | true |
 
@@ -292,7 +292,7 @@ Here `agents` and `callTarget(inline:)` are your own: the latter builds a `CallT
 
 **In-call UI.** Present your call screen while `engine.state.isActive` is true. That excludes `.incomingRinging`, where CallKit's ring is the interface, and includes terminal states, so a failed call can stay on screen with its reason until the user closes it; call `reset()` on dismiss. When the user taps End, call `markEndedByUser()` and dismiss in the same transaction, then `await engine.endCall()`; `endedByUser` lets you tell a call your user ended in-app (dismiss at once) from a remote end or failure (show a result). It is set only by `markEndedByUser()` and `endCall()`: a call ended from the system UI, such as the lock screen, leaves it false. A ring that ends before the user takes it, including one for an unknown target, never makes the state active. Name the call from `activeCall?.displayName`.
 
-**Cues from transitions.** `didChangeStateFrom:to:` is synchronous and ordered, so it is the place for spoken or audible cues and anything else that must match the state exactly. A typical outgoing call delivers `idle -> dialing`, `dialing -> connecting`, `connecting -> connected`, then `connected -> ended(.completed)`. A drop delivers `connected -> reconnecting(attempt: 1)` and, on recovery, `reconnecting -> connected`. `reconnecting(attempt: 0)` means the transport is healing itself and the engine has spent no retry: a short interruption delivers `connected -> reconnecting(attempt: 0)` and then `reconnecting -> connected`, or, if the transport gives up, `reconnecting(attempt: 0) -> reconnecting(attempt: 1)` and the engine's own retries. Both adapters report short interruptions this way. A ring that arrives while a finished call is still terminal delivers `ended -> idle -> incomingRinging`.
+**Cues from transitions.** `didChangeStateFrom:to:` is synchronous and ordered, so it is the place for spoken or audible cues and anything else that must match the state exactly. A typical outgoing call delivers `idle -> dialing`, `dialing -> connecting`, `connecting -> connected`, then `connected -> ended(.completed)`. A drop delivers `connected -> reconnecting(attempt: 1)` and, on recovery, `reconnecting -> connected`. `reconnecting(attempt: 0)` means the transport is healing itself and the engine has spent no retry: a short interruption delivers `connected -> reconnecting(attempt: 0)` and then `reconnecting -> connected`, or, if the transport gives up or has not recovered within 30 seconds, `reconnecting(attempt: 0) -> reconnecting(attempt: 1)` and the engine's own retries. Both adapters report short interruptions this way. A ring that arrives while a finished call is still terminal delivers `ended -> idle -> incomingRinging`.
 
 **Missed calls.** The engine posts no notifications. A record with a non-nil `missedReason` is a ring the user never saw: `.busy` (another call was up) or `.filteredByFocus`. Post a local notification for it if you want the user to know. Provisional notification authorization lets you deliver these quietly without an upfront permission prompt.
 
@@ -314,7 +314,7 @@ Rules that come from the device bugs this code survived:
 
 - **`connect` must not undo an attach.** If attach can come before or during connect, track whether you are attached and have `connect` apply the current state, rather than resetting audio to "off" unconditionally. An unconditional reset after a slow credential fetch is what produced a dead mic on the first call after launch.
 - **Emit `.connected` once the agent can hear the user**, not when the network connection opens. It drives the call timer, the user's "connected" cue, and the engine's mic re-apply.
-- **Follow `.reconnecting` with `.connected` or `.disconnected`.** The engine shows reconnecting while your SDK heals itself and waits for one of the two; it has no timeout.
+- **Follow `.reconnecting` with `.connected` or `.disconnected`.** The engine shows reconnecting while your SDK heals itself and waits up to 30 seconds for one of the two. After that it treats the transport as dropped: it does not call `disconnect()`, but runs its own reconnect, calling the target's `connect` for fresh credentials and then your `connect(_:)` on the same instance, possibly while your SDK is still trying to heal. Make `connect(_:)` take over from an SDK reconnect in progress. If `.connected` arrives during the engine's attempt, the call recovers as usual.
 
 **Events.**
 
@@ -322,7 +322,7 @@ Rules that come from the device bugs this code survived:
 |---|---|
 | `.connecting` | None (already reflected). |
 | `.connected` | `connecting -> connected`, or `reconnecting -> connected`. Ignored in other states, so a duplicate is harmless. |
-| `.reconnecting` | While connected, show `reconnecting(attempt:)` without spending a retry. |
+| `.reconnecting` | While connected, show `reconnecting(attempt: 0)` without spending a retry. If neither `.connected` nor `.disconnected` follows within 30 seconds, the engine starts its own reconnect as for a drop. |
 | `.disconnected(reason: .requestedByUser)` | Ignored: the engine's own teardown caused it. |
 | `.disconnected(reason: .botLeft)` | The agent hung up: `ended(.completed)`, or `ended(.noAnswer)` if the call never connected. |
 | `.disconnected(reason: .networkDropped)` or `.unknown` | Never connected: `failed(.transportError)`. Connected or reconnecting: schedule the next reconnect attempt. |
@@ -419,7 +419,7 @@ The engine joins whatever room `connect` returns. Your server must put an agent 
 ### For any transport
 
 - **Honor the end-call signal.** A dropped connection and a hangup look the same from the server unless the client says which it is. Because the engine reconnects after drops, your agent should hold the room for a grace window when the user's media disappears. When the end-call signal arrives, tear down immediately instead. If you ignore it, every hangup keeps your agent in the room (and billing) for the full grace window, and nothing on the device will tell you.
-- **Size the grace window to the engine's backoff.** The engine waits 1, 2, 4, 8, 16 and 30 seconds before its six attempts, a little over a minute in total plus connection time. A shorter window cuts off drops the device would have recovered from.
+- **Size the grace window to the engine's backoff.** The engine waits 1, 2, 4, 8, 16 and 30 seconds before its six attempts, a little over a minute in total plus connection time. When the transport first reports that it is healing itself, the engine waits up to 30 seconds for it before that backoff starts, so the device can still be trying for about a minute and a half after its media stopped. A shorter window cuts off drops the device would have recovered from.
 - **Reconnects call your credential code again.** Each attempt re-runs the target's `connect`. Your endpoint may return the same room (the agent is still waiting there) or a fresh room with a newly dispatched agent; either works, as long as an agent is present when the device arrives. Inline credentials from a push are reused if your `connect` closure keeps returning them, so they must stay valid for the length of the call.
 - **The signal is best-effort.** The engine's teardown calls `disconnect()` for every ending (user hangup, agent hangup, failure), and the adapters send the signal only while the connection is up. A connection that died never sends it, which is exactly when the grace window should apply.
 

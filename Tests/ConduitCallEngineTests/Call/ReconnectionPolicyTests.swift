@@ -34,4 +34,9 @@ struct ReconnectionPolicyTests {
         #expect(policy.canAttempt(6))
         #expect(!policy.canAttempt(7))
     }
+
+    @Test func selfHealIsWaitedForAsLongAsTheLongestBackoff() {
+        #expect(policy.selfHealTimeout == .seconds(30))
+        #expect(policy.selfHealTimeout == policy.delay(forAttempt: 7))
+    }
 }

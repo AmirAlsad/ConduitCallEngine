@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- The engine no longer waits indefinitely for a transport that reports `.reconnecting`. If neither `.connected` nor `.disconnected` follows within 30 seconds (the reconnection policy's backoff cap), the engine treats the transport as dropped and runs its own reconnect (`reconnecting(attempt: 0) -> reconnecting(attempt: 1)`, fresh credentials from the target's `connect`, the same transport instance, no `disconnect()`), which fails the call as `.lostConnection` if the outage outlasts the retry budget. On a device a stalled self-heal showed as a long silent gap before the call finally failed.
+
 - The mic is gated on audio activation and interruptions on every path. `setMuted(false)`, an unmute from the system call UI and `setPushToTalkActive(true)` used to open the transport's mic at once, even before CallKit activated the session or during an interruption, and the mic re-apply on `.connected` ignored interruptions. They now take effect only once the session is active and no interruption is in progress, and are applied when that becomes true. A push-to-talk button still held when the session activates or an interruption ends now opens the mic. (#19)
 
 - Once `startPushRegistration()` has run, the engine keeps itself alive for the rest of the process (its PushKit registry holds it strongly). Before, a host that released the engine left PushKit's callback with nothing to report the call, and iOS terminates an app that does not report a VoIP push. (#17)

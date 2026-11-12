@@ -22,6 +22,32 @@ final class MutableClock {
     func advance(_ seconds: TimeInterval) { current = current.addingTimeInterval(seconds) }
 }
 
+/// A sleep the test ends by hand, recording how long each sleeper asked for.
+@MainActor
+final class ManualSleeper {
+    private(set) var requested: [Duration] = []
+    private var pending: [CheckedContinuation<Void, Never>] = []
+
+    var pendingCount: Int { pending.count }
+
+    func sleep(_ duration: Duration) async {
+        requested.append(duration)
+        await withCheckedContinuation { pending.append($0) }
+    }
+
+    /// End the oldest pending sleep.
+    func wakeFirst() {
+        guard !pending.isEmpty else { return }
+        pending.removeFirst().resume()
+    }
+
+    func wakeAll() {
+        let waiting = pending
+        pending = []
+        waiting.forEach { $0.resume() }
+    }
+}
+
 /// Hands each call its own FakeTransport, so the engine's transport-identity
 /// guards are exercised. `current` is the live call's transport — or, before the
 /// next call, the one it will get — so a test can configure it ahead of time.
@@ -179,7 +205,8 @@ final class CallEngineHarness {
     init(
         policy: ReconnectionPolicy = .default,
         pushToTalk: Bool = false,
-        now: @escaping () -> Date = { Date() }
+        now: @escaping () -> Date = { Date() },
+        sleep: @escaping (Duration) async throws -> Void = { _ in }
     ) {
         provider.nextCallID = callID
         target = FakeTarget(transports: transports)
@@ -198,7 +225,7 @@ final class CallEngineHarness {
             pushRegistry: pushRegistry,
             policy: policy,
             now: now,
-            sleep: { _ in }
+            sleep: sleep
         )
         engine.delegate = delegate
     }

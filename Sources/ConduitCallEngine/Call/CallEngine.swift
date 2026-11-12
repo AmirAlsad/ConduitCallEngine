@@ -83,6 +83,8 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     private var isPushToTalkHeld = false
     private var eventTask: Task<Void, Never>?
     package private(set) var reconnectTask: Task<Void, Never>?
+    /// Ends the wait for a transport that is healing itself; see `enterReconnectingDisplay`.
+    private var selfHealDeadlineTask: Task<Void, Never>?
     private var activationTask: Task<Void, Never>?
     /// Identifies the outgoing call a suspended `placeCall` belongs to, so its
     /// continuation can tell it has been superseded (reset, or a newer call).
@@ -505,6 +507,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
             reconnectAttempt = 0
             reconnectTask?.cancel()
             reconnectTask = nil
+            cancelSelfHealDeadline()
             transition(to: .connected(since: firstConnectedAt ?? now()))
             applyMicIfActivated()
             Log.info(.call, "Reconnected")
@@ -564,12 +567,36 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     /// Display-only response to a transport that is self-healing. It does NOT count
     /// against the reconnection budget or schedule our own retry — the budget is
     /// owned solely by `scheduleReconnect` (driven by `.disconnected`). The transport
-    /// must follow a `.reconnecting` with a `.connected` or `.disconnected`.
+    /// must follow a `.reconnecting` with a `.connected` or `.disconnected`; if it
+    /// says neither within `policy.selfHealTimeout`, the engine treats it as dropped
+    /// and reconnects itself, with fresh credentials from the target's `connect`.
     private func enterReconnectingDisplay() {
         transition(to: .reconnecting(attempt: reconnectAttempt))
+        startSelfHealDeadline()
+    }
+
+    private func startSelfHealDeadline() {
+        cancelSelfHealDeadline()
+        guard let transport else { return }
+        let timeout = policy.selfHealTimeout
+        selfHealDeadlineTask = Task { [weak self] in
+            try? await self?.sleep(timeout)
+            guard let self, !Task.isCancelled, self.transport === transport,
+                  self.state == .reconnecting(attempt: 0), self.reconnectTask == nil
+            else { return }
+            Log.warning(.call, "Transport still healing after \(timeout); reconnecting")
+            self.selfHealDeadlineTask = nil
+            self.scheduleReconnect()
+        }
+    }
+
+    private func cancelSelfHealDeadline() {
+        selfHealDeadlineTask?.cancel()
+        selfHealDeadlineTask = nil
     }
 
     private func scheduleReconnect() {
+        cancelSelfHealDeadline()
         let next = reconnectAttempt + 1
         guard policy.canAttempt(next) else {
             Log.warning(.call, "Reconnection budget exhausted after \(reconnectAttempt) attempts")
@@ -906,6 +933,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         isAudioActivated = false
         reconnectTask?.cancel()
         reconnectTask = nil
+        cancelSelfHealDeadline()
         eventTask?.cancel()
         eventTask = nil
         activeCallID = nil

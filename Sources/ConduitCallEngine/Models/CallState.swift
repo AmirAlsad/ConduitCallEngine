@@ -30,7 +30,8 @@ public enum CallState: Equatable, Sendable {
     case connected(since: Date)
     /// The media connection dropped while the call is still up. `attempt` (from 1)
     /// counts the engine's own retries, with backoff between them; 0 means the
-    /// transport reported it is healing itself and the engine is waiting for it.
+    /// transport reported it is healing itself and the engine is waiting for it,
+    /// for up to 30 seconds before it reconnects on its own (attempt 1).
     case reconnecting(attempt: Int)
     /// The call ended; the outcome says how (completed, declined, canceled, ...).
     case ended(CallOutcome)
