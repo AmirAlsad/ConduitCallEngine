@@ -53,7 +53,9 @@ public struct ConnectRequest: Equatable, Sendable {
     /// What the credentials are for.
     public let purpose: Purpose
     /// The ring's `call_id` (the CallKit call id the push carried) on every request
-    /// for an incoming call, reconnects included; nil for an outgoing call.
+    /// for an incoming call, reconnects included; nil for an outgoing call. When you
+    /// send it to your server, write it as `uuidString.lowercased()`, the form the
+    /// engine's ring-status receipts use (`uuidString` is uppercase).
     public let callID: UUID?
 
     public init(purpose: Purpose, callID: UUID?) {

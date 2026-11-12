@@ -188,10 +188,10 @@ POST <status_url>
 Content-Type: application/json
 Authorization: Bearer <bearer>          (omitted when the app supplies none)
 
-{"call_id": "0B9F3C1E-7A2D-4E58-B6C4-91D2E0F3A7B5", "status": "answered"}
+{"call_id": "0b9f3c1e-7a2d-4e58-b6c4-91d2e0f3a7b5", "status": "answered"}
 ```
 
-> **Compare `call_id` case-insensitively.** A UUID's hex digits can be written in either case, and the `call_id` in a receipt need not be spelled the way your push spelled it. A server that compared ids as plain strings has matched no receipt at all. Parse both as UUIDs, or lowercase both, before comparing.
+> **Compare `call_id` case-insensitively.** A UUID's hex digits can be written in either case, and the `call_id` in a receipt need not be spelled the way your push spelled it. A server that compared ids as plain strings has matched no receipt at all. Parse both as UUIDs, or lowercase both, before comparing. This engine sends the lowercase RFC 4122 form (`0b9f3c1e-7a2d-4e58-b6c4-91d2e0f3a7b5`); engines before 0.2 sent uppercase.
 
 | `status` | Sent when |
 |---|---|
@@ -206,7 +206,7 @@ Every status is sent only for a target the app knows; see "No receipt" below. **
 
 Details:
 
-- **`call_id`** is the call's UUID, which may differ in case from what you sent: compare case-insensitively (above). If the push had no valid `call_id`, it is the id the engine minted.
+- **`call_id`** is the call's UUID in lowercase canonical form, which may differ in case from what you sent: compare case-insensitively (above). If the push had no valid `call_id`, it is the id the engine minted.
 - **The bearer** comes from the app (`CallEngineDelegate.callEngine(_:ringStatusBearerForTarget:)`), asked for at send time. What it is, and how your server checks it, is between you and the app. When the app returns nil or an empty string, the request has no `Authorization` header.
 - **Fire-and-forget.** One attempt, no retry, the response is ignored, and a failure never affects the call. Return any 2xx. Treat a missing receipt as "unknown", not as "not answered".
 - **No receipt** is sent for a malformed push, a push for a target the app does not know (whatever happens to the ring: busy, Focus-filtered, declined, timed out or cancelled included), a ring CallKit refused for a reason other than Focus (unless the device was busy, which still sends `busy`), a ring torn down by a CallKit provider reset, a cancel push itself, or a ring that arrived after its cancel. After `answered`, nothing further is sent: the end of the conversation is not a ring status.

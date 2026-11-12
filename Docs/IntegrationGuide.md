@@ -252,7 +252,7 @@ What your code must do to keep the guarantee:
 
 The full contract for server authors is in [PushContract.md](PushContract.md). In summary:
 
-- `target_id` (or its alias `agent_id`) identifies the target; `call_id` becomes the CallKit call id. Both are UUID strings.
+- `target_id` (or its alias `agent_id`) identifies the target; `call_id` becomes the CallKit call id. Both are UUID strings, in either case. Where the engine writes a call id as text, in ring-status receipts, it uses lowercase; when your code sends `IncomingCall.callID` or `ConnectRequest.callID` to your server, write `uuidString.lowercased()` to match (`uuidString` is uppercase).
 - `display_name` and `handle` decide how the ring looks before your app is consulted. Without them it rings under `CallEngineConfiguration.unknownCallerName` and `CallTarget.defaultHandle(for:)` (`<id>@calltarget.invalid`).
 - Once CallKit accepts the report, if the target your delegate returned has a different `displayName`, or a different handle (`handle`, or the default handle for its id when `handle` is nil), the engine updates the ring in place. Your target's values win.
 - `room_url` and `token` together are inline credentials. Your delegate receives them as `IncomingCall.connection`; whether to use them is your choice. The usual pattern is a target whose `connect` closure returns the inline connection when there is one and fetches credentials otherwise, as in the README.
@@ -806,7 +806,7 @@ Cause: the target keeps returning the push's token, which expired.
 Fix: issue inline tokens that outlive the call, or have `connect` fetch fresh credentials when retrying.
 
 **Ring-status receipts never arrive.**
-Cause: `status_url` is plain HTTP (blocked by App Transport Security), the bearer is missing or wrong, or the server compares `call_id` case-sensitively (the engine sends uppercase).
+Cause: `status_url` is plain HTTP (blocked by App Transport Security), the bearer is missing or wrong, or the server compares `call_id` case-sensitively (the engine sends lowercase, engines before 0.2 uppercase, and your push may have used either).
 Fix: use HTTPS, check `ringStatusBearerForTarget`, compare ids case-insensitively. Receipts are never retried.
 
 **Two history rows per call.**

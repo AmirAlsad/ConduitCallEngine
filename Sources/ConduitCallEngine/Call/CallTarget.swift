@@ -75,6 +75,8 @@ public struct ActiveCall: Equatable, Sendable {
 
 /// An incoming ring as the push described it, handed to the host to resolve.
 public struct IncomingCall: Equatable, Sendable {
+    /// The ring's `call_id`. Where the engine writes a call id as text (the
+    /// ring-status receipts), it uses the lowercase form, `uuidString.lowercased()`.
     public let callID: UUID
     public let targetID: UUID
     public let displayName: String

@@ -36,18 +36,7 @@ final class RingStatusReporter: RingStatusReporting {
     }
 
     func report(_ status: RingStatus, callID: UUID, endpoint: URL, apiKey: String) {
-        var request = URLRequest(url: endpoint)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        if !apiKey.isEmpty {
-            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        }
-        let body: [String: String] = [
-            "call_id": callID.uuidString,
-            "status": status.rawValue,
-        ]
-        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
-
+        let request = Self.request(status, callID: callID, endpoint: endpoint, apiKey: apiKey)
         let session = session
         Task {
             do {
@@ -57,5 +46,23 @@ final class RingStatusReporter: RingStatusReporting {
                 Log.warning(.network, "Ring-status report failed: \(error)")
             }
         }
+    }
+
+    /// The receipt's request: a JSON POST of `call_id` and `status`, keys sorted. The
+    /// id is in lowercase RFC 4122 form, as most servers write theirs (servers must
+    /// still compare case-insensitively).
+    static func request(_ status: RingStatus, callID: UUID, endpoint: URL, apiKey: String) -> URLRequest {
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if !apiKey.isEmpty {
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        }
+        let body: [String: String] = [
+            "call_id": callID.uuidString.lowercased(),
+            "status": status.rawValue,
+        ]
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
+        return request
     }
 }
