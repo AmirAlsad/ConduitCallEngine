@@ -102,6 +102,8 @@ Authorization: Bearer <bearer>          (omitted when the app supplies none)
 | `answered` | The user answers. Sent at the moment of answering, before the transport connects, whether or not the call then connects. |
 | `declined` | The user declines the ringing call. |
 | `busy` | The push arrived while another call was in progress, so it was reported and ended at once. |
+
+Every status is sent only for a target the app knows; see "No receipt" below.
 | `suppressed_by_focus` | Focus or Do Not Disturb filtered the ring; the phone never rang. |
 
 Details:
@@ -109,7 +111,7 @@ Details:
 - **`call_id`** is the call's UUID in uppercase canonical form (`UUID.uuidString`), which may differ in case from what you sent. Compare case-insensitively. If the push had no valid `call_id`, it is the id the engine minted.
 - **The bearer** comes from the app (`CallEngineDelegate.callEngine(_:ringStatusBearerForTarget:)`), asked for at send time. What it is, and how your server checks it, is between you and the app. When the app returns nil or an empty string, the request has no `Authorization` header.
 - **Fire-and-forget.** One attempt, no retry, the response is ignored, and a failure never affects the call. Return any 2xx. Treat a missing receipt as "unknown", not as "not answered".
-- **No receipt** is sent for a malformed push, a push for a target the app does not know, a ring CallKit refused for a reason other than Focus (unless the device was busy, which still sends `busy`), or a ring torn down by a CallKit provider reset. After `answered`, nothing further is sent: the end of the conversation is not a ring status.
+- **No receipt** is sent for a malformed push, a push for a target the app does not know (whatever happens to the ring: busy, Focus-filtered or declined included), a ring CallKit refused for a reason other than Focus (unless the device was busy, which still sends `busy`), or a ring torn down by a CallKit provider reset. After `answered`, nothing further is sent: the end of the conversation is not a ring status.
 - **Plain HTTP** is subject to App Transport Security. Use HTTPS unless the app has an ATS exception.
 - **Privacy.** Receipts tell your server whether the user is on another call or has Focus on. Do not forward them anywhere the user did not agree to.
 

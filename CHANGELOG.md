@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Ring-status receipts are sent only for targets the delegate resolves. A push for an unknown target that was busy, filtered by Focus, or declined before CallKit accepted it used to POST to the push-supplied `status_url` with no bearer. For a push during another call, `targetForIncomingCall` is now asked whether or not CallKit accepted the report. (#8)
+
 - A push carrying the `call_id` of the call that is ringing or in progress is treated as a duplicate delivery: it is reported to CallKit, as PushKit requires, and otherwise ignored. It used to take the busy path, producing a missed-call record and a `busy` receipt for a call that was ringing or live. (#7)
 
 - CallKit answer and mute actions now apply only to the call they name. An answer for a busy ring that CallKit still showed answered the ringing call, and a mute for another call's id muted the live one. (#6)

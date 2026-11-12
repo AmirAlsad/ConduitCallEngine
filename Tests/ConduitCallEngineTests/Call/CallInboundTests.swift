@@ -304,6 +304,52 @@ struct CallInboundTests {
         #expect(h.ringStatusReporter.reports.first?.callID == callID)
     }
 
+    enum UnknownTargetRing: String, CaseIterable, Sendable {
+        case filteredByFocus, busy, busyReportFailed, declinedBeforeTheVerdict
+    }
+
+    /// The `status_url` comes from the push. For a target the host does not know,
+    /// the engine has no reason to trust it and no bearer for it, so it sends nothing.
+    @Test(arguments: UnknownTargetRing.allCases)
+    func ringForAnUnknownTargetSendsNoReceipt(ring: UnknownTargetRing) async throws {
+        let h = CallEngineHarness()
+        let unknownID = UUID()
+        let callID = UUID()
+        switch ring {
+        case .filteredByFocus:
+            h.provider.reportIncomingError = .filteredByFocus
+        case .busy:
+            await h.placeCall()
+        case .busyReportFailed:
+            await h.placeCall()
+            h.provider.reportIncomingError = .failed("refused")
+        case .declinedBeforeTheVerdict:
+            h.provider.completesIncomingReportsLater = true
+        }
+
+        h.ring(targetID: unknownID, callID: callID, statusURL: statusEndpoint)
+        if ring == .declinedBeforeTheVerdict {
+            h.engine.providerPerformEndCall(callID)
+            h.provider.completeIncomingReports()
+        }
+
+        #expect(h.ringStatusReporter.reports.isEmpty)
+        #expect(h.delegate.bearerRequests.isEmpty)
+        #expect(h.delegate.records.map(\.targetID).contains(unknownID)) // still recorded
+    }
+
+    @Test func busyRingForAKnownTargetWhoseReportFailedStillSendsBusy() async throws {
+        let h = CallEngineHarness()
+        await h.placeCall()
+        h.provider.reportIncomingError = .failed("refused")
+
+        h.ring(statusURL: statusEndpoint)
+
+        #expect(h.ringStatusReporter.reports.map(\.status) == [.busy])
+        #expect(h.delegate.resolved.map(\.targetID) == [h.target.id])
+        #expect(h.provider.updatedCalls.isEmpty) // not accepted, so nothing to correct
+    }
+
     @Test func completedCallReportsOnlyTheAnswerReceipt() async throws {
         // The receipt describes the RING's outcome; a normal hang-up after a
         // connected call must not produce a second (declined) report.

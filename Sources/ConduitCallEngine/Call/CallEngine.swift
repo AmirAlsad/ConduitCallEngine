@@ -294,7 +294,9 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         )
         callDirection = .incoming
         callStartedAt = now()
-        ringStatusURL = payload.statusURL
+        // Receipts go only to a server ringing a target the host knows: for any
+        // other, the push-supplied URL is untrusted and has no bearer.
+        ringStatusURL = target == nil ? nil : payload.statusURL
         transition(to: .incomingRinging)
         interruptionObserver.startObserving()
         return target
@@ -350,12 +352,10 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     }
 
     private func completeBusyRing(_ incoming: IncomingCall, payload: IncomingCallPayload, result: IncomingCallReportError?) {
+        let target = delegate?.callEngine(self, targetForIncomingCall: incoming)
         if result == nil {
-            if let target = delegate?.callEngine(self, targetForIncomingCall: incoming) {
-                correctRingIfNeeded(incoming, to: target)
-            }
-            // Only a call CallKit created can be ended. A failed report created
-            // nothing, and its id may even be the live call's (a duplicate push).
+            if let target { correctRingIfNeeded(incoming, to: target) }
+            // Only a call CallKit created can be ended; a failed report created nothing.
             callProvider.reportCallEnded(incoming.callID, reason: .unanswered)
         }
         delegate?.callEngine(self, didFinish: CallRecord(
@@ -366,7 +366,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
             outcome: .noAnswer,
             missedReason: .busy
         ))
-        if let url = payload.statusURL {
+        if target != nil, let url = payload.statusURL {
             reportRingStatus(.busy, callID: incoming.callID, endpoint: url, targetID: incoming.targetID)
         }
     }

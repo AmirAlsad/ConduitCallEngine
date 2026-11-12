@@ -107,10 +107,10 @@ Every callback is synchronous and on the main actor, made in the order the engin
 
 | Callback | When | Default |
 |---|---|---|
-| `callEngine(_:targetForIncomingCall:)` | Once per push (not for a duplicate of the call in progress), after the CallKit report is issued: inside the push handling for a ring, or after CallKit accepts the report for a push that arrives during another call. Return the `CallTarget`, or nil for an unknown target (the ring is then ended and recorded as failed, and the engine returns to idle). | nil, so every ring is ended. Implement it if you take incoming calls. |
+| `callEngine(_:targetForIncomingCall:)` | Once per push (not for a duplicate of the call in progress), after the CallKit report is issued: inside the push handling for a ring, or once CallKit has answered the report for a push that arrives during another call. Return the `CallTarget`, or nil for an unknown target (the ring is then ended and recorded as failed, and the engine returns to idle). | nil, so every ring is ended. Implement it if you take incoming calls. |
 | `callEngine(_:didChangeStateFrom:to:)` | On every real state change, after the engine has set the transition's other fields, so `activeCall` and the rest are consistent when you read them. Not called when the state is set to the value it already has. | nothing |
 | `callEngine(_:didFinish:)` | Once per call, when it reaches its end: ended, failed, busy ring, Focus-filtered ring, a ring that could not proceed, a CallKit provider reset. Not for a malformed push. | nothing |
-| `callEngine(_:ringStatusBearerForTarget:)` | When a receipt is about to be sent, only for pushes that carried `status_url`. Return the bearer for the `Authorization` header, or nil for none. | nil |
+| `callEngine(_:ringStatusBearerForTarget:)` | When a receipt is about to be sent, only for pushes that carried `status_url` and whose target your delegate resolved. Return the bearer for the `Authorization` header, or nil for none. | nil |
 | `callEngine(_:didUpdateVoIPPushToken:)` | When PushKit issues or rotates the VoIP token. | nothing |
 
 ## 2. Choosing products
@@ -204,7 +204,7 @@ The engine guarantees the report on every path. It reports first, synchronously 
 |---|---|
 | Normal | Reports, asks your delegate for the target, rings. |
 | Malformed (no valid `target_id` or `agent_id`) | Reports under a fresh id and the unknown-caller name, then ends it as failed. No state change, no delegate call, no record. |
-| During another call (ringing, dialing, connecting, connected, reconnecting) | Reports, then ends it at once as unanswered; the live call is untouched. Your delegate gets a `CallRecord` with `missedReason: .busy`, and a `busy` receipt is sent if requested. |
+| During another call (ringing, dialing, connecting, connected, reconnecting) | Reports, then ends it at once as unanswered; the live call is untouched. Your delegate gets a `CallRecord` with `missedReason: .busy`, and a `busy` receipt is sent if requested and your delegate resolves the target. |
 | Carrying the `call_id` of the call in progress (a duplicate delivery) | Reports it and does nothing else: no end, no record, no receipt, no delegate call. |
 | After a finished call that is still in a terminal state | Resets to idle and rings normally. |
 | For a target your delegate does not resolve | Reports, then, once CallKit accepts the report, ends it as failed, records it (`outcome: .failed`, `failureReason: .unknown`) and returns to idle. |
@@ -226,7 +226,7 @@ The full contract for server authors is in [PushContract.md](PushContract.md). I
 - `display_name` and `handle` decide how the ring looks before your app is consulted. Without them it rings under `CallEngineConfiguration.unknownCallerName` and `CallTarget.defaultHandle(for:)` (`<id>@calltarget.invalid`).
 - Once CallKit accepts the report, if the target your delegate returned has a different `displayName`, or a different handle (`handle`, or the default handle for its id when `handle` is nil), the engine updates the ring in place. Your target's values win.
 - `room_url` and `token` together are inline credentials. Your delegate receives them as `IncomingCall.connection`; whether to use them is your choice. The usual pattern is a target whose `connect` closure returns the inline connection when there is one and fetches credentials otherwise, as in the README.
-- `status_url` asks for ring-status receipts; the bearer comes from `ringStatusBearerForTarget`.
+- `status_url` asks for ring-status receipts; the bearer comes from `ringStatusBearerForTarget`. Receipts are sent only for targets your delegate resolves, so a push for a target you do not know never makes the engine contact the URL it carries.
 
 `IncomingCall` carries `callID`, `targetID`, the `displayName` and `handle` the ring was reported under (after fallbacks), and `connection`.
 

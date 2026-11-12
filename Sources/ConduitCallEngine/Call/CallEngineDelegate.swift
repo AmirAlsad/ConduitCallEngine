@@ -15,13 +15,14 @@ import Foundation
 public protocol CallEngineDelegate: AnyObject {
     /// Once per push (not for a duplicate of the call in progress), after its
     /// CallKit report is issued: synchronously for a ring
-    /// (CallKit may not have accepted the report yet), or once CallKit accepts it
-    /// for a push that arrives during another call. nil means the target is
+    /// (CallKit may not have accepted the report yet), or once CallKit has answered
+    /// the report for a push that arrives during another call. nil means the target is
     /// unknown: once CallKit accepts its report the ring is ended, recorded as
     /// failed with `.unknown`, and the engine returns to idle (an answer before that
     /// does nothing); a ring Focus filtered is still recorded as missed. A
-    /// push during a live call is ended as unanswered either way; nil only leaves
-    /// its caller name and handle uncorrected.
+    /// push during a live call is ended as unanswered either way; nil leaves its
+    /// caller name and handle uncorrected. No ring-status receipt is ever sent for
+    /// a ring whose target resolves to nil.
     func callEngine(_ engine: CallEngine, targetForIncomingCall call: IncomingCall) -> CallTarget?
     /// Only on real assignments, after the engine's own field batch for that transition.
     func callEngine(_ engine: CallEngine, didChangeStateFrom old: CallState, to new: CallState)
