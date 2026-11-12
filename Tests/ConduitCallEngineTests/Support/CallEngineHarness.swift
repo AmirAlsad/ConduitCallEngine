@@ -259,13 +259,15 @@ final class CallEngineHarness {
     /// How many times PushKit's completion has run, across every ring.
     private(set) var pushCompletions = 0
 
-    /// `ringTimeout` defaults to none, unlike the engine's, because the default
-    /// `sleep` returns at once and would time every ring out on the next yield.
-    /// Ring-timeout tests pass a timeout and a `ManualSleeper`.
+    /// `ringTimeout` and `joinTimeout` default to none, unlike the engine's,
+    /// because the default `sleep` returns at once and would end every ring, and
+    /// every attempt waiting for the agent, on the next yield. Tests of those
+    /// timeouts pass one and a `ManualSleeper`.
     init(
         policy: ReconnectionPolicy = .default,
         pushToTalk: Bool = false,
         ringTimeout: Duration? = nil,
+        joinTimeout: Duration? = nil,
         supportsHolding: Bool = true,
         now: @escaping () -> Date = { Date() },
         sleep: @escaping (Duration) async throws -> Void = { _ in }
@@ -284,7 +286,8 @@ final class CallEngineHarness {
                 unknownCallerName: "Agent",
                 isPushToTalkEnabled: { pushToTalk },
                 ringTimeout: ringTimeout,
-                supportsHolding: supportsHolding
+                supportsHolding: supportsHolding,
+                joinTimeout: joinTimeout
             ),
             callProvider: provider,
             interruptionObserver: interruption,
