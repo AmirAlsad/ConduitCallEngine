@@ -135,4 +135,42 @@ struct LiveKitUnderEngineTests {
         ])
         #expect(!rig.sleeper.requested.contains(.seconds(2))) // no second attempt was scheduled
     }
+
+    // MARK: - A full reconnect
+
+    /// LiveKit's full reconnect reports the agent leaving as part of its cleanup, but
+    /// with the agent still listed (client-sdk-swift 2.19.0, `Room.cleanUpParticipants`),
+    /// so it is not the agent's hangup: the call recovers.
+    @Test(.timeLimit(.minutes(1)))
+    func aFullReconnectWithTheAgentStillThereKeepsTheCall() async throws {
+        let rig = LiveKitEngineRig()
+        await rig.engine.placeCall(rig.target)
+        let room = try #require(rig.room)
+        await waitUntil { rig.engine.state.isConnected }
+        #expect(rig.engine.state.isConnected)
+
+        room.fullReconnect(agentStillThere: true)
+        await waitUntil { rig.host.transitions.count >= 5 }
+
+        #expect(rig.engine.state.isConnected)
+        let lastTwo = Array(rig.host.transitions.suffix(2))
+        #expect(lastTwo.first == .reconnecting(attempt: 0))
+        #expect(lastTwo.last?.isConnected == true)
+        #expect(rig.host.records.isEmpty)
+    }
+
+    /// The agent left while the device was offline: the rejoin finds nobody, and the
+    /// call ends as the agent's hangup (#21).
+    @Test(.timeLimit(.minutes(1)))
+    func aFullReconnectIntoAnEmptyRoomEndsTheCall() async throws {
+        let rig = LiveKitEngineRig()
+        await rig.engine.placeCall(rig.target)
+        let room = try #require(rig.room)
+        await waitUntil { rig.engine.state.isConnected }
+
+        room.fullReconnect(agentStillThere: false)
+        await waitUntil { rig.engine.state.isTerminal }
+
+        #expect(rig.engine.state == .ended(.completed))
+    }
 }

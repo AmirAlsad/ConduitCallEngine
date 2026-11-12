@@ -15,6 +15,10 @@
 //  - Cleaning up a room with remote participants reports each of them leaving.
 //  - Participants already in the room arrive with the join response, while the
 //    room is still `.connecting`, without a participant-joined callback.
+//  - A full reconnect cleans the participants up with notifications on, and each
+//    remote's departure is reported while the remotes are still listed: `Room`
+//    empties `remoteParticipants` only after every participant's cleanup, and its
+//    delegate call, has returned (`Room.cleanUpParticipants`).
 //
 
 import Foundation
@@ -132,6 +136,18 @@ final class FakeLiveKitRoom: LiveKitRoomControlling {
         guard remotes > 0 else { return }
         remotes -= 1
         events?.remoteDidLeave(remotesRemain: remotes > 0)
+    }
+
+    /// LiveKit runs a full reconnect: the room goes `.reconnecting`, its cleanup reports
+    /// each remote leaving while they are still listed, then the rejoin brings back
+    /// the agent if it is still in the room, and the reconnect completes connected.
+    func fullReconnect(agentStillThere: Bool) {
+        phase = .reconnecting
+        events?.reconnectDidStart()
+        if remotes > 0 { events?.remoteDidLeave(remotesRemain: true) }
+        remotes = agentStillThere ? 1 : 0
+        phase = .connected
+        events?.reconnectDidComplete(roomConnected: true, remotesPresent: remotes > 0)
     }
 
     /// The connection is lost and LiveKit gives up on it.
