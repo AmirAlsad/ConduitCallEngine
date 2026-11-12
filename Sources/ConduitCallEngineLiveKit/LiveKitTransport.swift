@@ -62,10 +62,10 @@ public final class LiveKitTransport: CallTransport {
     // MARK: - CallTransport
 
     public func connect(_ connection: CallConnection) async throws {
-        // An abandoned SDK reconnect left the room to be disconnected; a connect
-        // running alongside that teardown would be torn down with it.
+        // On LiveKit before 2.18.0 an abandoned SDK reconnect can leave the room to be
+        // disconnected; a connect running alongside that teardown would be torn down with it.
         await roomEvents.roomReset?.value
-        roomEvents.gate = LiveKitConnectGate()
+        roomEvents.gate = LiveKitConnectGate(abandonedReconnectsLookComplete: RoomEventMapper.abandonedReconnectsLookComplete)
         roomEvents.wasBotSpeaking = false
         do {
             // Engine off until CallKit activates — unless activation already
@@ -176,10 +176,14 @@ private extension LiveKitEndCallSignal.RoomPhase {
 @MainActor
 private final class RoomEventMapper: NSObject, RoomDelegate {
     private nonisolated let continuation: AsyncStream<TransportEvent>.Continuation
-    var gate = LiveKitConnectGate()
+    static let abandonedReconnectsLookComplete = LiveKitConnectGate.abandonedReconnectsLookComplete(
+        sdkVersion: LiveKitSDK.version
+    )
+    var gate = LiveKitConnectGate(abandonedReconnectsLookComplete: abandonedReconnectsLookComplete)
     var wasBotSpeaking = false
     /// Disconnects a room whose reconnect the SDK abandoned while still reporting it
-    /// connected, so the engine's next connect starts from a disconnected room.
+    /// connected (LiveKit before 2.18.0), so the engine's next connect starts from a
+    /// disconnected room.
     private(set) var roomReset: Task<Void, Never>?
 
     init(continuation: AsyncStream<TransportEvent>.Continuation) {
@@ -247,7 +251,7 @@ private final class RoomEventMapper: NSObject, RoomDelegate {
             guard let event = self.gate.reconnectDidComplete(
                 roomConnected: isRoomConnected, remotesPresent: remotesPresent
             ) else { return }
-            if case .disconnected = event {
+            if self.gate.roomNeedsReset {
                 self.roomReset = Task { await room.disconnect() }
             }
             self.continuation.yield(event)
