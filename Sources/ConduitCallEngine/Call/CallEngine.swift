@@ -29,7 +29,8 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     public private(set) var isMuted = false
     public private(set) var isBotSpeaking = false
     package private(set) var remoteAudioLevel: Float = 0
-    /// Whether CallKit has activated the audio session for the live call.
+    /// Whether CallKit has activated the audio session for the call in progress.
+    /// Cleared when that call ends.
     public private(set) var isAudioActivated = false
     /// Whether another audio session (Siri, a phone call, navigation) is currently
     /// interrupting the call. Transient — the mic pauses while true.
@@ -471,7 +472,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
             remoteAudioLevel = level
 
         case .audioDevicesChanged:
-            Task { [weak self] in await self?.updateAudioDevices() }
+            scheduleAudioDeviceUpdate()
 
         case .error(let error):
             handleError(error)
@@ -491,7 +492,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
             }
             transition(to: .connected(since: start))
             applyMicIfActivated()
-            Task { [weak self] in await self?.updateAudioDevices() }
+            scheduleAudioDeviceUpdate()
             Log.info(.call, "Connected")
 
         case .reconnecting:
@@ -511,10 +512,10 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     /// activated the audio session before the transport finished connecting (so
     /// the `activate(_:)` call to `setMicEnabled` no-op'd on a not-yet-joined client).
     private func applyMicIfActivated() {
-        guard isAudioActivated else { return }
+        guard isAudioActivated, let transport else { return }
         Task { [weak self] in
-            guard let self else { return }
-            await self.transport?.setMicEnabled(self.micShouldBeOn)
+            guard let self, self.transport === transport else { return }
+            await transport.setMicEnabled(self.micShouldBeOn)
         }
     }
 
@@ -616,13 +617,24 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
 
     /// Attach media to the CallKit-activated session. THE ONLY place media attaches.
     package func activate(_ audioSession: AudioSessionActivating) async {
+        // CallKit's activation names no call. With no call in progress it belongs to
+        // one that has already ended, and must not be replayed onto the next call
+        // before CallKit activates that one.
+        guard state != .idle, !state.isTerminal else {
+            Log.warning(.callkit, "Audio session activated with no call in progress; ignored")
+            return
+        }
         isAudioActivated = true
-        await transport?.attachAudioSession()
+        // A transport created later attaches as soon as it exists.
+        guard let transport else { return }
+        await transport.attachAudioSession()
+        guard self.transport === transport else { return }
         // Enabling the mic only takes effect once the transport is connected. If
         // CallKit activates BEFORE connect (e.g. slow credential resolution delays the
         // join), this is a no-op and the mic is (re)enabled in `handleConnected`.
-        await transport?.setMicEnabled(micShouldBeOn)
-        await refreshAudioDevices()
+        await transport.setMicEnabled(micShouldBeOn)
+        guard self.transport === transport else { return }
+        await refreshAudioDevices(of: transport)
     }
 
     /// Hands-free default: prefer the loudspeaker when nothing external (car /
@@ -630,10 +642,10 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     /// earpiece. Driven through the transport, because an SDK that manages the
     /// session itself reverts a direct AVAudioSession override. Runs once per call,
     /// on connect or a device change, once the device list is populated.
-    private func applyHandsFreeDefaultIfNeeded() async {
+    private func applyHandsFreeDefaultIfNeeded(on transport: CallTransport) async {
         // Caller refreshes the device list first; bail until it's populated so a
         // later trigger (connect / devices-changed) can apply the default instead.
-        guard !didApplyHandsFreeDefault, !audioDevices.isEmpty else { return }
+        guard self.transport === transport, !didApplyHandsFreeDefault, !audioDevices.isEmpty else { return }
         didApplyHandsFreeDefault = true
 
         let hasExternalRoute = audioDevices.contains {
@@ -643,14 +655,15 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         guard !hasExternalRoute,
               let speaker = audioDevices.first(where: { AudioRouteKind(deviceID: $0.id) == .speaker })
         else { return }
-        await transport?.setAudioDevice(speaker.id)
-        await refreshAudioDevices()
+        await transport.setAudioDevice(speaker.id)
+        await refreshAudioDevices(of: transport)
     }
 
     package func providerDidDeactivate(_ audioSession: AudioSessionActivating) {
         Log.info(.callkit, "Audio session deactivated")
         isAudioActivated = false
-        Task { [weak self] in await self?.transport?.detachAudioSession() }
+        let transport = transport
+        Task { await transport?.detachAudioSession() }
     }
 
     package func providerPerformAnswerCall(_ id: UUID) {
@@ -677,7 +690,11 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
             return
         }
         isMuted = muted
-        Task { [weak self] in await self?.transport?.setMicEnabled(self?.micShouldBeOn ?? false) }
+        guard let transport else { return }
+        Task { [weak self] in
+            guard let self, self.transport === transport else { return }
+            await transport.setMicEnabled(self.micShouldBeOn)
+        }
     }
 
     /// The reset already ended every call in CallKit, so nothing is reported back
@@ -707,7 +724,8 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         guard state.isActive, !state.isTerminal else { return }
         Log.info(.call, "Call interrupted; pausing mic")
         isInterrupted = true
-        Task { [weak self] in await self?.transport?.setMicEnabled(false) }
+        let transport = transport
+        Task { await transport?.setMicEnabled(false) }
     }
 
     package func audioInterruptionEnded(shouldResume: Bool) {
@@ -744,8 +762,10 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
 
     public func setMuted(_ muted: Bool) async {
         isMuted = muted
+        // Captured first: after the await below this may be a newer call.
+        let id = activeCallID
         await transport?.setMicEnabled(micShouldBeOn)
-        if let id = activeCallID { await callProvider.setMuted(id, muted: muted) }
+        if let id { await callProvider.setMuted(id, muted: muted) }
     }
 
     /// Push-to-talk: open the mic only while the button is held (PTT mode only).
@@ -757,20 +777,30 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     // MARK: - Audio route (driven through the transport so the SDK honors it)
 
     public func selectAudioDevice(_ id: String) async {
-        await transport?.setAudioDevice(id)
-        await refreshAudioDevices()
+        guard let transport else { return }
+        await transport.setAudioDevice(id)
+        await refreshAudioDevices(of: transport)
     }
 
-    private func refreshAudioDevices() async {
-        audioDevices = await transport?.availableAudioDevices() ?? []
-        selectedAudioDeviceID = await transport?.selectedAudioDevice()?.id
+    /// Reads `transport`'s routes, and publishes them only if it is still the live
+    /// call's transport once the reads return.
+    private func refreshAudioDevices(of transport: CallTransport) async {
+        let devices = await transport.availableAudioDevices()
+        let selected = await transport.selectedAudioDevice()
+        guard self.transport === transport else { return }
+        audioDevices = devices
+        selectedAudioDeviceID = selected?.id
     }
 
     /// Refresh the route list (keeps the picker live) and apply the hands-free
-    /// default once it's available. Called on connect and on device changes.
-    private func updateAudioDevices() async {
-        await refreshAudioDevices()
-        await applyHandsFreeDefaultIfNeeded()
+    /// default once it's available. Runs on connect and on device changes, for the
+    /// transport live when it was scheduled.
+    private func scheduleAudioDeviceUpdate() {
+        guard let transport else { return }
+        Task { [weak self] in
+            await self?.refreshAudioDevices(of: transport)
+            await self?.applyHandsFreeDefaultIfNeeded(on: transport)
+        }
     }
 
     /// Return to idle after a terminal state, once the host has shown the outcome.
@@ -851,6 +881,8 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     private func teardownTransport() {
         interruptionObserver.stopObserving()
         isInterrupted = false
+        // The session CallKit activated belonged to this call.
+        isAudioActivated = false
         reconnectTask?.cancel()
         reconnectTask = nil
         eventTask?.cancel()

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Audio activation is tied to the call in progress. An activation that arrives with no call in progress (from a call that ended while dialing) is ignored instead of being replayed onto the next call's transport before CallKit activates that call, and `isAudioActivated` is cleared when a call ends. Deferred work started by an activation, a deactivation, a system mute, an interruption, a route change or a device-list refresh now acts on the transport that was live when it started and stops if that call has ended, instead of looking up whichever transport is current when it runs. (#9)
+
 - Ring-status receipts are sent only for targets the delegate resolves. A push for an unknown target that was busy, filtered by Focus, or declined before CallKit accepted it used to POST to the push-supplied `status_url` with no bearer. For a push during another call, `targetForIncomingCall` is now asked whether or not CallKit accepted the report. (#8)
 
 - A push carrying the `call_id` of the call that is ringing or in progress is treated as a duplicate delivery: it is reported to CallKit, as PushKit requires, and otherwise ignored. It used to take the busy path, producing a missed-call record and a `busy` receipt for a call that was ringing or live. (#7)

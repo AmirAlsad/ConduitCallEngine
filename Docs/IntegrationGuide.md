@@ -176,6 +176,7 @@ What the engine does:
 - CallKit can activate before the transport exists (while the call is dialing, or before `answer` runs for an incoming call). The engine remembers the activation and calls `attachAudioSession()` as soon as it creates the transport, before fetching credentials.
 - CallKit can activate while credentials are being fetched or the transport is still joining. `attachAudioSession()` runs then, but the SDK may ignore a mic enable before it has joined, so the engine sets the mic again when the transport reports `.connected`.
 - After an interruption, CallKit can activate the session again. The engine re-applies mic state on both edges, so whichever arrives last wins.
+- CallKit's activation does not say which call it is for. The engine counts it for the call in progress (ringing, dialing, connecting, connected or reconnecting) and clears `isAudioActivated` when that call ends, so an activation that arrives after its call ended is ignored rather than attaching the next call's transport early. Work an activation, deactivation, mute or route change starts is bound to the transport that was live when it started and does not touch a later call's transport.
 
 How each adapter honors this:
 

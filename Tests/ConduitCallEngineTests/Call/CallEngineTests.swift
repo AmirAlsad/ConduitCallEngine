@@ -542,6 +542,67 @@ struct CallEngineTests {
         #expect(h.transport.isMicEnabled)
     }
 
+    @Test func activationAfterTheCallEndedIsNotReplayedOntoTheNextCall() async throws {
+        let h = CallEngineHarness()
+        h.provider.suspendStart = true
+        let first = Task { await h.placeCall() }
+        await waitUntil { h.provider.pendingStartCount == 1 }
+        await h.engine.endCall() // ended while dialing
+        h.engine.reset()
+
+        // CallKit activates the session for the call that was just ended.
+        h.provider.simulateActivate(FakeAudioSession())
+        await h.engine.awaitPendingActivation()
+        #expect(!h.engine.isAudioActivated)
+
+        h.provider.suspendStart = false
+        h.provider.releaseStart()
+        await first.value
+        await h.placeCall()
+
+        let next = h.transport
+        #expect(h.transports.made.count == 1)
+        #expect(!next.isAudioAttached) // waits for CallKit to activate this call
+        #expect(next.setMicEnabledCallCount == 0)
+    }
+
+    @Test func activationStillInFlightWhenItsCallEndsLeavesTheNextCallAlone() async throws {
+        let h = CallEngineHarness()
+        await h.placeCall()
+        let first = h.transport
+        first.suspendAttach = true
+        h.provider.simulateActivate(FakeAudioSession())
+        await waitUntil { first.pendingAttachCount == 1 }
+        #expect(first.pendingAttachCount == 1)
+
+        await h.engine.endCall()
+        h.engine.reset()
+        await h.placeCall()
+        let next = h.transport
+        #expect(next !== first)
+
+        first.releaseAttach() // the first call's activation resumes
+        await h.engine.awaitPendingActivation()
+
+        #expect(next.setMicEnabledCallCount == 0)
+        #expect(!next.isMicEnabled)
+        #expect(!next.isAudioAttached)
+        #expect(h.engine.audioDevices.isEmpty)
+        #expect(!h.engine.isAudioActivated)
+    }
+
+    @Test func endingTheCallClearsAudioActivation() async throws {
+        let h = CallEngineHarness()
+        await h.placeCall()
+        h.engine.handle(.connected)
+        await h.engine.activate(FakeAudioSession())
+        #expect(h.engine.isAudioActivated)
+
+        await h.engine.endCall()
+
+        #expect(!h.engine.isAudioActivated)
+    }
+
     @Test func transportEventsReachCoordinatorViaStream() async throws {
         let h = CallEngineHarness()
         await h.placeCall()
