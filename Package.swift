@@ -17,6 +17,9 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/pipecat-ai/pipecat-client-ios.git", from: "1.2.0"),
         .package(url: "https://github.com/pipecat-ai/pipecat-client-ios-daily.git", from: "1.2.0"),
+        // ConduitCallEngineDaily imports Daily itself (subscriptions, app messages). The floor is
+        // the one pipecat-client-ios-daily already sets, so declaring it changes no resolution.
+        .package(url: "https://github.com/daily-co/daily-client-ios.git", from: "0.38.0"),
         // Floor at 2.18.0: from that version a reconnect LiveKit gives up on always ends with the
         // room disconnected (client-sdk-swift PR #1144), which LiveKitTransport relies on. It also
         // pulls LiveKitWebRTC 144.7559.10 or later (App Review binary-scan hygiene).
@@ -34,6 +37,7 @@ let package = Package(
                 "ConduitCallEngine",
                 .product(name: "PipecatClientIOS", package: "pipecat-client-ios"),
                 .product(name: "PipecatClientIOSDaily", package: "pipecat-client-ios-daily"),
+                .product(name: "Daily", package: "daily-client-ios"),
             ],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),

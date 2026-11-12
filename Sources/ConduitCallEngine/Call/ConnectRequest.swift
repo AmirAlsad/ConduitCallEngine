@@ -12,6 +12,23 @@ import Foundation
 /// Why the engine asks a target for credentials, passed to `CallTarget.connect`.
 public struct ConnectRequest: Equatable, Sendable {
     /// What the credentials are for.
+    ///
+    /// Later versions may add cases, as 0.2 added `.ringing(joinsBeforeAnswer:)`;
+    /// each addition is listed in the changelog. A `switch` that lists every case
+    /// stops compiling when one is added. End it with `@unknown default`: today that
+    /// compiles without a warning, and when a case is added the switch still
+    /// compiles, with a warning that names the new case, which takes that branch
+    /// until you handle it. Treat it there as the first connect of an incoming call,
+    /// the safest assumption:
+    ///
+    /// ```swift
+    /// switch request.purpose {
+    /// case .outgoing: path = "/calls"
+    /// case .answered, .ringing: path = "/rings/\(id)/connect"
+    /// case .reconnect(let attempt): path = "/calls/\(id)/reconnect?attempt=\(attempt)"
+    /// @unknown default: path = "/rings/\(id)/connect"
+    /// }
+    /// ```
     public enum Purpose: Equatable, Sendable {
         /// The first connect of a call the host placed with `CallEngine.placeCall(_:)`.
         case outgoing

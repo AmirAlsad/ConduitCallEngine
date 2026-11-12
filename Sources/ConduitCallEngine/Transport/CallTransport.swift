@@ -12,14 +12,17 @@
 //  `attachAudioSession()`, which it does only after CallKit's `providerDidActivate`.
 //  CallKit owns the session; the transport attaches to it.
 //
-//  A conforming type isolated to the main actor (as the package's adapters are)
-//  must declare `events` as `nonisolated`, because the requirement is nonisolated.
+//  The requirements are not actor-isolated. A conforming type isolated to the main
+//  actor (as the package's adapters are) must declare the synchronous ones,
+//  `events` and `canConnectWhileRinging`, `nonisolated`; the async ones it may keep
+//  on the main actor, where the engine calls them.
 //
 
 import Foundation
 
 public protocol CallTransport: AnyObject {
-    /// The single channel by which transport state leaves the adapter.
+    /// The single channel by which transport state leaves the adapter. Synchronous
+    /// and nonisolated: a main-actor conformer declares it `nonisolated`.
     var events: AsyncStream<TransportEvent> { get }
 
     func connect(_ connection: CallConnection) async throws
@@ -62,7 +65,9 @@ public protocol CallTransport: AnyObject {
     /// remote agent, which waits for `CallSignal.answered` before it speaks. Read
     /// once per ring, right after `CallTarget.makeTransport` creates the transport.
     /// The default implementation returns false, which keeps the transport at the
-    /// `.credentials` tier: it joins only once the user answers.
+    /// `.credentials` tier: it joins only once the user answers. Synchronous and
+    /// nonisolated, like `events`: a main-actor conformer declares it `nonisolated`
+    /// (it is typically a constant).
     var canConnectWhileRinging: Bool { get }
 }
 

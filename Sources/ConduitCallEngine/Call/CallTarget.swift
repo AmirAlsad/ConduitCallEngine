@@ -3,8 +3,8 @@
 //  ConduitCallEngine
 //
 //  What the call engine is handed instead of a host model: who is being called
-//  (identity for CallKit) and how to reach them. The engine creates the transport
-//  once per call via `makeTransport`, BEFORE resolving credentials, so a CallKit
+//  (identity for CallKit) and how to reach them. The engine creates the call's
+//  transport via `makeTransport` BEFORE resolving credentials, so a CallKit
 //  activation that lands mid-fetch reaches the transport; `connect` runs for the
 //  first connect and again for every reconnect attempt, told which by its
 //  `ConnectRequest`.
@@ -19,6 +19,13 @@ public struct CallTarget {
     /// reports it to CallKit as an email-address handle (`CXHandle.HandleType
     /// .emailAddress`, the only type its provider supports), whatever its format.
     public let handle: String?
+    /// Makes the call's transport. Return a new instance every time. The engine calls
+    /// it once per call, before it fetches credentials, and every later connect of
+    /// that call (reconnect attempts, and the unprepared connect after a ring's
+    /// preparation failed following the answer) reuses that instance. The one
+    /// exception: for an incoming call whose ring was prepared at the `.media` tier,
+    /// it is called during the ring, and if that preparation fails before the
+    /// answer, it is called again at the answer, so one call can make two.
     public let makeTransport: @MainActor () -> any CallTransport
     /// Resolves the room to join: for the call's first connect, and again before
     /// every engine reconnect attempt. The request says which. Throw

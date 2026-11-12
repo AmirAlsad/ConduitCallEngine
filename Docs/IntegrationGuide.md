@@ -317,9 +317,9 @@ func callEngine(_ engine: CallEngine, targetForIncomingCall call: IncomingCall) 
 
 Here `agents` and `callTarget(inline:)` are your own: the latter builds a `CallTarget` from your model, the same way for outgoing calls (without inline credentials) and incoming ones.
 
-**A transport per target.** `makeTransport` is per target, so targets can use different transports. A target on Daily returns `PipecatDailyTransport()`, one on LiveKit returns `LiveKitTransport()`. The engine calls `makeTransport` once per call, before it fetches credentials, and reuses that transport for every reconnect attempt in the call.
+**A transport per target.** `makeTransport` is per target, so targets can use different transports. A target on Daily returns `PipecatDailyTransport()`, one on LiveKit returns `LiveKitTransport()`. The engine calls `makeTransport` once per call, before it fetches credentials, and reuses that transport for every later connect in the call (reconnect attempts, and the unprepared connect after a preparation that failed following the answer). The exception is a ring prepared at the `.media` tier: `makeTransport` runs during the ring, and if the preparation fails before the answer, again at the answer ([pre-connect](#pre-connect)), so return a new transport every time.
 
-**Credentials per call.** `connect` runs for the first connection and again before every reconnect attempt, so it can mint fresh, short-lived credentials each time. Its `ConnectRequest` says which: `purpose` is `.outgoing` or `.answered` for a call's first connect and `.reconnect(attempt:)` for an engine retry, and `callID` is the ring's `call_id` on every request for an incoming call (nil for an outgoing one), so your backend can tell a reconnect from a new call and match it to the ring it sent. Throw `TransportError.authenticationFailed` when your backend rejects the user's credentials (a 401 or 403) so the call fails as `.badToken`, which your UI can explain differently from a network failure.
+**Credentials per call.** `connect` runs for the first connection and again before every reconnect attempt, so it can mint fresh, short-lived credentials each time. Its `ConnectRequest` says which: `purpose` is `.outgoing` or `.answered` for a call's first connect and `.reconnect(attempt:)` for an engine retry, and `callID` is the ring's `call_id` on every request for an incoming call (nil for an outgoing one), so your backend can tell a reconnect from a new call and match it to the ring it sent. (`.ringing(joinsBeforeAnswer:)` is pre-connect's, below.) `Purpose` may gain cases in later versions: end a `switch` over it with `@unknown default`, which keeps it compiling, with a warning naming the new case, when one is added. Throw `TransportError.authenticationFailed` when your backend rejects the user's credentials (a 401 or 403) so the call fails as `.badToken`, which your UI can explain differently from a network failure.
 
 <a id="pre-connect"></a>**Pre-connect.** An incoming call can be prepared while it rings, so the agent is ready the moment the user answers. Three parties decide, and the ring gets the lowest of what they allow (`RingPreparation`):
 
@@ -453,7 +453,7 @@ Rules that come from the device bugs this code survived:
 
 **Audio device ids.** The hands-free default and `AudioRouteKind(deviceID:)` classify routes by keywords in `AudioDeviceInfo.id`: `speaker` (without `bluetooth`), `bluetooth`, `earpiece` or `receiver`, `wired` or `headphone`. Use ids containing these, or the engine cannot tell a speaker from a headset.
 
-**Concurrency.** The protocol is not actor-isolated, but the engine calls it from the main actor and `CallTarget.makeTransport` runs on the main actor. Both adapters are `@MainActor` classes with a `nonisolated let events`; that is the simplest shape:
+**Concurrency.** The protocol is not actor-isolated, but the engine calls it from the main actor and `CallTarget.makeTransport` runs on the main actor. Both adapters are `@MainActor` classes; that is the simplest shape. Its two synchronous requirements, `events` and `canConnectWhileRinging`, are nonisolated, so such a class declares them `nonisolated` (`nonisolated let events`, and `nonisolated var canConnectWhileRinging: Bool { true }` if you override the default); the async requirements can stay on the main actor:
 
 ```swift
 import ConduitCallEngine
@@ -469,6 +469,10 @@ final class MyTransport: CallTransport {
         self.events = stream
         self.continuation = continuation
     }
+
+    // Only if your connect(_:) leaves the audio session alone until the attach
+    // (see the table above); otherwise leave it out and get the default, false.
+    nonisolated var canConnectWhileRinging: Bool { false }
 
     func connect(_ connection: CallConnection) async throws {
         // Join connection.url with connection.token, starting audio only if isAttached.
@@ -493,6 +497,11 @@ final class MyTransport: CallTransport {
     func detachAudioSession() async {
         isAttached = false
         // Stop audio I/O.
+    }
+
+    func send(_ signal: CallSignal) async -> CallSignalDelivery {
+        // Publish signal.rawValue to the agent; .sent once it left, .failed if it could not.
+        .unsupported
     }
 }
 ```
