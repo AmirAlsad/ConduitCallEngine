@@ -189,6 +189,10 @@ struct CallCredentialResolutionTests {
         h.provider.simulateActivate(FakeAudioSession()) // the answered call's own activation
         await h.engine.awaitPendingActivation()
         #expect(h.transport.isAudioAttached)
+        #expect(h.transport.isMicEnabled == false) // connecting: the mic waits for the agent
+
+        h.engine.handle(.connected)
+        await h.engine.awaitPendingMediaWork()
         #expect(h.transport.isMicEnabled)
     }
 

@@ -325,6 +325,7 @@ struct Swift6HostTests {
         #expect(transport.connections == [roomConnection])
         await system.activateAudioSession()
         #expect(system.deliverTransportEvent(.connected))
+        await system.awaitPendingWork() // the mic opens with the connection
         #expect(engine.state.isActive)
         #expect(transport.isAttached)
         #expect(transport.isMicOn)

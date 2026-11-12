@@ -42,7 +42,7 @@ public struct CallEngineConfiguration: @unchecked Sendable {
     /// engine releases the withhold itself, logs a warning, and the mic follows the
     /// rest of its rule again; `CallEngine.isMicWithheld` turns false. It bounds a
     /// host that forgets to release, so set it a little beyond your longest
-    /// connecting or connected sound; there is no unbounded setting, since a mic the
+    /// connected sound; there is no unbounded setting, since a mic the
     /// user cannot see is closed is the failure it prevents. Measured with the
     /// engine's injected sleep. Default 5 seconds.
     public var micWithholdTimeout: Duration

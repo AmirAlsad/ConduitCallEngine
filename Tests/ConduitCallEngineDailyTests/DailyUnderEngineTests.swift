@@ -138,6 +138,45 @@ struct DailyUnderEngineTests {
         #expect(signals(pipecat) == ["call-connected"])
     }
 
+    // MARK: - The mic opens once the call is connected
+
+    /// CallKit activates while Daily is still joining and the bot is not ready: the
+    /// mic stays closed (Daily took a pre-join enable as a no-op, so it never
+    /// depended on that), and opens once the bot is ready.
+    @Test(.timeLimit(.minutes(1)))
+    func theMicOpensWhenTheBotIsReadyNotAtTheActivation() async throws {
+        let rig = DailyEngineRig()
+        _ = try await rig.placeActivatedCall()
+        let pipecat = try #require(rig.pipecat)
+        await rig.system.awaitPendingWork()
+        #expect(!pipecat.micHistory.contains(true))
+
+        pipecat.botJoins()
+        await waitUntil { rig.engine.state.isConnected }
+        await rig.system.awaitPendingWork()
+
+        #expect(pipecat.micHistory.last == true)
+        #expect(signals(pipecat) == ["call-connected"])
+    }
+
+    /// The other order: the bot is ready before CallKit activates.
+    @Test(.timeLimit(.minutes(1)))
+    func aCallReadyBeforeTheActivationOpensTheMicAtTheActivation() async throws {
+        let rig = DailyEngineRig()
+        await rig.engine.placeCall(rig.target)
+        await drain()
+        let pipecat = try #require(rig.pipecat)
+        pipecat.botJoins()
+        await waitUntil { rig.engine.state.isConnected }
+        await rig.system.awaitPendingWork()
+        #expect(!pipecat.micHistory.contains(true))
+
+        await rig.system.activateAudioSession()
+        await rig.system.awaitPendingWork()
+
+        #expect(pipecat.micHistory.last == true)
+    }
+
     // MARK: - Signals that do not leave the device
 
     /// Daily refuses the app message carrying `call-resumed`: before, the agent that

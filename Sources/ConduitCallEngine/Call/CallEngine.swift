@@ -13,7 +13,8 @@
 //  only once CallKit has activated the session and only while the call is not on
 //  hold — from `activate(_:)` (the `providerDidActivate` callback), when a
 //  transport is created after that activation already happened, or on resume —
-//  the mic is never enabled before activation (see `micShouldBeOn`), and no route
+//  the mic is never enabled before activation, nor before the call is reported
+//  connected (see `micShouldBeOn`), and no route
 //  is read or changed while the session is not activated (`scheduleAudioDeviceUpdate`).
 //  CallKit owns the session; the transport attaches to it.
 //
@@ -69,7 +70,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     /// interruption, its end clears this either way.
     public var isInterrupted: Bool { interruption != .none }
     /// Whether the host is keeping the mic closed with `setMicWithheld(_:)`, for
-    /// example while its own connecting or connected sound plays. Not mute: it
+    /// example while its own connected sound plays. Not mute: it
     /// changes neither `isMuted` nor CallKit's mute state. Cleared when the call
     /// ends, and by the engine itself `CallEngineConfiguration.micWithholdTimeout`
     /// after the call is connected with its audio activated.
@@ -1565,9 +1566,9 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         // attaches on the resume.
         guard let transport else { return }
         if !isOnHold { enqueueMedia { await $0.attachAudioSession() } }
-        // Enabling the mic only takes effect once the transport is connected. If
-        // CallKit activates BEFORE connect (e.g. slow credential resolution delays the
-        // join), this is a no-op and the mic is (re)enabled in `handleConnected`.
+        // The mic opens only once the call is connected. If CallKit activates BEFORE
+        // that (the usual order: the credential fetch and the join come after), this
+        // closes it and `handleConnected` opens it.
         await applyMic()?.value
         guard self.transport === transport else { return }
         // After the attach and the mic, so an agent that waits for it starts
@@ -1954,11 +1955,13 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     }
 
     /// Keep the mic closed while your app plays its own sound into the call, such
-    /// as a ringback that is still finishing or a spoken "Connected", so the agent
-    /// does not hear it; `false` gives the mic back. Not mute: `isMuted`, CallKit's
-    /// mute state and the system call UI do not change, and the agent stays
-    /// audible. It changes nothing but the mic: no state, cue, signal, record,
-    /// attach or detach.
+    /// as a spoken "Connected", so the agent does not hear it; `false` gives the mic
+    /// back. The engine already keeps the mic closed until the call is connected, so
+    /// a ringback during `.connecting` needs no withhold. Not mute: `isMuted`,
+    /// CallKit's mute state and the system call UI do not change, and the agent
+    /// stays audible. It changes nothing but the mic and the moment the agent is
+    /// told the user is on the line (`CallSignal.connected` waits for the release):
+    /// no state, cue, record, attach or detach.
     ///
     /// Callable at any time, during a call or before one: a withhold set with no
     /// call in progress applies to the next call. Like the other inputs to the mic
@@ -2105,11 +2108,13 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         case endedAwaitingActivation
     }
 
-    /// The one mic rule: on only on a session CallKit has activated, while the
+    /// The one mic rule: on only once the call has been reported connected (it
+    /// stays so while reconnecting), on a session CallKit has activated, while the
     /// call is not on hold, no other audio holds the session and the host is not
     /// withholding it, then following mute, or in push-to-talk mode the button.
+    /// Connected and activated arrive in either order; each re-derives the mic.
     private var micShouldBeOn: Bool {
-        guard isAudioActivated, !isOnHold, !isInterrupted, !isMicWithheld else { return false }
+        guard firstConnectedAt != nil, isAudioActivated, !isOnHold, !isInterrupted, !isMicWithheld else { return false }
         return isPushToTalkEnabled() ? isPushToTalkHeld : !isMuted
     }
 

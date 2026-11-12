@@ -33,6 +33,30 @@ struct LiveKitUnderEngineTests {
         #expect(room.published == ["call-connected"])
     }
 
+    // MARK: - The mic opens once the call is connected
+
+    /// CallKit activates while the room is still joining: the mic is not published
+    /// until the agent is there.
+    @Test(.timeLimit(.minutes(1)))
+    func theMicOpensWhenTheAgentIsThereNotAtTheActivation() async throws {
+        let rig = LiveKitEngineRig()
+        rig.prepareRoom = { $0.holdsJoin = true }
+        let placing = Task { await rig.engine.placeCall(rig.target) }
+        await waitUntil { rig.room?.isHoldingJoin == true }
+        let room = try #require(rig.room)
+        await rig.system.activateAudioSession()
+        await rig.system.awaitPendingWork()
+        #expect(!room.log.contains("mic on"))
+
+        room.completeJoin()
+        await placing.value
+        await waitUntil { rig.engine.state.isConnected }
+        await rig.system.awaitPendingWork()
+
+        #expect(room.log.last(where: { $0.hasPrefix("mic ") }) == "mic on")
+        #expect(room.published == ["call-connected"])
+    }
+
     // MARK: - A disconnect while the room is still setting up
 
     /// The user declines a pre-connected ring just as the transport starts joining:

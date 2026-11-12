@@ -27,6 +27,8 @@ final class FakePipecatTransport: Transport {
     /// Every message the client handed over, as the JSON Pipecat's Daily transport
     /// encodes it for Daily's app message.
     private(set) var sentMessages: [Data] = []
+    /// Every value the adapter passed to `enableMic(enable:)`, in order.
+    private(set) var micHistory: [Bool] = []
     /// Whether `connect` leaves the client joined (`.connected`), as a Daily join that
     /// completes does; `false` leaves it `.connecting`.
     var joinsOnConnect = true
@@ -129,7 +131,7 @@ final class FakePipecatTransport: Transport {
     func updateCam(camId: MediaDeviceId) async throws {}
     func selectedMic() -> MediaDeviceInfo? { nil }
     func selectedCam() -> MediaDeviceInfo? { nil }
-    func enableMic(enable: Bool) async throws {}
+    func enableMic(enable: Bool) async throws { micHistory.append(enable) }
     func enableCam(enable: Bool) async throws {}
     func isCamEnabled() -> Bool { false }
     func isMicEnabled() -> Bool { false }

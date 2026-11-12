@@ -2,12 +2,13 @@
 //  MicRuleTests.swift
 //  ConduitCallEngineTests
 //
-//  The one mic rule: the transport's mic is on only while CallKit has activated
-//  the session, the call is not on hold, no interruption holds it, the host is
-//  not withholding it, and the user wants it on (unmuted, or in push-to-talk mode
-//  the button held). Every input re-derives the mic from that rule, so the order
-//  the inputs arrive in never matters; the permutation tests drive every order
-//  against a reference model of the rule.
+//  The one mic rule: the transport's mic is on only once the call has been
+//  reported connected and while CallKit has activated the session, the call is
+//  not on hold, no interruption holds it, the host is not withholding it, and the
+//  user wants it on (unmuted, or in push-to-talk mode the button held). Every
+//  input re-derives the mic from that rule, so the order the inputs arrive in
+//  never matters; the permutation tests drive every order against a reference
+//  model of the rule.
 //
 
 import Foundation
@@ -101,6 +102,60 @@ struct MicRuleTests {
         #expect(!h.transport.isMicEnabled)
     }
 
+    // MARK: - Before the call is connected
+
+    /// CallKit activates an outgoing call's audio long before its agent is there
+    /// (the credential fetch and the join come after). The mic stays closed until
+    /// the call is connected, whatever the host does, and opens then.
+    @Test func anActivationBeforeTheCallConnectsKeepsTheMicClosedUntilItConnects() async throws {
+        let h = CallEngineHarness()
+        await h.placeCall()
+        await activate(h)
+        await h.engine.setMuted(false)
+        await h.engine.awaitPendingMediaWork()
+        #expect(!h.transport.isMicEnabled)
+        #expect(h.transport.isAudioAttached) // the agent can be heard as soon as it speaks
+
+        h.engine.handle(.connected)
+        await h.engine.awaitPendingMediaWork()
+
+        #expect(h.transport.isMicEnabled)
+        #expect(h.transport.micEnabledHistory.last == true)
+        #expect(h.transport.micEnabledHistory.dropLast().allSatisfy { !$0 })
+    }
+
+    @Test func anAnsweredRingKeepsTheMicClosedUntilItConnects() async throws {
+        let h = CallEngineHarness()
+        h.ring()
+        await h.engine.answer()
+        await activate(h)
+        await h.engine.awaitPendingMediaWork()
+        #expect(h.engine.state.isConnecting)
+        #expect(!h.transport.isMicEnabled)
+
+        h.engine.handle(.connected)
+        await h.engine.awaitPendingMediaWork()
+
+        #expect(h.transport.isMicEnabled)
+    }
+
+    /// Once connected, the call keeps its mic through an outage: closing it during
+    /// a transport's own recovery would only add a change for the SDK to apply.
+    @Test func aReconnectingCallKeepsItsMicOpen() async throws {
+        let h = await liveCall()
+        await h.engine.awaitPendingMediaWork()
+        let opened = h.transport.micEnabledHistory.count
+
+        h.engine.handle(.reconnecting)
+        h.engine.handle(.disconnected(reason: .networkDropped))
+        await h.engine.awaitPendingReconnect()
+        h.engine.handle(.connected)
+        await h.engine.awaitPendingMediaWork()
+
+        #expect(h.transport.isMicEnabled)
+        #expect(h.transport.micEnabledHistory.dropFirst(opened).allSatisfy { $0 })
+    }
+
     // MARK: - Deactivation
 
     @Test func deactivationClosesTheMicAndDetaches() async throws {
@@ -126,6 +181,15 @@ struct MicRuleTests {
     }
 
     // MARK: - Every order
+
+    /// 360 orders per argument: the connection and CallKit's activation in either
+    /// order, woven through a deactivation, an interruption and an unmute, from a
+    /// call that has not connected yet.
+    @Test(arguments: [true, false])
+    func everyOrderOfTheConnectionAndTheActivationLeavesTheMicWhereTheRuleSays(shouldResume: Bool) async throws {
+        let events: [MicEvent] = [.connect, .activate, .deactivate, .interrupt, .endInterruption, .unmute]
+        try await MicRuleScenario.runEveryOrder(of: events, shouldResume: shouldResume)
+    }
 
     @Test(arguments: [true, false])
     func everyOrderOfTheInputsLeavesTheMicWhereTheRuleSays(shouldResume: Bool) async throws {
@@ -187,7 +251,7 @@ struct MicRuleModel {
     var isInterrupted: Bool { interruption != .none }
     /// Media runs on a session CallKit activated, and not while held.
     var isAttached: Bool { isActivated && !isHeld }
-    var micIsOn: Bool { isActivated && !isHeld && !isInterrupted && !isWithheld && !isMuted }
+    var micIsOn: Bool { isConnected && isActivated && !isHeld && !isInterrupted && !isWithheld && !isMuted }
 
     mutating func apply(_ event: MicEvent) {
         switch event {
@@ -277,6 +341,7 @@ enum MicRuleScenario {
             let mic = h.transport.isMicEnabled
             let where_ = "\(order) step \(step) (\(event))"
             if mic && !h.engine.isAudioActivated { return "\(where_): mic on before activation" }
+            if mic && h.engine.state.isConnecting { return "\(where_): mic on before the call connected" }
             if mic && h.engine.isOnHold { return "\(where_): mic on while held" }
             if mic && h.engine.isInterrupted { return "\(where_): mic on while interrupted" }
             if mic && h.engine.isMicWithheld { return "\(where_): mic on while withheld" }

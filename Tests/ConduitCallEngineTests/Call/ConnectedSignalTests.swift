@@ -144,7 +144,7 @@ struct ConnectedSignalTests {
         await h.engine.awaitPendingMediaWork()
         await h.engine.awaitPendingSignals()
         #expect(h.transport.sentSignals.isEmpty)
-        #expect(!h.transport.isMicEnabled)
+        #expect(h.transport.micEnabledHistory.allSatisfy { !$0 }) // never opened
 
         await withhold(h, false)
 
