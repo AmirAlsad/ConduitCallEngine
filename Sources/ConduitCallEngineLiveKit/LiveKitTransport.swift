@@ -62,10 +62,10 @@ public final class LiveKitTransport: CallTransport {
     // MARK: - CallTransport
 
     public func connect(_ connection: CallConnection) async throws {
-        // An abandoned SDK reconnect left the room to be disconnected; a connect
-        // running alongside that teardown would be torn down with it.
+        // On LiveKit before 2.18.0 an abandoned SDK reconnect can leave the room to be
+        // disconnected; a connect running alongside that teardown would be torn down with it.
         await roomEvents.roomReset?.value
-        roomEvents.gate = LiveKitConnectGate()
+        roomEvents.gate = LiveKitConnectGate(abandonedReconnectsLookComplete: RoomEventMapper.abandonedReconnectsLookComplete)
         roomEvents.wasBotSpeaking = false
         do {
             // Engine off until CallKit activates — unless activation already
@@ -88,9 +88,8 @@ public final class LiveKitTransport: CallTransport {
     /// the grace period it may give a dropped participant. Sent as an RTVI client
     /// message over the data channel; a Pipecat bot must read it from the raw data
     /// event, because Pipecat's LiveKit input does not deliver client RTVI messages
-    /// to its RTVI processor.
+    /// to its RTVI processor. See `LiveKitEndCallSignal` for when it is sent.
     private func sendEndCallSignal() async {
-        guard room.connectionState == .connected else { return }
         let message: [String: Any] = [
             "id": String(UUID().uuidString.prefix(8)),
             "label": "rtvi-ai",
@@ -98,8 +97,18 @@ public final class LiveKitTransport: CallTransport {
             "data": ["t": "end-call"],
         ]
         guard let payload = try? JSONSerialization.data(withJSONObject: message) else { return }
-        do { try await room.localParticipant.publish(data: payload) }
-        catch { Log.warning(.transport, "end-call signal publish failed: \(error)") }
+        let room = room
+        await LiveKitEndCallSignal.run(within: LiveKitEndCallSignal.deadline) {
+            // A publish issued before the connect has set up the room's transports
+            // would not start the publisher's negotiation, so let the connect finish first.
+            while room.connectionState == .connecting {
+                try? await Task.sleep(for: .milliseconds(50))
+                if Task.isCancelled { return }
+            }
+            guard LiveKitEndCallSignal.shouldSend(in: LiveKitEndCallSignal.RoomPhase(room.connectionState)) else { return }
+            do { try await room.localParticipant.publish(data: payload) }
+            catch { Log.warning(.transport, "end-call signal publish failed: \(error)") }
+        }
     }
 
     public func setMicEnabled(_ enabled: Bool) async {
@@ -148,16 +157,33 @@ public final class LiveKitTransport: CallTransport {
     }
 }
 
+private extension LiveKitEndCallSignal.RoomPhase {
+    init(_ state: ConnectionState) {
+        switch state {
+        case .disconnected: self = .disconnected
+        case .connecting: self = .connecting
+        case .reconnecting: self = .reconnecting
+        case .connected: self = .connected
+        case .disconnecting: self = .disconnecting
+        @unknown default: self = .disconnected
+        }
+    }
+}
+
 /// Translates `Room`'s delegate callbacks into `TransportEvent`s. Kept out of the public
 /// type so hosts cannot invoke SDK callbacks on a live transport. The callbacks arrive off
 /// the main actor and hop to it before touching the gate.
 @MainActor
 private final class RoomEventMapper: NSObject, RoomDelegate {
     private nonisolated let continuation: AsyncStream<TransportEvent>.Continuation
-    var gate = LiveKitConnectGate()
+    static let abandonedReconnectsLookComplete = LiveKitConnectGate.abandonedReconnectsLookComplete(
+        sdkVersion: LiveKitSDK.version
+    )
+    var gate = LiveKitConnectGate(abandonedReconnectsLookComplete: abandonedReconnectsLookComplete)
     var wasBotSpeaking = false
     /// Disconnects a room whose reconnect the SDK abandoned while still reporting it
-    /// connected, so the engine's next connect starts from a disconnected room.
+    /// connected (LiveKit before 2.18.0), so the engine's next connect starts from a
+    /// disconnected room.
     private(set) var roomReset: Task<Void, Never>?
 
     init(continuation: AsyncStream<TransportEvent>.Continuation) {
@@ -167,6 +193,10 @@ private final class RoomEventMapper: NSObject, RoomDelegate {
     private func onRoomConnected(hasRemote: Bool) {
         if let event = gate.roomDidConnect() { continuation.yield(event) }
         if hasRemote, let event = gate.remoteDidJoin() { continuation.yield(event) }
+    }
+
+    private func onReconnectStarted() {
+        if let event = gate.reconnectDidStart() { continuation.yield(event) }
     }
 
     private func onSpeakers(botSpeaking: Bool, level: Float) {
@@ -187,7 +217,7 @@ private final class RoomEventMapper: NSObject, RoomDelegate {
         case .reconnecting:
             // Hop like the completion does, so a reconnect that starts right after
             // one completes cannot overtake that completion's `.connected`.
-            Task { @MainActor in self.continuation.yield(.reconnecting) }
+            Task { @MainActor in self.onReconnectStarted() }
         default:
             break
         }
@@ -209,19 +239,20 @@ private final class RoomEventMapper: NSObject, RoomDelegate {
     }
 
     nonisolated func room(_ room: Room, didStartReconnectWithMode mode: ReconnectMode) {
-        Task { @MainActor in self.continuation.yield(.reconnecting) }
+        Task { @MainActor in self.onReconnectStarted() }
     }
 
     nonisolated func room(_ room: Room, didCompleteReconnectWithMode mode: ReconnectMode) {
         // The engine's `.reconnecting` display recovers on a fresh `.connected`, but
-        // only if the gate finds the room usable; otherwise this is the drop.
+        // only if the gate finds the room usable. The connection state is the one this
+        // completion was reported with. The remotes are read after the hop: LiveKit
+        // applies a full reconnect's join response in a detached task.
         let isRoomConnected = room.connectionState == .connected
-        let remotesPresent = !room.remoteParticipants.isEmpty
         Task { @MainActor in
             guard let event = self.gate.reconnectDidComplete(
-                roomConnected: isRoomConnected, remotesPresent: remotesPresent
+                roomConnected: isRoomConnected, remotesPresent: !room.remoteParticipants.isEmpty
             ) else { return }
-            if case .disconnected = event {
+            if self.gate.roomNeedsReset {
                 self.roomReset = Task { await room.disconnect() }
             }
             self.continuation.yield(event)

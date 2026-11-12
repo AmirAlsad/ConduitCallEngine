@@ -28,7 +28,7 @@ Link the core plus the adapter for the transport you use. Linking both adapters 
 - A physical iPhone for real calls (see [Device-only reality](#device-only-reality)).
 - For incoming calls: a paid Apple Developer account, the Push Notifications capability, and an APNs key on your server.
 
-The manifest's dependency floors are `pipecat-client-ios` 1.2.0, `pipecat-client-ios-daily` 1.2.0 and LiveKit `client-sdk-swift` 2.15.1. These are minimums SwiftPM may resolve above, not tested versions; see [Verified SDK versions](#verified-sdk-versions).
+The manifest's dependency floors are `pipecat-client-ios` 1.2.0, `pipecat-client-ios-daily` 1.2.0 and LiveKit `client-sdk-swift` 2.15.1. These are minimums SwiftPM may resolve above, not tested versions; see [Verified SDK versions](#verified-sdk-versions). With the LiveKit adapter, use LiveKit 2.18.0 or later: earlier versions can report a reconnect they gave up on as complete (see [the LiveKit notes](Docs/IntegrationGuide.md#livekit-livekittransport)).
 
 ## Installation
 
