@@ -15,12 +15,13 @@ import CallKit
 import Foundation
 
 @MainActor
-final class SystemCallProvider: NSObject, CallProviding, CXProviderDelegate {
+final class SystemCallProvider: NSObject, CallProviding, CXProviderDelegate, CXCallObserverDelegate {
     weak var delegate: CallProviderDelegate?
     var supportsHolding = true
 
     private let provider: CXProvider
     private let callController = CXCallController()
+    private let callObserver = CXCallObserver()
     private let audioSession = SystemAudioSession()
     /// Whether CallKit has the provider's audio session activated.
     private var isSessionActivated = false
@@ -35,6 +36,7 @@ final class SystemCallProvider: NSObject, CallProviding, CXProviderDelegate {
         provider = CXProvider(configuration: configuration)
         super.init()
         provider.setDelegate(self, queue: nil) // nil → main queue
+        callObserver.setDelegate(self, queue: nil)
     }
 
     // MARK: - CallProviding (engine → system)
@@ -134,6 +136,10 @@ final class SystemCallProvider: NSObject, CallProviding, CXProviderDelegate {
         }
     }
 
+    var observedCalls: [ObservedCall] {
+        callObserver.calls.map(ObservedCall.init)
+    }
+
     /// Every report and update states the call's capabilities: an update that
     /// leaves one unset is not relied on to keep the earlier value.
     private func makeCallUpdate() -> CXCallUpdate {
@@ -209,6 +215,22 @@ final class SystemCallProvider: NSObject, CallProviding, CXProviderDelegate {
             isSessionActivated = false
             delegate?.providerDidDeactivate(SystemAudioSession(session: audioSession))
         }
+    }
+}
+
+// MARK: - CXCallObserverDelegate
+
+extension SystemCallProvider {
+    // Delivered on the main queue (the observer's queue is nil).
+    nonisolated func callObserver(_ callObserver: CXCallObserver, callChanged call: CXCall) {
+        let observed = ObservedCall(call)
+        MainActor.assumeIsolated { delegate?.providerDidObserveCallChange(observed) }
+    }
+}
+
+private extension ObservedCall {
+    init(_ call: CXCall) {
+        self.init(id: call.uuid, hasEnded: call.hasEnded, isOnHold: call.isOnHold)
     }
 }
 

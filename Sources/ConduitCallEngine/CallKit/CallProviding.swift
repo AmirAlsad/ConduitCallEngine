@@ -24,6 +24,20 @@ package enum IncomingCallReportError: Error, Equatable, Sendable {
     case failed(String)
 }
 
+/// A call as CallKit's call observer (`CXCallObserver`) reports it: any call on
+/// the device, a phone call or another app's, the engine's own included.
+package struct ObservedCall: Equatable, Sendable {
+    package let id: UUID
+    package let hasEnded: Bool
+    package let isOnHold: Bool
+
+    package init(id: UUID, hasEnded: Bool, isOnHold: Bool) {
+        self.id = id
+        self.hasEnded = hasEnded
+        self.isOnHold = isOnHold
+    }
+}
+
 @MainActor
 package protocol CallProviding: AnyObject {
     var delegate: CallProviderDelegate? { get set }
@@ -56,4 +70,7 @@ package protocol CallProviding: AnyObject {
     /// this returns. Returns whether the system accepted the request.
     @discardableResult
     func setHeld(_ id: UUID, onHold: Bool) async -> Bool
+    /// The calls on the device now, as CallKit's call observer lists them. Each
+    /// change is reported through `CallProviderDelegate.providerDidObserveCallChange`.
+    var observedCalls: [ObservedCall] { get }
 }

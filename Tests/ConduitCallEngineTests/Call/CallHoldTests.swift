@@ -343,6 +343,191 @@ struct CallHoldTests {
         #expect(h.engine.isTimerRunning(.activationRecovery))
     }
 
+    @Test func noAttemptIsMadeWhileAnotherCallIsActive() async throws {
+        let h = timedHarness()
+        await resumedWithoutAudio(h)
+        h.provider.simulateOtherCallStarted() // e.g. the user resumed during a phone call
+
+        #expect(h.engine.fireTimer(.activationRecovery))
+        await h.engine.awaitPendingWork()
+
+        #expect(h.provider.heldRequests.isEmpty)
+        #expect(h.engine.isTimerRunning(.activationRecovery)) // the attempt is spent, the next waits
+    }
+
+    // MARK: - Resuming once the other call ends
+
+    /// iOS holds the call when the user accepts a phone call during it.
+    private func heldForAnotherCall(_ h: CallEngineHarness) async -> UUID {
+        await liveCall(h)
+        let other = h.provider.simulateOtherCallStarted()
+        await setHeld(h, true)
+        return other
+    }
+
+    @Test func aCallTheSystemHeldIsResumedWhenTheOtherCallEnds() async throws {
+        let h = timedHarness()
+        let other = await heldForAnotherCall(h)
+        h.provider.simulateDeactivate(FakeAudioSession())
+        #expect(h.engine.isOnHold)
+
+        h.provider.simulateOtherCallEnded(other)
+        await h.engine.awaitPendingWork()
+
+        #expect(h.provider.heldRequests.map(\.onHold) == [false])
+        #expect(h.provider.heldRequests.allSatisfy { $0.id == h.callID })
+        #expect(!h.engine.isOnHold)
+        #expect(h.transport.sentSignals == [.connected, .held, .resumed])
+        #expect(Array(h.delegate.cues.suffix(2)) == [.moment(.held), .moment(.resumed)])
+        #expect(h.engine.isTimerRunning(.activationRecovery)) // the audio is still to come
+
+        await activate(h)
+        #expect(h.transport.isAudioAttached)
+        #expect(h.transport.isMicEnabled)
+        #expect(h.delegate.cueViolations.isEmpty)
+    }
+
+    @Test func aHoldTheHostAskedForIsNeverResumedByTheEngine() async throws {
+        let h = timedHarness()
+        await liveCall(h)
+        let other = h.provider.simulateOtherCallStarted()
+        await h.engine.setOnHold(true)
+
+        h.provider.simulateOtherCallEnded(other)
+        await h.engine.awaitPendingWork()
+
+        #expect(h.engine.isOnHold)
+        #expect(h.provider.heldRequests.map(\.onHold) == [true])
+    }
+
+    @Test func theHostKeepingASystemHoldStopsTheEngineResumingIt() async throws {
+        let h = timedHarness()
+        let other = await heldForAnotherCall(h)
+
+        await h.engine.setOnHold(true)
+        h.provider.simulateOtherCallEnded(other)
+        await h.engine.awaitPendingWork()
+
+        #expect(h.engine.isOnHold)
+        #expect(h.provider.heldRequests.map(\.onHold) == [true])
+    }
+
+    @Test func aThirdCallStillUpKeepsTheCallHeldUntilItEnds() async throws {
+        let h = timedHarness()
+        let first = await heldForAnotherCall(h)
+        let second = h.provider.simulateOtherCallStarted() // call waiting
+
+        h.provider.simulateOtherCallEnded(first)
+        await h.engine.awaitPendingWork()
+        #expect(h.engine.isOnHold)
+        #expect(h.provider.heldRequests.isEmpty)
+
+        h.provider.simulateOtherCallEnded(second)
+        await h.engine.awaitPendingWork()
+        #expect(!h.engine.isOnHold)
+        #expect(h.provider.heldRequests.map(\.onHold) == [false])
+    }
+
+    @Test func anOtherCallOnHoldStillKeepsTheCallHeld() async throws {
+        let h = timedHarness()
+        let first = await heldForAnotherCall(h)
+        let second = h.provider.simulateOtherCallStarted()
+        h.provider.simulateOtherCallHeld(first, onHold: true)
+
+        h.provider.simulateOtherCallEnded(second)
+        await h.engine.awaitPendingWork()
+
+        #expect(h.engine.isOnHold)
+        #expect(h.provider.heldRequests.isEmpty)
+    }
+
+    @Test func theEnginesOwnCallsAndUnseenCallsChangeNothing() async throws {
+        let h = timedHarness()
+        _ = await heldForAnotherCall(h)
+
+        h.provider.simulateObservedCallChange(ObservedCall(id: h.callID, hasEnded: true, isOnHold: false))
+        h.provider.simulateObservedCallChange(ObservedCall(id: UUID(), hasEnded: true, isOnHold: false))
+        await h.engine.awaitPendingWork()
+
+        #expect(h.engine.isOnHold)
+        #expect(h.provider.heldRequests.isEmpty)
+    }
+
+    @Test func aSystemHoldWithNoOtherCallSeenStaysHeld() async throws {
+        let h = timedHarness()
+        await liveCall(h)
+        let earlier = h.provider.simulateOtherCallStarted()
+        h.provider.simulateOtherCallEnded(earlier) // before the hold
+        await setHeld(h, true) // the user held from the system call screen
+
+        h.provider.simulateOtherCallEnded(earlier)
+        await h.engine.awaitPendingWork()
+
+        #expect(h.engine.isOnHold)
+        #expect(h.provider.heldRequests.isEmpty)
+    }
+
+    @Test func aCallThatStartsDuringTheHoldCounts() async throws {
+        let h = timedHarness()
+        await liveCall(h)
+        await setHeld(h, true)
+        let other = h.provider.simulateOtherCallStarted()
+
+        h.provider.simulateOtherCallEnded(other)
+        await h.engine.awaitPendingWork()
+
+        #expect(!h.engine.isOnHold)
+    }
+
+    @Test func turnedOffTheCallStaysHeld() async throws {
+        let h = CallEngineHarness(resumesAfterSystemHold: false, sleep: { _ in try await Task.sleep(for: .seconds(24 * 60 * 60)) })
+        let other = await heldForAnotherCall(h)
+
+        h.provider.simulateOtherCallEnded(other)
+        await h.engine.awaitPendingWork()
+
+        #expect(h.engine.isOnHold)
+        #expect(h.provider.heldRequests.isEmpty)
+    }
+
+    @Test func anOtherCallDeclinedWithoutAHoldChangesNothing() async throws {
+        let h = timedHarness()
+        await liveCall(h)
+        let other = h.provider.simulateOtherCallStarted()
+
+        h.provider.simulateOtherCallEnded(other)
+        await h.engine.awaitPendingWork()
+
+        #expect(!h.engine.isOnHold)
+        #expect(h.provider.heldRequests.isEmpty)
+        #expect(h.transport.isMicEnabled)
+        #expect(h.transport.sentSignals == [.connected])
+    }
+
+    @Test func aResumeAlreadyMadeByTheUserIsNotRequestedAgain() async throws {
+        let h = timedHarness()
+        let other = await heldForAnotherCall(h)
+        await setHeld(h, false) // the user resumed from the system call screen
+
+        h.provider.simulateOtherCallEnded(other)
+        await h.engine.awaitPendingWork()
+
+        #expect(h.provider.heldRequests.isEmpty)
+        #expect(!h.engine.isOnHold)
+    }
+
+    @Test func aCallThatEndedIsNotResumed() async throws {
+        let h = timedHarness()
+        let other = await heldForAnotherCall(h)
+        h.provider.simulateEndCall(h.callID)
+
+        h.provider.simulateOtherCallEnded(other)
+        await h.engine.awaitPendingWork()
+
+        #expect(h.provider.heldRequests.isEmpty)
+        #expect(h.delegate.records.count == 1)
+    }
+
     // MARK: - Refusals (the action names the call; the call must be holdable)
 
     @Test func holdForAnotherCallIsRefused() async throws {

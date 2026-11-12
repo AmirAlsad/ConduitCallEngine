@@ -75,6 +75,19 @@ public struct CallEngineConfiguration: @unchecked Sendable {
     /// `CallEngine.isOnHold`. When false, CallKit offers no hold for the call, and a
     /// phone call that starts during it ends it.
     public var supportsHolding: Bool
+    /// Whether the engine resumes a call iOS held for another call once that call
+    /// has ended. When the system holds the call (a `CXSetHeldCallAction` your app
+    /// did not request with `CallEngine.setOnHold(_:)`, as when the user takes a
+    /// phone call), the engine watches the other calls on the device through
+    /// CallKit's call observer; once every call it saw during the hold has ended and
+    /// no other call is left, it asks CallKit to resume its call, as the user's
+    /// resume would. CallKit does not do this for an app's calls itself. A call
+    /// still up (a third call, a call on hold) keeps it held; a hold your app
+    /// requested is never resumed by the engine, nor one your app asked to keep
+    /// with `setOnHold(true)`. A system hold during which no other call is seen
+    /// (the user holding from the system call screen) stays until it is resumed.
+    /// No effect when `supportsHolding` is false. Default true.
+    public var resumesAfterSystemHold: Bool
     /// Whether the mic follows a push-to-talk button (`CallEngine.setPushToTalkActive(_:)`)
     /// instead of mute. Called on the main actor at each mic decision, so a setting
     /// changed mid-call takes effect at the next one. Default `{ false }`.
@@ -87,6 +100,7 @@ public struct CallEngineConfiguration: @unchecked Sendable {
         minimumConnectingDuration: Duration = .zero,
         micWithholdTimeout: Duration = .seconds(5),
         supportsHolding: Bool = true,
+        resumesAfterSystemHold: Bool = true,
         isPushToTalkEnabled: @escaping @MainActor () -> Bool = { false }
     ) {
         self.unknownCallerName = unknownCallerName
@@ -95,6 +109,7 @@ public struct CallEngineConfiguration: @unchecked Sendable {
         self.minimumConnectingDuration = minimumConnectingDuration
         self.micWithholdTimeout = micWithholdTimeout
         self.supportsHolding = supportsHolding
+        self.resumesAfterSystemHold = resumesAfterSystemHold
         self.isPushToTalkEnabled = isPushToTalkEnabled
     }
 }

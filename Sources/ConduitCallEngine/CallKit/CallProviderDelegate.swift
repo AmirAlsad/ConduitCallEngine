@@ -32,4 +32,7 @@ package protocol CallProviderDelegate: AnyObject {
     func providerPerformSetHeld(_ id: UUID, onHold: Bool) -> Bool
     /// The system reset the provider; tear everything down defensively.
     func providerWasReset()
+    /// A call on the device changed (started, connected, held, ended), as CallKit's
+    /// call observer reports it: the engine's own calls included.
+    func providerDidObserveCallChange(_ call: ObservedCall)
 }

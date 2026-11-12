@@ -216,6 +216,15 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     private var activationRecoveryAttempts = 0
     /// Where the hold-and-resume pair asking CallKit again stands.
     private var activationRecoveryStep: ActivationRecoveryStep = .idle
+    /// Who asked for the hold in effect; nil while the call is not held.
+    private var holdOrigin: HoldOrigin?
+    /// The hold or resume the host asked CallKit for with `setOnHold(_:)` that
+    /// CallKit has not performed yet. A hold CallKit performs while one is pending
+    /// counts as the host's, so a hold is only ever taken for the system's when the
+    /// host certainly did not ask for it.
+    private var pendingHostHold: Bool?
+    /// The other calls seen on the device during a hold iOS made, not yet ended.
+    private var callsSeenDuringSystemHold: Set<UUID> = []
     /// What each running timer does when its wait is over, so a simulated system
     /// can run one out early (`fireTimer(_:)`).
     private var timerExpiries: [EngineTimer: @MainActor () -> Void] = [:]
@@ -1785,8 +1794,14 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         default:
             break
         }
-        guard onHold != isOnHold else { return true }
-        if onHold { hold() } else { resume() }
+        let isHostRequest = pendingHostHold == onHold
+        if isHostRequest { pendingHostHold = nil }
+        guard onHold != isOnHold else {
+            // The host asking to keep a hold iOS made: it is the host's now.
+            if onHold, isHostRequest { holdOrigin = .host }
+            return true
+        }
+        if onHold { hold(origin: isHostRequest ? .host : .system) } else { resume() }
         return true
     }
 
@@ -1798,9 +1813,20 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         }
     }
 
-    private func hold() {
-        Log.info(.call, "Call held")
+    /// Who asked for a hold.
+    private enum HoldOrigin {
+        /// The host, with `setOnHold(true)`. Never resumed by the engine.
+        case host
+        /// iOS, or the user from the system call UI: CallKit performed a hold the
+        /// host did not request.
+        case system
+    }
+
+    private func hold(origin: HoldOrigin) {
+        Log.info(.call, origin == .host ? "Call held" : "Call held by the system")
         isOnHold = true
+        holdOrigin = origin
+        callsSeenDuringSystemHold = origin == .system ? otherCallsInProgress() : []
         signalRetryCount = 0
         cancelActivationRecovery()
         applyMic()
@@ -1824,6 +1850,8 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     private func resume() {
         Log.info(.call, "Call resumed")
         isOnHold = false
+        holdOrigin = nil
+        callsSeenDuringSystemHold = []
         signalRetryCount = 0
         if isAudioActivated, interruption == .interrupted(reactivated: true) {
             // CallKit handed the session back during the hold; the resume is when
@@ -1904,6 +1932,11 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     private func askForActivationAgain(for id: UUID) {
         guard activeCallID == id, !isAudioActivated, !isOnHold, canBeHeld, activationRecoveryStep == .idle else { return }
         activationRecoveryAttempts += 1
+        if callProvider.observedCalls.contains(where: { $0.id != id && !$0.hasEnded && !$0.isOnHold }) {
+            Log.warning(.callKit, "CallKit did not activate the audio within \(Self.activationRecoveryDelay) of the resume, but another call is active; not asking again (\(activationRecoveryAttempts) of \(Self.activationRecoveryAttemptLimit))")
+            startActivationRecoveryIfNeeded()
+            return
+        }
         Log.warning(.callKit, "CallKit did not activate the audio within \(Self.activationRecoveryDelay) of the resume; holding and resuming the call to ask again (\(activationRecoveryAttempts) of \(Self.activationRecoveryAttemptLimit))")
         activationRecoveryStep = .holding
         startDetachedWork { [weak self] in await self?.runActivationRecoveryPair(for: id) }
@@ -1931,13 +1964,48 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
             // user's resume asks for it properly.
             Log.error(.callKit, "CallKit refused the resume that asks again for the audio; the call stays held")
             activationRecoveryStep = .idle
-            hold()
+            hold(origin: .host)
         case .holding, .abandoned:
             activationRecoveryStep = .idle
             startActivationRecoveryIfNeeded()
         case .idle:
             break
         }
+    }
+
+    // MARK: - Other calls on the device (CallProviderDelegate)
+    //
+    // CallKit does not resume an app's call when the call iOS held it for ends.
+    // The engine does, for a hold iOS made, once every other call it saw during
+    // the hold has ended and none is left.
+
+    package func providerDidObserveCallChange(_ call: ObservedCall) {
+        guard let id = activeCallID, call.id != id else { return }
+        guard isOnHold, holdOrigin == .system else { return }
+        guard call.hasEnded else {
+            callsSeenDuringSystemHold.insert(call.id)
+            return
+        }
+        guard callsSeenDuringSystemHold.remove(call.id) != nil else { return }
+        let remaining = otherCallsInProgress().subtracting([call.id])
+        guard remaining.isEmpty else {
+            Log.info(.call, "A call ended during the system's hold; \(remaining.count) other call(s) still up, so the call stays held")
+            return
+        }
+        guard configuration.resumesAfterSystemHold else {
+            Log.info(.call, "The call the system held for ended; resumesAfterSystemHold is off, so the call stays held")
+            return
+        }
+        Log.info(.call, "The call the system held for ended; resuming")
+        startDetachedWork { [weak self] in
+            guard let self, self.activeCallID == id, self.isOnHold, self.holdOrigin == .system else { return }
+            await self.callProvider.setHeld(id, onHold: false)
+        }
+    }
+
+    /// The calls on the device other than this one that have not ended.
+    private func otherCallsInProgress() -> Set<UUID> {
+        Set(callProvider.observedCalls.filter { $0.id != activeCallID && !$0.hasEnded }.map(\.id))
     }
 
     /// Tell the agent whether the call is held, whenever it can be told: on hold
@@ -2256,7 +2324,11 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         }
         // The user asking to resume overrides a refusal kept for the pair's resume.
         if !onHold, activationRecoveryStep == .abandoned { activationRecoveryStep = .idle }
-        await callProvider.setHeld(id, onHold: onHold)
+        // The host keeping a hold iOS made: the engine does not resume it any more.
+        if onHold, isOnHold { holdOrigin = .host }
+        pendingHostHold = onHold
+        let accepted = await callProvider.setHeld(id, onHold: onHold)
+        if !accepted, pendingHostHold == onHold, activeCallID == id { pendingHostHold = nil }
         await mediaTask?.value
     }
 
@@ -2445,6 +2517,9 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         cancelActivationRecovery()
         activationRecoveryStep = .idle
         activationRecoveryAttempts = 0
+        holdOrigin = nil
+        pendingHostHold = nil
+        callsSeenDuringSystemHold = []
         isOnHold = false
         isAgentToldHeld = false
         isReconnectionPaused = false
@@ -2490,6 +2565,9 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         cancelActivationRecovery()
         activationRecoveryStep = .idle
         activationRecoveryAttempts = 0
+        holdOrigin = nil
+        pendingHostHold = nil
+        callsSeenDuringSystemHold = []
         connectingLoopStartedAt = nil
         audioDevices = []
         selectedAudioDeviceID = nil

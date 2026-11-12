@@ -216,6 +216,92 @@ struct DeterministicHostTests {
         #expect(Array(host.cues.suffix(2)) == [.moment(.held), .moment(.resumed)])
     }
 
+    // MARK: - A phone call during the call
+
+    /// The iOS 27 device sequence: the user accepts a phone call and CallKit holds
+    /// the call; the audio is interrupted and CallKit deactivates the session three
+    /// times; the phone call ends, and CallKit neither resumes the call nor
+    /// activates its audio, and the interruption's end never arrives. The engine
+    /// resumes the call itself, asks CallKit again for the audio when the resume
+    /// brings none, and the activation that follows (the second hold-and-resume
+    /// brought it on the device) gives the call its audio and mic back, with no
+    /// action from the user after the phone call ends.
+    @Test func aPhoneCallTakenAndEndedDuringTheCallGivesTheCallBackByItself() async throws {
+        let (callID, transport) = try await connectedCall()
+        let phoneCall = system.startOtherCall()
+        #expect(await system.setHeldFromSystem(callID, onHold: true))
+        system.beginAudioInterruption()
+        system.deactivateAudioSession()
+        system.deactivateAudioSession()
+        system.deactivateAudioSession()
+        await system.awaitPendingWork()
+        #expect(engine.isOnHold)
+        #expect(engine.isInterrupted)
+        #expect(!transport.isAudioAttached)
+        #expect(transport.sentSignals == [.connected, .held])
+
+        await system.endOtherCall(phoneCall)
+
+        #expect(!engine.isOnHold)
+        #expect(system.holdRequests == [.init(callID: callID, onHold: false)])
+        #expect(transport.sentSignals == [.connected, .held, .resumed])
+        #expect(!transport.isAudioAttached) // CallKit has not activated the audio
+        #expect(system.otherCallIDs.isEmpty)
+
+        #expect(system.fireTimer(.activationRecovery))
+        await system.awaitPendingWork()
+        #expect(system.holdRequests.map(\.onHold) == [false, true, false])
+        #expect(!engine.isOnHold)
+
+        await system.activateAudioSession()
+
+        #expect(!engine.isOnHold)
+        #expect(!engine.isInterrupted)
+        #expect(engine.isAudioActivated)
+        #expect(transport.isAudioAttached)
+        #expect(transport.isMicEnabled)
+        #expect(transport.sentSignals == [.connected, .held, .resumed])
+        #expect(Array(host.cues.suffix(2)) == [.moment(.held), .moment(.resumed)])
+        #expect(!system.fireTimer(.activationRecovery))
+    }
+
+    @Test func aPhoneCallDeclinedDuringTheCallChangesNothing() async throws {
+        let (_, transport) = try await connectedCall()
+        let phoneCall = system.startOtherCall()
+
+        await system.endOtherCall(phoneCall)
+
+        #expect(!engine.isOnHold)
+        #expect(system.holdRequests.isEmpty)
+        #expect(transport.isMicEnabled)
+    }
+
+    @Test func aCallHeldByTheHostStaysHeldWhenAPhoneCallEnds() async throws {
+        let (_, _) = try await connectedCall()
+        let phoneCall = system.startOtherCall()
+        await engine.setOnHold(true)
+
+        await system.endOtherCall(phoneCall)
+
+        #expect(engine.isOnHold)
+        #expect(system.holdRequests.map(\.onHold) == [true])
+    }
+
+    @Test func aCallStaysHeldWhileAnotherCallIsUp() async throws {
+        let (callID, _) = try await connectedCall()
+        let first = system.startOtherCall()
+        await system.setHeldFromSystem(callID, onHold: true)
+        let second = system.startOtherCall()
+        system.setOtherCallHeld(first, onHold: true)
+
+        await system.endOtherCall(second)
+        #expect(engine.isOnHold)
+        #expect(system.otherCallIDs == [first])
+
+        await system.endOtherCall(first)
+        #expect(!engine.isOnHold)
+    }
+
     @Test func anInterruptionClosesAndReopensTheMic() async throws {
         let (_, transport) = try await connectedCall()
 

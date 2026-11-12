@@ -308,6 +308,7 @@ final class CallEngineHarness {
         minimumConnectingDuration: Duration = .zero,
         micWithholdTimeout: Duration = .seconds(5),
         supportsHolding: Bool = true,
+        resumesAfterSystemHold: Bool = true,
         now: @escaping () -> Date = { Date() },
         sleep: @escaping (Duration) async throws -> Void = { _ in }
     ) {
@@ -328,6 +329,7 @@ final class CallEngineHarness {
                 minimumConnectingDuration: minimumConnectingDuration,
                 micWithholdTimeout: micWithholdTimeout,
                 supportsHolding: supportsHolding,
+                resumesAfterSystemHold: resumesAfterSystemHold,
                 isPushToTalkEnabled: { pushToTalk }
             ),
             callProvider: provider,

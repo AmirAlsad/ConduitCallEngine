@@ -161,6 +161,37 @@ public final class SimulatedCallSystem {
         provider.simulateReset()
     }
 
+    // MARK: - Other calls
+
+    /// Another call started on the device (a phone call rings or is placed, or
+    /// another app's call), as CallKit's call observer reports it. Returns its id.
+    /// It changes nothing by itself: when the user accepts it, iOS holds the
+    /// engine's call, which you show with `setHeldFromSystem(_:onHold: true)`.
+    @discardableResult
+    public func startOtherCall() -> UUID {
+        provider.simulateOtherCallStarted()
+    }
+
+    /// The other call was held (`true`) or taken off hold on the device.
+    public func setOtherCallHeld(_ id: UUID, onHold: Bool) {
+        provider.simulateOtherCallHeld(id, onHold: onHold)
+    }
+
+    /// The other call ended, whoever hung it up, or was declined. Returns once the
+    /// engine has done what it does then: when iOS held the engine's call during it
+    /// and no other call is left, the engine asks CallKit to resume its call
+    /// (`CallEngineConfiguration.resumesAfterSystemHold`), which shows in
+    /// `holdRequests` and is performed at once. As on the device, the simulated
+    /// CallKit does not then activate the audio by itself: call
+    /// `activateAudioSession()` for that.
+    public func endOtherCall(_ id: UUID) async {
+        provider.simulateOtherCallEnded(id)
+        await engine?.awaitPendingWork()
+    }
+
+    /// The other calls in progress (started and not ended), in the order they started.
+    public var otherCallIDs: [UUID] { provider.otherCalls.map(\.id) }
+
     // MARK: - Audio session
 
     /// CallKit activated the call's audio session; returns once the engine has

@@ -180,6 +180,47 @@ package final class FakeCallProvider: CallProviding {
     package func simulateSetHeld(_ id: UUID, onHold: Bool) -> Bool {
         delegate?.providerPerformSetHeld(id, onHold: onHold) ?? false
     }
+    // MARK: - Other calls on the device (CallKit's call observer)
+
+    /// The calls other than the ones the engine reported, in the order they
+    /// started; an ended one is removed.
+    package private(set) var otherCalls: [ObservedCall] = []
+
+    /// The engine's calls CallKit holds, then the other calls, as the observer lists them.
+    package var observedCalls: [ObservedCall] {
+        liveCallIDs.sorted { $0.uuidString < $1.uuidString }.map { ObservedCall(id: $0, hasEnded: false, isOnHold: false) }
+            + otherCalls
+    }
+
+    /// Another call started (ringing, or placed) on the device.
+    @discardableResult
+    package func simulateOtherCallStarted(_ id: UUID = UUID()) -> UUID {
+        let call = ObservedCall(id: id, hasEnded: false, isOnHold: false)
+        otherCalls.removeAll { $0.id == id }
+        otherCalls.append(call)
+        delegate?.providerDidObserveCallChange(call)
+        return id
+    }
+
+    /// Another call was held or resumed on the device.
+    package func simulateOtherCallHeld(_ id: UUID, onHold: Bool) {
+        guard let index = otherCalls.firstIndex(where: { $0.id == id }) else { return }
+        otherCalls[index] = ObservedCall(id: id, hasEnded: false, isOnHold: onHold)
+        delegate?.providerDidObserveCallChange(otherCalls[index])
+    }
+
+    /// Another call ended on the device, however it ended.
+    package func simulateOtherCallEnded(_ id: UUID) {
+        otherCalls.removeAll { $0.id == id }
+        delegate?.providerDidObserveCallChange(ObservedCall(id: id, hasEnded: true, isOnHold: false))
+    }
+
+    /// Deliver an observer change as is, for any id (the engine's own included),
+    /// without changing `observedCalls`.
+    package func simulateObservedCallChange(_ call: ObservedCall) {
+        delegate?.providerDidObserveCallChange(call)
+    }
+
     package func simulateReset() {
         liveCallIDs.removeAll()
         delegate?.providerWasReset()
