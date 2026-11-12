@@ -162,61 +162,18 @@ struct LiveKitConnectGateTests {
         #expect(gate.roomDidDisconnect() == .disconnected(reason: .networkDropped))
     }
 
-    private func legacyConnectedGate() -> LiveKitConnectGate {
-        var gate = LiveKitConnectGate(abandonedReconnectsLookComplete: true)
-        _ = gate.roomDidConnect()
-        _ = gate.remoteDidJoin()
-        return gate
-    }
-
-    /// LiveKit before 2.18.0, offline: a failed full reconnect has cleared the remotes,
-    /// then the retry loop gives up silently and marks the room connected again.
-    @Test func beforeLiveKit218AConnectedCompletionWithNoRemoteIsTheDrop() {
-        var gate = legacyConnectedGate()
-        #expect(gate.roomDidConnect() == nil) // the SDK's reconnecting -> connected
-
-        #expect(gate.reconnectDidComplete(roomConnected: true, remotesPresent: false)
-            == .disconnected(reason: .networkDropped))
-        #expect(gate.roomNeedsReset)
-        // The room's own disconnect, once it is reset, is not a second drop.
-        #expect(gate.roomDidDisconnect() == nil)
-        #expect(gate.remoteDidJoin() == nil)
-    }
-
-    /// From LiveKit 2.18.0 a completion with the room connected follows a rejoin that
-    /// succeeded, so no remote means the agent left while the device was offline. The
-    /// call ends as the agent's hangup, as it does when the agent leaves a connected
-    /// call or when a quick reconnect brings the news; redialing would start a new
-    /// agent session inside the same call.
+    /// A completion with the room connected follows a rejoin that succeeded, so no
+    /// remote means the agent left while the device was offline. The call ends as the
+    /// agent's hangup, as it does when the agent leaves a connected call or when a
+    /// quick reconnect brings the news; redialing would start a new agent session
+    /// inside the same call.
     @Test func aConnectedCompletionWithNoRemoteIsTheAgentLeaving() {
         var gate = connectedGate()
 
         #expect(gate.reconnectDidComplete(roomConnected: true, remotesPresent: false)
             == .disconnected(reason: .botLeft))
-        #expect(gate.roomNeedsReset == false)
         #expect(gate.roomDidDisconnect() == nil)
         #expect(gate.remoteDidJoin() == nil)
-    }
-
-    /// Every failed reconnect ends with LiveKit cleaning the room up, which leaves it
-    /// disconnected: there is nothing left to reset, on any version.
-    @Test(arguments: [false, true])
-    func aReconnectThatEndedDisconnectedNeedsNoReset(legacySDK: Bool) {
-        var gate = LiveKitConnectGate(abandonedReconnectsLookComplete: legacySDK)
-        _ = gate.roomDidConnect()
-        _ = gate.remoteDidJoin()
-
-        #expect(gate.reconnectDidComplete(roomConnected: false, remotesPresent: false)
-            == .disconnected(reason: .networkDropped))
-        #expect(gate.roomNeedsReset == false)
-    }
-
-    @Test(arguments: [
-        ("2.15.1", true), ("2.17.9", true), ("2.18.0", false), ("2.19.0", false),
-        ("3.0.0", false), ("2.20.0-beta.1", false), ("unknown", false),
-    ])
-    func abandonedReconnectsLookCompleteBefore218(version: String, expected: Bool) {
-        #expect(LiveKitConnectGate.abandonedReconnectsLookComplete(sdkVersion: version) == expected)
     }
 
     @Test func aFailedReconnectReportsOneDropWhenTheDisconnectArrivesFirst() {
