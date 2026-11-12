@@ -32,9 +32,9 @@ public enum CallState: Equatable, Sendable {
     case dialing
     /// CallKit has the call (started, or answered). The target's credentials are
     /// resolved during this state, then the transport joins, and the call stays here
-    /// until the transport reports `.connected` and at least
-    /// `CallEngineConfiguration.minimumConnectingDuration` has passed. An answered
-    /// ring whose agent was already there during the ring skips it.
+    /// until the transport reports `.connected`; a call the user placed also stays
+    /// until `CallEngineConfiguration.minimumOutgoingConnectingDuration` has passed.
+    /// An answered ring whose agent was already there during the ring skips it.
     case connecting
     /// The transport reports the remote party present and media up. `since` is the
     /// first connect of this call; a reconnect keeps it.

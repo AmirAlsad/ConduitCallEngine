@@ -2,11 +2,13 @@
 //  MinimumConnectingTests.swift
 //  ConduitCallEngineTests
 //
-//  `CallEngineConfiguration.minimumConnectingDuration`: a call whose transport is
-//  ready sooner stays `.connecting` until the connecting loop has run that long,
-//  so state, CallKit's connected report, the connecting cue, the mic, the agent's
-//  `call-connected` and the record agree. A pre-connected ring answered with its
-//  agent there is not delayed. While the engine holds a ready connection, the
+//  `CallEngineConfiguration.minimumOutgoingConnectingDuration`: a call the user
+//  placed whose transport is ready sooner stays `.connecting` until the connecting
+//  loop has run that long, so state, CallKit's connected report, the connecting
+//  cue, the mic, the agent's `call-connected` and the record agree. An incoming call
+//  is never delayed: answered, it connects as soon as its transport is ready, and a
+//  pre-connected ring answered with its agent there goes straight to connected.
+//  While the engine holds a ready connection, the
 //  transport's own news about it is applied to the call it made (the connection is
 //  reported first), so the call ends up where it would have without the minimum;
 //  the user's and the system's actions apply to the call as it stands, connecting.
@@ -32,7 +34,7 @@ struct MinimumConnectingTests {
         let sleeper = sleeper
         return CallEngineHarness(
             joinTimeout: joinTimeout,
-            minimumConnectingDuration: minimum ?? self.minimum,
+            minimumOutgoingConnectingDuration: minimum ?? self.minimum,
             micWithholdTimeout: micWithholdTimeout,
             now: clock.now,
             sleep: { await sleeper.sleep($0) }
@@ -53,7 +55,7 @@ struct MinimumConnectingTests {
     // MARK: - The minimum
 
     @Test func theDefaultIsNoMinimum() {
-        #expect(CallEngineConfiguration().minimumConnectingDuration == .zero)
+        #expect(CallEngineConfiguration().minimumOutgoingConnectingDuration == .zero)
     }
 
     @Test func aCallReadySoonerStaysConnectingForTheRestOfTheMinimum() async throws {
@@ -71,12 +73,12 @@ struct MinimumConnectingTests {
         #expect(!h.delegate.cues.contains(.moment(.connected)))
         #expect(!h.transport.isMicEnabled)
         #expect(h.transport.sentSignals.isEmpty)
-        #expect(h.engine.isTimerRunning(.minimumConnecting))
+        #expect(h.engine.isTimerRunning(.minimumOutgoingConnecting))
         await waitUntil { sleeper.pendingCount == 1 }
         #expect(sleeper.requested.last == .milliseconds(1600))
 
         clock.advance(1.6)
-        #expect(h.engine.fireTimer(.minimumConnecting))
+        #expect(h.engine.fireTimer(.minimumOutgoingConnecting))
         await h.engine.awaitPendingWork()
 
         #expect(h.engine.state == .connected(since: clock.now()))
@@ -102,7 +104,7 @@ struct MinimumConnectingTests {
         await h.engine.awaitPendingWork()
         #expect(h.transport.micEnabledHistory.allSatisfy { !$0 })
 
-        #expect(h.engine.fireTimer(.minimumConnecting))
+        #expect(h.engine.fireTimer(.minimumOutgoingConnecting))
         await h.engine.awaitPendingWork()
 
         #expect(h.transport.isMicEnabled)
@@ -116,7 +118,7 @@ struct MinimumConnectingTests {
         h.engine.handle(.connected)
 
         #expect(h.engine.state.isConnected)
-        #expect(!h.engine.isTimerRunning(.minimumConnecting))
+        #expect(!h.engine.isTimerRunning(.minimumOutgoingConnecting))
         #expect(h.provider.reportedConnected == [h.callID])
     }
 
@@ -152,11 +154,14 @@ struct MinimumConnectingTests {
         await h.engine.answer()
 
         #expect(h.engine.state.isConnected)
-        #expect(!h.engine.isTimerRunning(.minimumConnecting))
+        #expect(!h.engine.isTimerRunning(.minimumOutgoingConnecting))
         #expect(!h.delegate.cues.contains(.start(.connecting)))
     }
 
-    @Test func aRingStillJoiningAtTheAnswerWaitsFromTheAnswer() async throws {
+    /// The minimum is for a call the user placed, so its ringback can finish. A ring
+    /// answered while its pre-connected agent is still on its way connects the
+    /// moment the agent is there.
+    @Test func aRingStillJoiningAtTheAnswerConnectsAsSoonAsItsAgentIsThere() async throws {
         let h = harness()
         h.allowRingPreparation(.media)
         h.transport.canConnectWhileRinging = true
@@ -170,12 +175,50 @@ struct MinimumConnectingTests {
         clock.advance(0.5)
         h.engine.handle(.connected)
 
-        #expect(h.engine.state.isConnecting)
-        await waitUntil { sleeper.pendingCount == 1 }
-        #expect(sleeper.requested.last == .milliseconds(2100))
-        #expect(h.engine.fireTimer(.minimumConnecting))
-        #expect(h.engine.state.isConnected)
+        #expect(h.engine.state == .connected(since: clock.now()))
+        #expect(!h.engine.isTimerRunning(.minimumOutgoingConnecting))
         #expect(h.provider.reportedConnected.isEmpty) // CallKit's answer marks an incoming call
+    }
+
+    @Test(arguments: ["none", "credentials"])
+    func anAnsweredRingConnectsAsSoonAsItsTransportIsReady(preconnect: String) async throws {
+        let h = harness()
+        h.allowRingPreparation(.credentials)
+        h.ring(preconnect: preconnect)
+        _ = await h.engine.awaitPendingRingPreparation()
+        await h.engine.answer()
+        await activate(h)
+        #expect(h.engine.state.isConnecting)
+        #expect(h.delegate.cues == [.start(.connecting)])
+
+        h.engine.handle(.connected)
+        await h.engine.awaitPendingWork()
+
+        #expect(h.engine.state == .connected(since: clock.now()))
+        #expect(!h.engine.isTimerRunning(.minimumOutgoingConnecting))
+        #expect(h.delegate.cues == [.start(.connecting), .stop, .moment(.connected)])
+        #expect(h.transport.sentSignals == [.connected])
+        #expect(h.delegate.cueViolations.isEmpty)
+    }
+
+    /// The resume of an answered call held while connecting starts the connecting
+    /// loop again, but no minimum: a transport ready during the hold connects at the
+    /// resume.
+    @Test func anAnsweredCallReadyWhileHeldConnectsAtTheResume() async throws {
+        let h = harness()
+        h.ring(callID: h.callID)
+        await h.engine.answer()
+        await activate(h)
+        await setHeld(h, true)
+        h.engine.handle(.connected)
+        #expect(h.engine.state.isConnected) // as with no minimum: connected while held
+        #expect(!h.delegate.cues.contains(.moment(.connected)))
+
+        await setHeld(h, false)
+
+        #expect(!h.engine.isTimerRunning(.minimumOutgoingConnecting))
+        #expect(h.delegate.cues.last == .moment(.connected))
+        #expect(h.delegate.cueViolations.isEmpty)
     }
 
     // MARK: - The join deadline counts the readiness
@@ -204,7 +247,7 @@ struct MinimumConnectingTests {
         await place.value
 
         #expect(!h.engine.isTimerRunning(.joinTimeout))
-        #expect(h.engine.fireTimer(.minimumConnecting))
+        #expect(h.engine.fireTimer(.minimumOutgoingConnecting))
         #expect(h.engine.state.isConnected)
     }
 
@@ -247,7 +290,7 @@ struct MinimumConnectingTests {
         await place.value
         // News that changes nothing for a connected call leaves the wait running:
         // let it run out, so both calls are compared where they end up.
-        _ = h.engine.fireTimer(.minimumConnecting)
+        _ = h.engine.fireTimer(.minimumOutgoingConnecting)
         await h.engine.awaitPendingWork()
         let trace = Trace(
             transitions: h.delegate.transitions,
@@ -286,7 +329,7 @@ struct MinimumConnectingTests {
 
         #expect(h.engine.state == .reconnecting(attempt: 1))
         #expect(h.delegate.records.isEmpty)
-        #expect(!h.engine.isTimerRunning(.minimumConnecting))
+        #expect(!h.engine.isTimerRunning(.minimumOutgoingConnecting))
     }
 
     // MARK: - The user's and the system's actions during the wait
@@ -304,7 +347,7 @@ struct MinimumConnectingTests {
         #expect(!h.delegate.cues.contains(.moment(.connected)))
         #expect(h.delegate.records.map(\.outcome) == [.canceled])
         #expect(h.delegate.records.first?.duration == 0)
-        #expect(!h.engine.isTimerRunning(.minimumConnecting))
+        #expect(!h.engine.isTimerRunning(.minimumOutgoingConnecting))
         #expect(h.transport.sentSignals.isEmpty)
         #expect(h.delegate.cueViolations.isEmpty)
     }
@@ -315,7 +358,7 @@ struct MinimumConnectingTests {
         h.engine.handle(.connected)
 
         h.provider.simulateEndCall(h.callID)
-        #expect(!h.engine.fireTimer(.minimumConnecting))
+        #expect(!h.engine.fireTimer(.minimumOutgoingConnecting))
 
         #expect(h.engine.state == .ended(.canceled))
         #expect(h.delegate.records.count == 1)
@@ -332,7 +375,7 @@ struct MinimumConnectingTests {
         #expect(h.engine.state == .failed(.unknown))
         #expect(h.delegate.records.map(\.outcome) == [.failed])
         #expect(h.provider.reportedConnected.isEmpty)
-        #expect(!h.engine.isTimerRunning(.minimumConnecting))
+        #expect(!h.engine.isTimerRunning(.minimumOutgoingConnecting))
     }
 
     /// A hold stops the ringback, so the wait stops too; the resume starts the
@@ -342,10 +385,10 @@ struct MinimumConnectingTests {
         await h.placeCall()
         await activate(h)
         h.engine.handle(.connected)
-        #expect(h.engine.isTimerRunning(.minimumConnecting))
+        #expect(h.engine.isTimerRunning(.minimumOutgoingConnecting))
 
         await setHeld(h, true)
-        #expect(!h.engine.isTimerRunning(.minimumConnecting))
+        #expect(!h.engine.isTimerRunning(.minimumOutgoingConnecting))
         #expect(!h.engine.isTimerRunning(.joinTimeout))
         #expect(h.engine.state.isConnecting)
         clock.advance(60)
@@ -354,14 +397,14 @@ struct MinimumConnectingTests {
 
         await setHeld(h, false)
         #expect(h.delegate.cues.last == .start(.connecting))
-        #expect(h.engine.isTimerRunning(.minimumConnecting))
+        #expect(h.engine.isTimerRunning(.minimumOutgoingConnecting))
         #expect(!h.engine.isTimerRunning(.joinTimeout)) // the agent is there
         await waitUntil { sleeper.requested.count == waits + 1 }
         #expect(sleeper.requested.count == waits + 1)
         #expect(sleeper.requested.last == minimum)
         #expect(h.engine.state.isConnecting)
 
-        #expect(h.engine.fireTimer(.minimumConnecting))
+        #expect(h.engine.fireTimer(.minimumOutgoingConnecting))
         await h.engine.awaitPendingWork()
         #expect(h.engine.state.isConnected)
         #expect(Array(h.delegate.cues.suffix(2)) == [.stop, .moment(.connected)])
@@ -378,11 +421,11 @@ struct MinimumConnectingTests {
 
         h.engine.handle(.connected)
         #expect(h.engine.state.isConnecting)
-        #expect(!h.engine.isTimerRunning(.minimumConnecting))
+        #expect(!h.engine.isTimerRunning(.minimumOutgoingConnecting))
 
         await setHeld(h, false)
-        #expect(h.engine.isTimerRunning(.minimumConnecting))
-        #expect(h.engine.fireTimer(.minimumConnecting))
+        #expect(h.engine.isTimerRunning(.minimumOutgoingConnecting))
+        #expect(h.engine.fireTimer(.minimumOutgoingConnecting))
         #expect(h.engine.state.isConnected)
     }
 
@@ -405,7 +448,7 @@ struct MinimumConnectingTests {
         h.provider.simulateDeactivate(FakeAudioSession())
         await h.engine.awaitPendingWork()
 
-        #expect(h.engine.fireTimer(.minimumConnecting))
+        #expect(h.engine.fireTimer(.minimumOutgoingConnecting))
         #expect(h.engine.state.isConnected)
         #expect(!h.delegate.cues.contains(.moment(.connected))) // waits for the activation
 
@@ -420,7 +463,7 @@ struct MinimumConnectingTests {
         h.engine.handle(.connected)
         h.interruption.simulateBegan()
 
-        #expect(h.engine.fireTimer(.minimumConnecting))
+        #expect(h.engine.fireTimer(.minimumOutgoingConnecting))
         await h.engine.awaitPendingWork()
         #expect(h.engine.state.isConnected)
         #expect(!h.transport.isMicEnabled)
@@ -453,7 +496,7 @@ struct MinimumConnectingTests {
     private func run(_ order: [WaitEvent]) async -> String? {
         let clock = MutableClock()
         let h = CallEngineHarness(
-            minimumConnectingDuration: minimum,
+            minimumOutgoingConnectingDuration: minimum,
             now: clock.now,
             sleep: { _ in try await Task.sleep(for: .seconds(24 * 60 * 60)) }
         )
@@ -473,7 +516,7 @@ struct MinimumConnectingTests {
                 ready = true
             case .elapse:
                 clock.advance(minimum / .seconds(1))
-                _ = h.engine.fireTimer(.minimumConnecting)
+                _ = h.engine.fireTimer(.minimumOutgoingConnecting)
                 if !held { elapsed = true }
             case .activate:
                 h.provider.simulateActivate(FakeAudioSession())

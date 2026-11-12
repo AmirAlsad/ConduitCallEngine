@@ -64,18 +64,18 @@ struct LiveKitUnderEngineTests {
     /// not told, until the minimum has passed.
     @Test(.timeLimit(.minutes(1)))
     func aRoomReadyBeforeTheMinimumStaysConnectingUntilItHasPassed() async throws {
-        let rig = LiveKitEngineRig(minimumConnecting: .seconds(3))
+        let rig = LiveKitEngineRig(minimumOutgoingConnecting: .seconds(3))
         await rig.engine.placeCall(rig.target)
         await rig.system.activateAudioSession()
         let room = try #require(rig.room)
-        await waitUntil { rig.engine.isTimerRunning(.minimumConnecting) }
+        await waitUntil { rig.engine.isTimerRunning(.minimumOutgoingConnecting) }
         await rig.system.awaitPendingWork()
 
         #expect(rig.engine.state == .connecting)
         #expect(!room.log.contains("mic on"))
         #expect(room.published.isEmpty)
 
-        #expect(rig.system.fireTimer(.minimumConnectingDuration))
+        #expect(rig.system.fireTimer(.minimumOutgoingConnectingDuration))
         await rig.system.awaitPendingWork()
 
         #expect(rig.engine.state.isConnected)
@@ -87,18 +87,18 @@ struct LiveKitUnderEngineTests {
     /// agent's hangup of a connected call, as it would have without the minimum.
     @Test(.timeLimit(.minutes(1)))
     func theAgentLeavingDuringTheMinimumEndsTheCallItMade() async throws {
-        let rig = LiveKitEngineRig(minimumConnecting: .seconds(3))
+        let rig = LiveKitEngineRig(minimumOutgoingConnecting: .seconds(3))
         await rig.engine.placeCall(rig.target)
         await rig.system.activateAudioSession()
         let room = try #require(rig.room)
-        await waitUntil { rig.engine.isTimerRunning(.minimumConnecting) }
+        await waitUntil { rig.engine.isTimerRunning(.minimumOutgoingConnecting) }
 
         room.agentLeaves()
         await waitUntil { rig.engine.state.isTerminal }
 
         #expect(rig.engine.state == .ended(.completed))
         #expect(rig.host.records.map(\.outcome) == [.completed])
-        #expect(!rig.system.fireTimer(.minimumConnectingDuration))
+        #expect(!rig.system.fireTimer(.minimumOutgoingConnectingDuration))
     }
 
     // MARK: - A disconnect while the room is still setting up

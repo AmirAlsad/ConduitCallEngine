@@ -181,18 +181,18 @@ struct DailyUnderEngineTests {
 
     @Test(.timeLimit(.minutes(1)))
     func aBotReadyBeforeTheMinimumStaysConnectingUntilItHasPassed() async throws {
-        let rig = DailyEngineRig(minimumConnecting: .seconds(3))
+        let rig = DailyEngineRig(minimumOutgoingConnecting: .seconds(3))
         _ = try await rig.placeActivatedCall()
         let pipecat = try #require(rig.pipecat)
         pipecat.botJoins()
-        await waitUntil { rig.engine.isTimerRunning(.minimumConnecting) }
+        await waitUntil { rig.engine.isTimerRunning(.minimumOutgoingConnecting) }
         await rig.system.awaitPendingWork()
 
         #expect(rig.engine.state == .connecting)
         #expect(!pipecat.micHistory.contains(true))
         #expect(signals(pipecat).isEmpty)
 
-        #expect(rig.system.fireTimer(.minimumConnectingDuration))
+        #expect(rig.system.fireTimer(.minimumOutgoingConnectingDuration))
         await rig.system.awaitPendingWork()
 
         #expect(rig.engine.state.isConnected)
@@ -204,11 +204,11 @@ struct DailyUnderEngineTests {
     /// connected call does, instead of failing as one that never connected.
     @Test(.timeLimit(.minutes(1)))
     func aDropDuringTheMinimumReconnectsTheCallItMade() async throws {
-        let rig = DailyEngineRig(minimumConnecting: .seconds(3))
+        let rig = DailyEngineRig(minimumOutgoingConnecting: .seconds(3))
         _ = try await rig.placeActivatedCall()
         let pipecat = try #require(rig.pipecat)
         pipecat.botJoins()
-        await waitUntil { rig.engine.isTimerRunning(.minimumConnecting) }
+        await waitUntil { rig.engine.isTimerRunning(.minimumOutgoingConnecting) }
 
         pipecat.setState(state: .disconnected) // Daily left the call
         await waitUntil { rig.engine.state == .reconnecting(attempt: 1) }

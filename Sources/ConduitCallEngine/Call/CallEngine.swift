@@ -174,10 +174,10 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     private var isOutageMarked = false
     /// When the connecting loop last started (`.start(.connecting)`): the transition
     /// to `.connecting`, or the resume of a call held while connecting. nil while it
-    /// is not running. `minimumConnectingDuration` counts from here.
+    /// is not running. `minimumOutgoingConnectingDuration` counts from here.
     private var connectingLoopStartedAt: Date?
     /// The transport reported `.connected` while the call was `.connecting`, and the
-    /// engine holds that connection until `minimumConnectingDuration` has passed
+    /// engine holds that connection until `minimumOutgoingConnectingDuration` has passed
     /// (`completeConnectionWhenDue`). The join deadline is over: the agent is there.
     private var isConnectionPending = false
     /// Whether `.moment(.connected)` has been delivered for this call. It waits until
@@ -206,7 +206,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     /// Ends a host's withhold of the mic that outlasts its bound; see
     /// `startMicWithholdTimeoutIfDue`.
     private var micWithholdTask: Task<Void, Never>?
-    /// Reports a ready connection once `minimumConnectingDuration` has passed; see
+    /// Reports a ready connection once `minimumOutgoingConnectingDuration` has passed; see
     /// `completeConnectionWhenDue`.
     private var minimumConnectingTask: Task<Void, Never>?
     /// Asks CallKit again for the audio it did not activate after a resume; see
@@ -1226,10 +1226,10 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         }
     }
 
-    /// Report the connection the transport made once `minimumConnectingDuration` has
-    /// passed since the connecting loop last started; until then the call stays
-    /// `.connecting`. A held call's loop is not running: its resume starts the loop
-    /// and this wait again.
+    /// Report the connection the transport made once `minimumOutgoingConnectingDuration`
+    /// has passed since the connecting loop last started, for a call the user placed;
+    /// until then the call stays `.connecting`. A held call's loop is not running: its
+    /// resume starts the loop and this wait again. An answered call connects at once.
     private func completeConnectionWhenDue() {
         guard isConnectionPending, case .connecting = state else { return }
         guard let remaining = remainingConnectingMinimum() else { return }
@@ -1238,19 +1238,20 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
             return
         }
         guard minimumConnectingTask == nil else { return }
-        Log.info(.call, "The agent is there; connecting for another \(remaining), the minimum")
-        minimumConnectingTask = startTimer(.minimumConnecting, after: remaining) { [weak self] in
+        Log.info(.call, "The agent is there; connecting for another \(remaining), the outgoing minimum")
+        minimumConnectingTask = startTimer(.minimumOutgoingConnecting, after: remaining) { [weak self] in
             guard let self else { return }
             self.minimumConnectingTask = nil
             self.completeConnection()
         }
     }
 
-    /// What is left of `minimumConnectingDuration`: zero when there is none or it has
-    /// passed, nil while the connecting loop is not running (the call is held).
+    /// What is left of `minimumOutgoingConnectingDuration`: zero for an incoming call,
+    /// when there is none or when it has passed, nil while the connecting loop is not
+    /// running (the call is held).
     private func remainingConnectingMinimum() -> Duration? {
-        let minimum = configuration.minimumConnectingDuration
-        guard minimum > .zero else { return .zero }
+        let minimum = configuration.minimumOutgoingConnectingDuration
+        guard callDirection == .outgoing, minimum > .zero else { return .zero }
         guard let started = connectingLoopStartedAt else { return isOnHold ? nil : .zero }
         return minimum - .seconds(now().timeIntervalSince(started))
     }
@@ -1258,7 +1259,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     private func cancelMinimumConnecting() {
         minimumConnectingTask?.cancel()
         minimumConnectingTask = nil
-        timerExpiries[.minimumConnecting] = nil
+        timerExpiries[.minimumOutgoingConnecting] = nil
     }
 
     /// The call connects: the transport reported `.connected` while connecting, and
@@ -1593,7 +1594,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         case .micWithholdTimeout:
             micWithholdTask?.cancel()
             micWithholdTask = nil
-        case .minimumConnecting:
+        case .minimumOutgoingConnecting:
             minimumConnectingTask?.cancel()
             minimumConnectingTask = nil
         case .activationRecovery:

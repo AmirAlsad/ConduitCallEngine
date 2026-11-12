@@ -74,7 +74,7 @@ final class DailyEngineRig {
 
     init(
         joinTimeout: Duration? = .seconds(30),
-        minimumConnecting: Duration = .zero,
+        minimumOutgoingConnecting: Duration = .zero,
         strategy: DailyRingJoinStrategy = .unsupported
     ) {
         self.strategy = strategy
@@ -83,7 +83,7 @@ final class DailyEngineRig {
             configuration: CallEngineConfiguration(
                 ringTimeout: nil,
                 joinTimeout: joinTimeout,
-                minimumConnectingDuration: minimumConnecting
+                minimumOutgoingConnectingDuration: minimumOutgoingConnecting
             ),
             system: system,
             sleep: { await sleeper.sleep($0) }

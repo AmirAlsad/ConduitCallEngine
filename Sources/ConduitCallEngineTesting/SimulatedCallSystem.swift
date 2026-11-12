@@ -295,10 +295,11 @@ public final class SimulatedCallSystem {
         /// with its audio activated. Firing it releases the withhold, as the engine
         /// does when the bound runs out.
         case micWithholdTimeout
-        /// The rest of `CallEngineConfiguration.minimumConnectingDuration`, running
-        /// while the transport has reported `.connected` and the engine holds the
-        /// call in `.connecting`. Firing it reports the call connected now.
-        case minimumConnectingDuration
+        /// The rest of `CallEngineConfiguration.minimumOutgoingConnectingDuration`,
+        /// running while the transport of a call the user placed has reported
+        /// `.connected` and the engine holds the call in `.connecting`. Firing it
+        /// reports the call connected now. Never runs for an incoming call.
+        case minimumOutgoingConnectingDuration
         /// The 2 seconds CallKit is given to activate a resumed call's audio
         /// (`activateAudioSession()`), running from a resume whose session is not
         /// activated until the activation, a hold, or the call's end. Firing it makes
@@ -323,7 +324,7 @@ public final class SimulatedCallSystem {
         case .reconnectBackoff: return engine.fireTimer(.reconnectBackoff)
         case .signalRetry: return engine.fireTimer(.signalRetry)
         case .micWithholdTimeout: return engine.fireTimer(.micWithholdTimeout)
-        case .minimumConnectingDuration: return engine.fireTimer(.minimumConnecting)
+        case .minimumOutgoingConnectingDuration: return engine.fireTimer(.minimumOutgoingConnecting)
         case .activationRecovery: return engine.fireTimer(.activationRecovery)
         }
     }
