@@ -183,6 +183,10 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     private var preparationFetch: Task<CallConnection, any Error>?
     /// The credentials a `.credentials` ring keeps for the answer.
     private var preparedConnection: CallConnection?
+    /// The preparation's own work, for `awaitPendingRingPreparation`: the credential
+    /// fetch and what follows it, then the ring transport's connect.
+    private var preparationWork: Task<Void, Never>?
+    private var ringJoinWork: Task<Void, Never>?
     /// The transport a `.media` ring joins before the answer. Not `transport`, so
     /// nothing that attaches audio, sets the mic, routes or sends a signal reaches
     /// it until the answer adopts it.
@@ -747,10 +751,17 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         ringPreparationPhase = .fetchingCredentials
         let fetch = Task { try await target.connect(request) }
         preparationFetch = fetch
-        Task { [weak self] in
+        preparationWork = Task { [weak self] in
             let result = await fetch.result
             self?.ringCredentialsArrived(result, preparation: id)
         }
+    }
+
+    /// Test hook: await the ringing call's preparation, its credential fetch and, at
+    /// the media tier, its transport's connect; returns at once if none is under way.
+    package func awaitPendingRingPreparation() async {
+        await preparationWork?.value
+        await ringJoinWork?.value
     }
 
     private func ringCredentialsArrived(_ result: Result<CallConnection, any Error>, preparation id: UUID) {
@@ -772,7 +783,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
             return
         }
         ringPreparationPhase = .connecting
-        Task { [weak self] in
+        ringJoinWork = Task { [weak self] in
             do {
                 try await transport.connect(connection)
                 self?.ringTransportConnectReturned(transport, error: nil)

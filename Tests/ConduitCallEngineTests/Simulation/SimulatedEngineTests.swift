@@ -240,6 +240,61 @@ struct SimulatedEngineTests {
 
     /// A host drives a media-tier ring through the simulated system: the push asks
     /// for it, the target allows it and the fake transport can join while ringing.
+    // MARK: - Waiting for a ring's preparation
+
+    /// A target whose credential request, and a transport whose join, each take many
+    /// turns: a host test waits for the preparation instead of polling for it.
+    private func slowRingTarget(tier: RingPreparation, transport: FakeTransport) -> CallTarget {
+        let connection = connection
+        return CallTarget(
+            id: targetID,
+            displayName: "Echo",
+            handle: "echo@example.invalid",
+            makeTransport: { transport },
+            connect: { _ in
+                for _ in 0..<300 { await Task.yield() }
+                return connection
+            },
+            ringPreparation: tier
+        )
+    }
+
+    private func ringToPrepare(_ preconnect: String) {
+        system.deliverPush([
+            "target_id": targetID.uuidString,
+            "call_id": UUID().uuidString,
+            "preconnect": preconnect,
+        ]) {}
+    }
+
+    @Test func aHostCanWaitForAMediaRingsJoin() async throws {
+        let ringTransport = FakeTransport()
+        ringTransport.canConnectWhileRinging = true
+        host.targets[targetID] = slowRingTarget(tier: .media, transport: ringTransport)
+        ringToPrepare("media")
+
+        let phase = await system.awaitRingPreparation()
+
+        #expect(phase == .connecting) // joined, waiting for the agent
+        #expect(ringTransport.connectCount == 1)
+        #expect(system.deliverTransportEvent(.connected))
+        #expect(engine.ringPreparationPhase == .ready)
+    }
+
+    @Test func aHostCanWaitForARingsCredentials() async throws {
+        host.targets[targetID] = slowRingTarget(tier: .credentials, transport: FakeTransport())
+        ringToPrepare("credentials")
+
+        #expect(await system.awaitRingPreparation() == .credentialsReady)
+    }
+
+    @Test func waitingForARingWithNothingToPrepareReturnsAtOnce() async throws {
+        ringToPrepare("media") // the default target allows no preparation
+
+        #expect(await system.awaitRingPreparation() == .idle)
+        #expect(engine.state == .incomingRinging)
+    }
+
     @Test func aPreconnectedRingIsAnsweredStraightIntoTheCall() async throws {
         let ringTransport = FakeTransport()
         ringTransport.canConnectWhileRinging = true

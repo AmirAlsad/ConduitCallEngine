@@ -196,6 +196,23 @@ public final class SimulatedCallSystem {
         await engine?.awaitPendingReconnect()
     }
 
+    /// Wait until the ringing call's preparation (pre-connect, `RingPreparation`) has
+    /// done what it does by itself, and return `CallEngine.ringPreparationPhase` then:
+    /// the target's `connect` for the ring has returned and, at the `.media` tier,
+    /// the ring transport's `connect(_:)` has returned too. The phase is then
+    /// `.credentialsReady`, `.connecting` (joined and waiting for the agent: deliver
+    /// `.connected` with `deliverTransportEvent(_:)` to make it `.ready`), `.ready`,
+    /// `.failed` or `.idle`. Returns at once when nothing is being prepared,
+    /// including before CallKit has accepted the ring's report (see
+    /// `completesIncomingReportsLater`); a `connect` your test holds open keeps it
+    /// waiting. Events a `FakeTransport` emits with `emit(_:)` arrive asynchronously,
+    /// so they may not be reflected yet.
+    @discardableResult
+    public func awaitRingPreparation() async -> RingPreparationPhase {
+        await engine?.awaitPendingRingPreparation()
+        return engine?.ringPreparationPhase ?? .idle
+    }
+
     // MARK: - Screenshots
 
     /// Show a connected call on the engine's observed state without CallKit, a
