@@ -56,14 +56,15 @@ let package = Package(
             dependencies: ["ConduitCallEngine", "ConduitCallEngineTesting"],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
+        // The adapter test targets also run the real adapters under a simulated engine.
         .testTarget(
             name: "ConduitCallEngineDailyTests",
-            dependencies: ["ConduitCallEngineDaily"],
+            dependencies: ["ConduitCallEngineDaily", "ConduitCallEngineTesting"],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
         .testTarget(
             name: "ConduitCallEngineLiveKitTests",
-            dependencies: ["ConduitCallEngineLiveKit"],
+            dependencies: ["ConduitCallEngineLiveKit", "ConduitCallEngineTesting"],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
     ],

@@ -137,6 +137,11 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     private var joiningAttemptID: UUID?
     /// Ends the wait for `.connected` after a connect returned; see `startJoinDeadline`.
     private var joinDeadlineTask: Task<Void, Never>?
+    /// The call's first connect has returned and the call is waiting for its agent.
+    /// The join deadline bounds that wait, except while the call is held: the user
+    /// is not waiting then, and an agent may be unable to get ready (Daily's is,
+    /// with its audio unsubscribed). The resume starts the deadline again.
+    private var isAwaitingAgent = false
     /// Ends the wait for a transport that is healing itself; see `enterReconnectingDisplay`.
     private var selfHealDeadlineTask: Task<Void, Never>?
     private var activationTask: Task<Void, Never>?
@@ -668,7 +673,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
             // treats what it returns as the call's first connect.
             adopt(transport, isSubscribed: true)
             transition(to: .connecting)
-            if hasJoined { startJoinDeadline(for: transport) }
+            if hasJoined { awaitAgent(on: transport) }
 
         case .fetching(let fetch, let transport, let isSubscribed):
             transition(to: .connecting)
@@ -769,7 +774,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
                 Log.error(.transport, "connect failed: \(error)")
                 fail((error as? TransportError) == .authenticationFailed ? .badToken : .transportError)
             } else if state == .connecting {
-                startJoinDeadline(for: transport)
+                awaitAgent(on: transport)
             }
         }
     }
@@ -917,7 +922,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
             guard self.transport === transport else { return }
             try await transport.connect(connection)
             guard self.transport === transport, state == .connecting else { return }
-            startJoinDeadline(for: transport)
+            awaitAgent(on: transport)
         } catch {
             Log.error(.transport, "connect failed: \(error)")
             // `connect` can resolve LATE — after an event already failed this call and
@@ -1001,6 +1006,8 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     private func handleConnected() {
         switch state {
         case .connecting:
+            isAwaitingAgent = false
+            cancelJoinDeadline()
             let start = now()
             firstConnectedAt = start
             // Incoming calls are marked connected to CallKit by fulfilling the answer
@@ -1188,6 +1195,13 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
 
     private func isCurrentAttempt(_ id: UUID, on transport: CallTransport) -> Bool {
         self.transport === transport && reconnectAttemptID == id && !Task.isCancelled
+    }
+
+    /// The call's first connect returned: wait for the agent, bounded unless held.
+    private func awaitAgent(on transport: CallTransport) {
+        isAwaitingAgent = true
+        guard !isOnHold else { return }
+        startJoinDeadline(for: transport)
     }
 
     /// Bound the wait for `.connected` after `transport`'s connect returned without
@@ -1391,6 +1405,8 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
             delegate?.callEngine(self, cue: .stop)
         }
         delegate?.callEngine(self, cue: .moment(.held))
+        // The wait for a first connection's agent is not bounded while held.
+        if case .connecting = state { cancelJoinDeadline() }
         // A retry already scheduled would spend the budget during the hold.
         if reconnectTask != nil { pauseReconnection() }
     }
@@ -1418,6 +1434,9 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         if isReconnectionPaused {
             isReconnectionPaused = false
             scheduleReconnect(immediately: true)
+        }
+        if case .connecting = state, isAwaitingAgent, let transport {
+            startJoinDeadline(for: transport)
         }
     }
 
@@ -1743,6 +1762,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         isAgentToldHeld = false
         isReconnectionPaused = false
         isAnswerSignalSent = false
+        isAwaitingAgent = false
         routeWaitsForActivation = false
         cancelRingPreparation()
         activeCallID = nil
@@ -1772,6 +1792,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         isOnHold = false
         isAgentToldHeld = false
         isReconnectionPaused = false
+        isAwaitingAgent = false
         isOutageMarked = false
         isConnectionMarked = false
         audioDevices = []

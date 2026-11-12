@@ -119,6 +119,58 @@ struct JoinDeadlineTests {
         #expect(sleeper.requested.isEmpty)
     }
 
+    /// The call id CallKit knows the first connect's call by.
+    private func callID(_ h: CallEngineHarness, _ direction: Direction) throws -> UUID {
+        switch direction {
+        case .outgoing: h.callID
+        case .incoming: try #require(h.provider.reportedIncoming.first?.id)
+        }
+    }
+
+    /// The user is on another call: the agent may not get ready meanwhile (on Daily
+    /// it cannot, since a held call's agent audio is unsubscribed), and the user is
+    /// not waiting for it. The bound runs again, in full, from the resume.
+    @Test(arguments: Direction.allCases)
+    func aHoldWhileWaitingForTheAgentStopsTheBoundUntilTheResume(direction: Direction) async throws {
+        let h = harness()
+        await firstConnectWaitingForTheAgent(h, direction)
+        let id = try callID(h, direction)
+
+        #expect(h.engine.providerPerformSetHeld(id, onHold: true))
+        sleeper.wakeAll() // the bound that was running when the call was held
+        await settle()
+        #expect(h.engine.state == .connecting)
+        #expect(h.delegate.records.isEmpty)
+
+        #expect(h.engine.providerPerformSetHeld(id, onHold: false))
+        await waitUntil { sleeper.pendingCount == 1 }
+        #expect(sleeper.requested == [.seconds(30), .seconds(30)])
+        h.engine.handle(.connected)
+
+        #expect(h.engine.state.isConnected)
+        #expect(h.delegate.cueViolations.isEmpty)
+    }
+
+    @Test func aJoinThatReturnsWhileHeldStartsItsBoundAtTheResume() async throws {
+        let h = harness()
+        h.transport.suspendConnect = true
+        let place = Task { await h.placeCall() }
+        await waitUntil { h.transport.connectCount == 1 }
+        #expect(h.engine.providerPerformSetHeld(h.callID, onHold: true))
+        h.transport.releaseConnect()
+        await place.value
+        await settle()
+        #expect(sleeper.requested.isEmpty)
+
+        #expect(h.engine.providerPerformSetHeld(h.callID, onHold: false))
+        await waitUntil { sleeper.pendingCount == 1 }
+        #expect(sleeper.requested == [.seconds(30)])
+        sleeper.wakeFirst()
+        await waitUntil { h.engine.state.isTerminal }
+
+        #expect(h.engine.state == .failed(.agentUnreachable))
+    }
+
     @Test func noBoundConfiguredLeavesTheCallConnecting() async throws {
         let h = harness(joinTimeout: nil)
         await h.placeCall()

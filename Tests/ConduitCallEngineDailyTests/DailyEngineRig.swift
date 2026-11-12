@@ -1,0 +1,162 @@
+//
+//  DailyEngineRig.swift
+//  ConduitCallEngineDailyTests
+//
+//  The real `PipecatDailyTransport`, over a real `PipecatClient` whose Daily
+//  transport and call client are fakes, driven by a real `CallEngine` over a
+//  `SimulatedCallSystem`. Tests here cross the seam: what the engine asks of the
+//  adapter, in the order and the situations it asks it, against what the adapter
+//  and the Pipecat client then do.
+//
+
+import Foundation
+import ConduitCallEngine
+import ConduitCallEngineTesting
+@_spi(RingJoinExperiment) @testable import ConduitCallEngineDaily
+
+/// A sleep the test ends by hand, recording how long each sleeper asked for.
+@MainActor
+final class HandSleeper {
+    private(set) var requested: [Duration] = []
+    private var pending: [CheckedContinuation<Void, Never>] = []
+
+    var pendingCount: Int { pending.count }
+
+    func sleep(_ duration: Duration) async {
+        requested.append(duration)
+        await withCheckedContinuation { pending.append($0) }
+    }
+
+    /// End the oldest pending sleep.
+    func wakeFirst() {
+        guard !pending.isEmpty else { return }
+        pending.removeFirst().resume()
+    }
+
+    func wakeAll() {
+        let waiting = pending
+        pending = []
+        waiting.forEach { $0.resume() }
+    }
+}
+
+@MainActor
+final class RecordingHost: CallEngineDelegate {
+    private(set) var transitions: [CallState] = []
+    private(set) var records: [CallRecord] = []
+    private(set) var cues: [CallCue] = []
+    var target: CallTarget?
+
+    func callEngine(_ engine: CallEngine, targetForIncomingCall call: IncomingCall) -> CallTarget? { target }
+    func callEngine(_ engine: CallEngine, didChangeStateFrom old: CallState, to new: CallState) { transitions.append(new) }
+    func callEngine(_ engine: CallEngine, didFinish record: CallRecord) { records.append(record) }
+    func callEngine(_ engine: CallEngine, cue: CallCue) { cues.append(cue) }
+}
+
+@MainActor
+final class DailyEngineRig {
+    let system = SimulatedCallSystem()
+    let sleeper = HandSleeper()
+    let host = RecordingHost()
+    let engine: CallEngine
+    let strategy: DailyRingJoinStrategy
+    let targetID = UUID()
+
+    /// Every Pipecat transport made (one per adapter session), in order.
+    private(set) var pipecats: [FakePipecatTransport] = []
+    private(set) var controls: [FakeDailyCallControl] = []
+    private(set) var pathMonitors: [FakePathMonitor] = []
+    private(set) var transports: [PipecatDailyTransport] = []
+    /// Every credential request, in order; request n is answered with room n.
+    private(set) var requests: [ConnectRequest] = []
+    /// What the target allows a ring to prepare.
+    var ringPreparation: RingPreparation = .none
+
+    init(joinTimeout: Duration? = .seconds(30), strategy: DailyRingJoinStrategy = .unsupported) {
+        self.strategy = strategy
+        let sleeper = sleeper
+        engine = CallEngine.simulated(
+            configuration: CallEngineConfiguration(ringTimeout: nil, joinTimeout: joinTimeout),
+            system: system,
+            sleep: { await sleeper.sleep($0) }
+        )
+        engine.delegate = host
+        host.target = target
+    }
+
+    var target: CallTarget {
+        CallTarget(
+            id: targetID,
+            displayName: "Agent",
+            handle: nil,
+            makeTransport: { [unowned self] in makeTransport() },
+            connect: { [unowned self] request in
+                requests.append(request)
+                return Self.room(requests.count)
+            },
+            ringPreparation: ringPreparation
+        )
+    }
+
+    static func room(_ number: Int) -> CallConnection {
+        CallConnection(url: URL(string: "https://example.daily.co/room-\(number)")!, token: "token-\(number)")
+    }
+
+    private func makeTransport() -> PipecatDailyTransport {
+        let transport = PipecatDailyTransport(
+            makePipecatTransport: { [unowned self] in
+                let fake = FakePipecatTransport()
+                pipecats.append(fake)
+                return fake
+            },
+            makePathMonitor: { [unowned self] in
+                let monitor = FakePathMonitor()
+                pathMonitors.append(monitor)
+                return monitor
+            },
+            makeCallControl: { [unowned self] transport in
+                let control = FakeDailyCallControl(transport: transport as! FakePipecatTransport)
+                controls.append(control)
+                return control
+            },
+            ringJoinStrategy: strategy
+        )
+        transports.append(transport)
+        return transport
+    }
+
+    /// The Pipecat transport of the adapter's current session.
+    var pipecat: FakePipecatTransport? { pipecats.last }
+
+    /// Place a call and let CallKit activate it, so the transport has joined and the
+    /// engine is waiting for the agent.
+    func placeActivatedCall() async throws -> UUID {
+        await engine.placeCall(target)
+        await system.activateAudioSession()
+        await drain()
+        guard let id = system.startedCallIDs.first else { throw RigError.noCall }
+        return id
+    }
+
+    enum RigError: Error { case noCall }
+}
+
+/// Lets the main-actor hops queued by SDK callbacks, media commands and the
+/// adapter's own tasks run.
+@MainActor
+func drain(_ ticks: Int = 200) async {
+    for _ in 0..<ticks { await Task.yield() }
+}
+
+/// Yield until `condition` holds or the tick budget runs out.
+@MainActor
+func waitUntil(ticks: Int = 1000, _ condition: () -> Bool) async {
+    for _ in 0..<ticks {
+        if condition() { return }
+        await Task.yield()
+    }
+}
+
+extension CallState {
+    var isConnected: Bool { if case .connected = self { true } else { false } }
+}

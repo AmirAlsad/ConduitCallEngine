@@ -15,7 +15,11 @@ final class FakeDailyCallControl: DailyCallControlling {
     struct Refused: Error {}
 
     private let transport: FakePipecatTransport
-    var hasRemoteParticipant = false
+    var hasRemoteParticipant: Bool {
+        get { isRemotePresent || transport.isBotPresent }
+        set { isRemotePresent = newValue }
+    }
+    private var isRemotePresent = false
     /// Changes are refused until the call is joined, as Daily might.
     var refusesBeforeJoin = false
     /// Each change suspends this many times before completing, so others can interleave.
@@ -29,6 +33,7 @@ final class FakeDailyCallControl: DailyCallControlling {
         for _ in 0..<suspensions { await Task.yield() }
         if refusesBeforeJoin, ![.connected, .ready].contains(transport.state()) { throw Refused() }
         transport.record("agent audio \(state)")
+        transport.remoteAudioDidChange(state)
     }
 
     var remoteAudioDescription: String { "fake" }

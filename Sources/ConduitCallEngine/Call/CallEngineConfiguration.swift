@@ -33,8 +33,10 @@ public struct CallEngineConfiguration {
     /// call's first connect, the call fails as `.agentUnreachable`; on an engine
     /// reconnect attempt, the attempt counts as failed, and the next one is
     /// scheduled with its backoff or the call fails as `.lostConnection` once the
-    /// retry budget is spent. Measured with the engine's injected sleep. nil waits
-    /// indefinitely, as 0.1 did. Default 30 seconds.
+    /// retry budget is spent. Time on hold does not count on a first connect: a hold
+    /// stops the wait, and the resume starts it again in full (a reconnect attempt is
+    /// paused by the hold anyway). Measured with the engine's injected sleep. nil
+    /// waits indefinitely, as 0.1 did. Default 30 seconds.
     public var joinTimeout: Duration?
 
     public init(
