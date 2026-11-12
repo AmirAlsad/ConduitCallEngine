@@ -34,7 +34,8 @@ final class FakePipecatTransport: Transport {
     var onMessage: ((RTVIMessageInbound) -> Void)?
     private var currentState: TransportState = .disconnected
 
-    /// Whether the bot is in the room (`botJoins()`); a joined client sees it.
+    /// Whether the bot is in the room (`botJoins()`); a joined client sees it. A
+    /// client that leaves, or joins again (a new room), starts without it.
     private(set) var isBotPresent = false
     /// Whether a bot that becomes able to hear the client answers client-ready with
     /// bot-ready, as a Pipecat bot does. False stands for a bot that never gets ready.
@@ -70,7 +71,6 @@ final class FakePipecatTransport: Transport {
               (remoteAudio ?? .subscribed) == .subscribed
         else { return }
         sentClientReady = true
-        calls.append("send client-ready")
         if botAnswersClientReady { becomeReady() }
     }
 
@@ -94,6 +94,7 @@ final class FakePipecatTransport: Transport {
 
     func connect(transportParams: TransportConnectionParams?) async throws {
         calls.append("connect")
+        isBotPresent = false
         setState(state: joinsOnConnect ? .connected : .connecting)
         if joinsOnConnect, isBotPresent {
             delegate?.onBotConnected(participant: Participant(id: ParticipantId(id: "bot"), name: "bot", local: false))
@@ -107,8 +108,19 @@ final class FakePipecatTransport: Transport {
         sendClientReadyIfPlayable()
     }
 
+    /// When true, `disconnect` waits for `finishLeaving()` before the call is left.
+    var leaveSuspends = false
+    private var leaving: CheckedContinuation<Void, Never>?
+
+    func finishLeaving() {
+        leaveSuspends = false
+        leaving?.resume()
+        leaving = nil
+    }
+
     func disconnect() async throws {
         calls.append("disconnect")
+        if leaveSuspends { await withCheckedContinuation { leaving = $0 } }
         setState(state: .disconnected)
     }
 
@@ -132,7 +144,10 @@ final class FakePipecatTransport: Transport {
 
     func setState(state: TransportState) {
         currentState = state
-        if state == .disconnected { sentClientReady = false }
+        if state == .disconnected {
+            sentClientReady = false
+            isBotPresent = false
+        }
         delegate?.onTransportStateChanged(state: state)
     }
 

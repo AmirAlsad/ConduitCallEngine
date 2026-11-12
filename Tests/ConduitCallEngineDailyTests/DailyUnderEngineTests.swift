@@ -66,4 +66,97 @@ struct DailyUnderEngineTests {
 
         #expect(rig.engine.state == .failed(.agentUnreachable))
     }
+
+    // MARK: - Reconnect attempts on the same transport
+
+    /// A connected call whose Daily client dropped: the engine's first attempt has
+    /// joined room 2 with the same client, and its join bound is sleeping.
+    private func firstAttemptJoined(_ rig: DailyEngineRig) async throws -> FakePipecatTransport {
+        _ = try await rig.placeActivatedCall()
+        let first = try #require(rig.pipecat)
+        first.botJoins()
+        await waitUntil { rig.engine.state.isConnected }
+        rig.sleeper.wakeAll() // the first connect's bound, stale once connected
+        await drain()
+
+        first.setState(state: .disconnected) // Daily left the call: a drop
+        await waitUntil { rig.sleeper.pendingCount == 1 }
+        rig.sleeper.wakeAll() // attempt 1's backoff
+        await waitUntil { rig.requests.count == 2 && rig.sleeper.pendingCount == 1 }
+        #expect(first.calls == ["connect", "connect"]) // the same client rejoined
+        #expect(rig.engine.state == .reconnecting(attempt: 1))
+        return first
+    }
+
+    /// Room 2's agent never gets ready, so the engine's join bound fails attempt 1 and
+    /// attempt 2 connects the same transport with room 3. The client is still in room
+    /// 2: the adapter must take the session over, not refuse every later attempt.
+    @Test(.timeLimit(.minutes(1)))
+    func anAttemptAfterAJoinBoundRanOutJoinsTheNextRoom() async throws {
+        let rig = DailyEngineRig()
+        let first = try await firstAttemptJoined(rig)
+
+        rig.sleeper.wakeAll() // 30 seconds and room 2's agent never got ready
+        await waitUntil { rig.engine.state == .reconnecting(attempt: 2) && rig.sleeper.pendingCount == 1 }
+        rig.sleeper.wakeAll() // attempt 2's backoff
+        await waitUntil { rig.pipecats.count == 2 }
+        let second = try #require(rig.pipecats.last)
+        second.botJoins()
+        await waitUntil { rig.engine.state.isConnected }
+
+        #expect(rig.engine.state.isConnected)
+        #expect(rig.requests.map(\.purpose) == [.outgoing, .reconnect(attempt: 1), .reconnect(attempt: 2)])
+        #expect(first.calls == ["connect", "connect", "disconnect", "release"]) // no end-call: the call goes on
+        #expect(second.calls.prefix(1) == ["connect"])
+        #expect(rig.host.records.isEmpty)
+    }
+
+    /// The hold paused attempt 1 while it waited for room 2's agent; the resume starts
+    /// a new attempt at once, on a client that is still in room 2.
+    @Test(.timeLimit(.minutes(1)))
+    func theResumeAfterAHeldReconnectJoinsTheNextRoom() async throws {
+        let rig = DailyEngineRig()
+        _ = try await firstAttemptJoined(rig)
+        let id = try #require(rig.system.startedCallIDs.first)
+
+        await rig.system.setHeldFromSystem(id, onHold: true)
+        #expect(rig.engine.state == .reconnecting(attempt: 0))
+        await rig.system.setHeldFromSystem(id, onHold: false)
+        await waitUntil { rig.pipecats.count == 2 }
+        let second = try #require(rig.pipecats.last)
+        second.botJoins()
+        await waitUntil { rig.engine.state.isConnected }
+
+        #expect(rig.engine.state.isConnected)
+        #expect(rig.requests.count == 3)
+    }
+
+    /// The other side of the take-over: while Daily heals a connected call (the
+    /// network path is down), the engine's attempts do not rejoin, and Daily's own
+    /// recovery recovers the call.
+    @Test(.timeLimit(.minutes(1)))
+    func anAttemptWhileDailyHealsLeavesTheSessionAlone() async throws {
+        let rig = DailyEngineRig()
+        _ = try await rig.placeActivatedCall()
+        let pipecat = try #require(rig.pipecat)
+        pipecat.botJoins()
+        await waitUntil { rig.engine.state.isConnected }
+        rig.sleeper.wakeAll()
+        await drain()
+        let monitor = try #require(rig.pathMonitors.last)
+        monitor.deliver(true) // the monitor's first delivery
+        monitor.deliver(false)
+        await waitUntil { rig.engine.state == .reconnecting(attempt: 0) && rig.sleeper.pendingCount == 1 }
+
+        rig.sleeper.wakeAll() // 30 seconds of Daily healing
+        await waitUntil { rig.engine.state == .reconnecting(attempt: 1) && rig.sleeper.pendingCount == 1 }
+        rig.sleeper.wakeAll() // attempt 1's backoff: its connect is refused
+        await waitUntil { rig.engine.state == .reconnecting(attempt: 2) }
+        monitor.deliver(true) // Daily healed
+        await waitUntil { rig.engine.state.isConnected }
+
+        #expect(rig.engine.state.isConnected)
+        #expect(rig.pipecats.count == 1)
+        #expect(pipecat.calls == ["connect"])
+    }
 }

@@ -30,8 +30,10 @@
 //  for a device test to show. That test selects one of three experimental join
 //  strategies through SPI (`DailyRingJoinStrategy`).
 //
-//  A `connect` while the client is still in the call (the engine reconnecting by
-//  itself while Daily heals) does not rejoin: see `DailyConnectionGate.planConnect`.
+//  A `connect` while the client is still in the call never joins on that client:
+//  while Daily heals the call it is refused, and on a session whose bot never got
+//  ready it takes the session over with a new client. See
+//  `DailyConnectionGate.planConnect`.
 //
 //  Teardown: `disconnect()` sends the end-call signal, leaves, then releases the
 //  Pipecat client, whose Daily transport and call client otherwise outlive the call.
@@ -128,7 +130,7 @@ public final class PipecatDailyTransport: CallTransport {
     // MARK: - CallTransport
 
     public func connect(_ connection: CallConnection) async throws {
-        let session = self.session ?? makeSession()
+        var session = self.session ?? makeSession()
         self.session = session
         let plan = session.events.gate.planConnect(
             sessionIsInCall: Self.statesInCall.contains(session.client.state),
@@ -142,8 +144,18 @@ public final class PipecatDailyTransport: CallTransport {
             session.events.reportConnectedAgain()
             return
         case .refuse:
-            Log.warning(.transport, "Daily connect: the session is still in the call (\(session.client.state)); not rejoining")
+            Log.warning(.transport, "Daily connect: Daily is still healing the call (\(session.client.state)); not rejoining")
             throw TransportError.connectionFailed("Daily session is still in the call")
+        case .takeOver:
+            Log.warning(.transport, "Daily connect: the session's bot never got ready (\(session.client.state)); leaving it and joining with a new client")
+            let stale = session
+            session = makeSession()
+            self.session = session
+            await Self.retire(stale)
+            // The host's disconnect() may have ended the new session meanwhile.
+            guard self.session?.client === session.client else {
+                throw TransportError.connectionFailed("Daily transport was disconnected while taking a session over")
+            }
         }
         session.events.gate.connectDidStart()
         session.events.interruptions.connectDidStart()
@@ -194,6 +206,20 @@ public final class PipecatDailyTransport: CallTransport {
         // Released after the leave so the end-call signal and the leave go out first.
         client.release()
         client.delegate = nil
+    }
+
+    /// Leaves a session the call no longer uses, without the end-call signal (the call
+    /// goes on in the session that replaces it, possibly in the same room), and
+    /// releases its client. Its delegate is detached first, so nothing it reports,
+    /// the leave included, reaches the engine.
+    private static func retire(_ session: Session) async {
+        session.events.gate.userDidRequestDisconnect()
+        session.events.interruptions.userDidRequestDisconnect()
+        let client = session.client
+        client.delegate = nil
+        do { try await client.disconnect() }
+        catch { Log.error(.transport, "Daily leave of a replaced session failed: \(error)") }
+        client.release()
     }
 
     /// Delivers a call-control signal as an RTVI client message, the end-call

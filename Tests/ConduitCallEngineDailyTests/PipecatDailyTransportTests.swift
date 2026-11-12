@@ -250,21 +250,55 @@ struct PipecatDailyTransportTests {
         #expect(callEvents(log).last == .connected)
     }
 
-    /// A join whose bot is not ready yet is still this attempt: a second connect that
-    /// arrives meanwhile must not stop its bot-ready from being reported.
+    /// A join whose bot never got ready is not healing anything: the engine connects
+    /// again only once it gave up on it. The session is left without the end-call
+    /// signal (the call goes on, possibly in the same room) and released, and a new
+    /// client joins; nothing the old one reports reaches the engine any more.
     @Test(.timeLimit(.minutes(1)))
-    func aConnectWhileTheBotIsNotReadyLetsTheBotReadyThrough() async throws {
+    func aConnectWhileTheBotIsNotReadyTakesTheSessionOver() async throws {
         let transport = makeTransport()
         let log = record(transport)
         try await transport.connect(connection)
-        let fake = try #require(clients.made.first)
+        let stale = try #require(clients.made.first)
 
-        await #expect(throws: TransportError.self) { try await transport.connect(connection) }
-        fake.becomeReady()
+        try await transport.connect(connection)
+        stale.becomeReady() // a late bot-ready from the room the call left
+        await drain()
+        #expect(callEvents(log).isEmpty)
+
+        let fresh = try #require(clients.made.last)
+        fresh.becomeReady()
         await drain()
 
+        #expect(clients.made.count == 2)
+        #expect(stale.calls == ["connect", "disconnect", "release"])
+        #expect(stale.delegate == nil)
+        #expect(fresh.calls == ["connect"])
         #expect(callEvents(log) == [.connected])
-        #expect(fake.calls == ["connect"])
+    }
+
+    /// The host's teardown while the take-over is still leaving the old session: the
+    /// new session is the one it ends, and the connect does not join.
+    @Test(.timeLimit(.minutes(1)))
+    func aDisconnectDuringATakeOverEndsItWithoutAJoin() async throws {
+        let transport = makeTransport()
+        try await transport.connect(connection)
+        let stale = try #require(clients.made.first)
+        stale.leaveSuspends = true
+
+        let takingOver = Task { try await transport.connect(connection) }
+        await waitUntilLeaving(stale)
+        await transport.disconnect()
+        stale.finishLeaving()
+
+        await #expect(throws: TransportError.self) { try await takingOver.value }
+        let fresh = try #require(clients.made.last)
+        #expect(clients.made.count == 2)
+        #expect(fresh.calls == ["disconnect", "release"])
+    }
+
+    private func waitUntilLeaving(_ fake: FakePipecatTransport) async {
+        for _ in 0..<1000 where !fake.calls.contains("disconnect") { await Task.yield() }
     }
 
     // MARK: - Call-control signals

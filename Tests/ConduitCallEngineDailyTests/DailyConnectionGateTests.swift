@@ -128,19 +128,26 @@ struct DailyConnectionGateTests {
         #expect(connectedGate().planConnect(sessionIsInCall: true, interruption: .interrupted) == .refuse)
     }
 
-    @Test func aJoinStillWaitingForTheBotIsLeftToFinish() {
+    /// The engine connects again only once it has given up on the join in progress
+    /// (its join deadline ran out, or a hold paused the attempt): the join whose bot
+    /// never got ready is not the call's any more, and refusing would fail every
+    /// later attempt while the client stays in that room.
+    @Test(arguments: [DailyInterruptionGate.Phase.waitingForConnect, .connected, .interrupted])
+    func aJoinWhoseBotNeverGotReadyIsTakenOver(interruption: DailyInterruptionGate.Phase) {
         var gate = DailyConnectionGate()
         gate.connectDidStart()
 
-        #expect(gate.planConnect(sessionIsInCall: true, interruption: .waitingForConnect) == .refuse)
-        #expect(gate.transportDidBecomeReady() == .connected)
+        #expect(gate.planConnect(sessionIsInCall: true, interruption: interruption) == .takeOver)
     }
 
     @Test func anAttemptThatIsOverIsNeverReportedConnectedAgain() {
-        var gate = connectedGate()
-        _ = gate.transportDidDisconnect()
+        var dropped = connectedGate()
+        _ = dropped.transportDidDisconnect()
+        var botLeft = connectedGate()
+        _ = botLeft.botDidLeave()
 
-        #expect(gate.planConnect(sessionIsInCall: true, interruption: .connected) == .refuse)
+        #expect(dropped.planConnect(sessionIsInCall: true, interruption: .connected) == .takeOver)
+        #expect(botLeft.planConnect(sessionIsInCall: true, interruption: .connected) == .takeOver)
     }
 
     // MARK: - Presence as ready (experimental ring-join strategies)

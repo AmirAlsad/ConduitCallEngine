@@ -20,16 +20,25 @@
 //  call that is reconnecting, and a second drop would spend another retry. The
 //  next connect starts a fresh attempt.
 //
-//  A connect can also arrive while the Pipecat client is still in the call: the
-//  engine reconnects by itself when a `.reconnecting` (a lost network path, which
-//  Daily heals inside its SDK) is not followed by `.connected` or `.disconnected`
-//  within 30 seconds, and it can start an attempt while an earlier join is still
-//  waiting for the bot. Pipecat refuses to connect a client in that state, so such
-//  a connect does not start an attempt (`planConnect`): if the call is connected
-//  and its path is up, the session has healed and is reported `.connected` again;
-//  otherwise the connect fails and the attempt in progress keeps reporting, so
-//  Daily's recovery (the path coming back, the bot becoming ready) or its drop
-//  still reaches the engine.
+//  A connect can also arrive while the Pipecat client is still in the call, which
+//  Pipecat refuses to connect, so such a connect never joins on that client
+//  (`planConnect`). Two situations bring it:
+//
+//  - Daily is healing a connected call: the engine reconnects by itself when a
+//    `.reconnecting` (a lost network path, which Daily heals inside its SDK) is not
+//    followed by `.connected` or `.disconnected` within 30 seconds. Leaving would
+//    discard Daily's recovery and show the agent a departure, so the connect fails
+//    and the attempt keeps reporting: the path coming back recovers the call, and
+//    Daily giving up is still reported as a drop. If the path is already back, the
+//    session has healed and is reported `.connected` again.
+//  - The engine gave up on a join whose bot never got ready: the engine's join
+//    deadline ran out, or a hold paused that attempt and the resume started another,
+//    usually with fresh credentials for another room. Nothing is healing there, and
+//    refusing would fail every later attempt while the client stays in the stale
+//    room, so the connect takes the session over: it leaves it without the end-call
+//    signal (the call goes on, possibly in the same room), releases its client so its
+//    late callbacks reach nothing, and joins with a new client. The same goes for a
+//    session the bot has left while the client stayed in the call.
 //
 
 import ConduitCallEngine
@@ -40,9 +49,12 @@ struct DailyConnectionGate {
         case join
         /// The session is in the call and usable: report `.connected` again.
         case reportConnected
-        /// The session is still in the call and cannot join again: fail this connect
+        /// Daily is healing the session, which is still in the call: fail this connect
         /// and leave the attempt in progress to report how it ends.
         case refuse
+        /// The session is in the call but its bot never got ready (or has left): leave
+        /// it without the end-call signal, release its client, and join with a new one.
+        case takeOver
     }
 
     /// Whether a joined call with a remote participant counts as connected.
@@ -58,8 +70,12 @@ struct DailyConnectionGate {
     /// attempt's network-path watch.
     func planConnect(sessionIsInCall: Bool, interruption: DailyInterruptionGate.Phase) -> ConnectPlan {
         guard sessionIsInCall else { return .join }
-        let healed = reportedConnected && !isAttemptOver && !userRequestedDisconnect && interruption == .connected
-        return healed ? .reportConnected : .refuse
+        guard reportedConnected, !isAttemptOver, !userRequestedDisconnect else { return .takeOver }
+        switch interruption {
+        case .connected: return .reportConnected
+        case .interrupted: return .refuse
+        case .waitingForConnect, .closed: return .takeOver
+        }
     }
 
     init(readyOnPresence: Bool = false) {
