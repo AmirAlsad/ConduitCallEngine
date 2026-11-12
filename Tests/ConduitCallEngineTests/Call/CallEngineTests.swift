@@ -177,8 +177,12 @@ struct CallEngineTests {
         #expect(h.transport.isMicEnabled)
     }
 
+    @Test func theSpeakerDefaultIsOffByDefault() {
+        #expect(CallEngineConfiguration().defaultsToSpeaker == false)
+    }
+
     @Test func handsFreeDefaultRoutesToSpeakerWithoutExternalRoute() async throws {
-        let h = CallEngineHarness() // FakeTransport routes: speaker + receiver (no external)
+        let h = CallEngineHarness(defaultsToSpeaker: true) // FakeTransport routes: speaker + receiver (no external)
         await h.transport.setAudioDevice("receiver") // start on the earpiece
         await h.placeCall()
         h.engine.handle(.connected)
@@ -189,7 +193,7 @@ struct CallEngineTests {
     }
 
     @Test func handsFreeDefaultLeavesExternalRouteAlone() async throws {
-        let h = CallEngineHarness()
+        let h = CallEngineHarness(defaultsToSpeaker: true)
         h.transport.fakeAudioDevices = [
             AudioDeviceInfo(id: "bluetooth", name: "Bluetooth Speaker & Mic"),
             AudioDeviceInfo(id: "speaker", name: "Built-in Speaker & Mic"),

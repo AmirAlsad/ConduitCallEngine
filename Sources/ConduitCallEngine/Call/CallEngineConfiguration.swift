@@ -94,6 +94,17 @@ public struct CallEngineConfiguration: @unchecked Sendable {
     /// (the user holding from the system call screen) stays until it is resumed.
     /// No effect when `supportsHolding` is false. Default true.
     public var resumesAfterSystemHold: Bool
+    /// Whether the engine moves a call to the loudspeaker when nothing external is
+    /// connected. When true, once per call, after CallKit has activated its audio
+    /// and the transport's route list is available, the engine selects the speaker
+    /// if the transport lists no Bluetooth or wired route (0.1's hands-free
+    /// default). When false (the default), the engine makes no route change of its
+    /// own: the call starts where iOS puts it, which for a CallKit call with
+    /// nothing connected is the earpiece, like a phone call. Either way the user's
+    /// choice (`CallEngine.selectAudioDevice(_:)`, the system call screen's route
+    /// button where the transport allows it, Bluetooth, CarPlay) is never
+    /// overridden, and no route is read or changed before CallKit's activation.
+    public var defaultsToSpeaker: Bool
     /// Whether the mic follows a push-to-talk button (`CallEngine.setPushToTalkActive(_:)`)
     /// instead of mute. Called on the main actor at each mic decision, so a setting
     /// changed mid-call takes effect at the next one. Default `{ false }`.
@@ -107,6 +118,7 @@ public struct CallEngineConfiguration: @unchecked Sendable {
         micWithholdTimeout: Duration = .seconds(5),
         supportsHolding: Bool = true,
         resumesAfterSystemHold: Bool = true,
+        defaultsToSpeaker: Bool = false,
         isPushToTalkEnabled: @escaping @MainActor () -> Bool = { false }
     ) {
         self.unknownCallerName = unknownCallerName
@@ -116,6 +128,7 @@ public struct CallEngineConfiguration: @unchecked Sendable {
         self.micWithholdTimeout = micWithholdTimeout
         self.supportsHolding = supportsHolding
         self.resumesAfterSystemHold = resumesAfterSystemHold
+        self.defaultsToSpeaker = defaultsToSpeaker
         self.isPushToTalkEnabled = isPushToTalkEnabled
     }
 }

@@ -1738,12 +1738,13 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         }
     }
 
-    /// Hands-free default: prefer the loudspeaker when nothing external (car /
-    /// Bluetooth / wired) is connected, so call audio isn't stuck on the quiet
-    /// earpiece. Driven through the transport, because an SDK that manages the
-    /// session itself reverts a direct AVAudioSession override. Runs once per call,
-    /// on connect or a device change, once the device list is populated.
+    /// With `CallEngineConfiguration.defaultsToSpeaker`: prefer the loudspeaker when
+    /// nothing external (car / Bluetooth / wired) is connected. Driven through the
+    /// transport, because an SDK that manages the session itself reverts a direct
+    /// AVAudioSession override. Runs once per call, on connect or a device change,
+    /// once the device list is populated. Off, the engine changes no route.
     private func applyHandsFreeDefaultIfNeeded(on transport: CallTransport) async {
+        guard configuration.defaultsToSpeaker else { return }
         // Caller refreshes the device list first; bail until it's populated so a
         // later trigger (connect / devices-changed) can apply the default instead.
         guard self.transport === transport, !didApplyHandsFreeDefault, !audioDevices.isEmpty else { return }
@@ -2423,8 +2424,8 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         selectedAudioDeviceID = selected?.id
     }
 
-    /// Refresh the route list (keeps the picker live) and apply the hands-free
-    /// default once it's available. Runs on connect, on device changes, and on
+    /// Refresh the route list (keeps the picker live) and, when the host asked for
+    /// it, apply the speaker default once it's available. Runs on connect, on device changes, and on
     /// CallKit's activation, for the transport live when it was scheduled; never
     /// while the session is not activated, when a route read is meaningless and an
     /// output-port override is lost (and the default would count as applied).

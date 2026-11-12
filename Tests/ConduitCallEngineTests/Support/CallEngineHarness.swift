@@ -312,6 +312,7 @@ final class CallEngineHarness {
         micWithholdTimeout: Duration = .seconds(5),
         supportsHolding: Bool = true,
         resumesAfterSystemHold: Bool = true,
+        defaultsToSpeaker: Bool = false,
         now: @escaping () -> Date = { Date() },
         sleep: @escaping (Duration) async throws -> Void = { _ in }
     ) {
@@ -333,6 +334,7 @@ final class CallEngineHarness {
                 micWithholdTimeout: micWithholdTimeout,
                 supportsHolding: supportsHolding,
                 resumesAfterSystemHold: resumesAfterSystemHold,
+                defaultsToSpeaker: defaultsToSpeaker,
                 isPushToTalkEnabled: { pushToTalk }
             ),
             callProvider: provider,

@@ -19,6 +19,8 @@ struct PreconnectTests {
     private let statusEndpoint = URL(string: "https://engine.example.com/inbound/status/live")!
 
     /// A harness whose host allows `tier` and whose next transport declares `capable`.
+    /// Its host asks for the speaker default, whose selection shows when the route
+    /// work ran (only after CallKit's activation).
     private func harness(
         allows tier: RingPreparation = .media,
         capable: Bool = true,
@@ -26,8 +28,8 @@ struct PreconnectTests {
         sleep: ((Duration) async -> Void)? = nil
     ) -> CallEngineHarness {
         let h = sleep.map { sleep in
-            CallEngineHarness(joinTimeout: joinTimeout, sleep: { await sleep($0) })
-        } ?? CallEngineHarness(joinTimeout: joinTimeout)
+            CallEngineHarness(joinTimeout: joinTimeout, defaultsToSpeaker: true, sleep: { await sleep($0) })
+        } ?? CallEngineHarness(joinTimeout: joinTimeout, defaultsToSpeaker: true)
         h.allowRingPreparation(tier)
         h.transport.canConnectWhileRinging = capable
         return h
