@@ -138,18 +138,20 @@ A cancel that arrives after the user answered never ends the call; end a call in
 
 ## Pre-connect
 
-A ring push can ask the device to prepare the call while the phone rings, so the agent is ready when the user answers instead of being reached only then. Send `preconnect` only to devices that list `preconnect` among their capabilities.
+A ring push can ask the device to prepare the call while the phone rings, so the agent is ready when the user answers instead of being reached only then. Ask for it on every ring sent to a device that lists `preconnect` among its capabilities (`"media"` when your agent waits for `call-connected` and the device lists that signal, `"credentials"` otherwise), and send it to no other device: a device without the capability gets a plain ring, which works as before.
 
 | `preconnect` | During the ring | At the answer |
 |---|---|---|
 | `"credentials"` | The app's credential code runs (the app's request is marked as being for a ringing call), and the device keeps the result. Nothing joins the room. | The device joins with those credentials, without a second request. |
-| `"media"` | As for `"credentials"`, then the device joins the room. Its audio stays off: nothing plays, the microphone is closed, and the audio route is not touched until iOS activates the call's audio after the answer. | If the agent is already in the room, the call is connected at once. Otherwise the device waits for it, as for any connect. |
+| `"media"` | As for `"credentials"`, then the device joins the room. Its audio stays off: nothing plays, the microphone is closed, and the audio route is not touched until iOS activates the call's audio after the answer. | If the agent is already in the room, the call is connected at once. Otherwise the call is connected the moment the agent arrives. |
 
 The device prepares only what three parties agree on, the lowest of: your `preconnect`, what the app allows for the target (the app may allow less, or nothing, per ring), and, for `"media"`, whether the app's transport can join a room while the phone rings. A transport that cannot (and any transport the app wrote without saying it can) joins only at the answer, as if you had sent `"credentials"`. Ask for no more than your agent is ready for.
 
 Preparation starts once iOS has accepted the ring, not when the push arrives: a ring that Focus filters, or that the device is busy for, prepares nothing. A preparation that fails (credentials rejected, the room unreachable, the connection dropping, or, for `"media"`, the agent not in the room within the app's join timeout of the device joining, 30 seconds by default) never ends or changes the ring: it keeps ringing, and if the user answers, the device fetches credentials again and joins as it would without pre-connect.
 
 The same holds when the user answers while the preparation is still under way and it then fails before the agent is there: the device makes an ordinary answer request for credentials (the app's request is then for an answered call, with the ring's `call_id`) and joins with what it returns, leaving the prepared room without `end-call`, since the fresh credentials may name the same room. So a credential request for an answered call, for a ring whose pre-connected agent is still waiting, means the device gave up on that agent: if you start a new one for the request, end the waiting one.
+
+**Start your agent before you ring.** Pre-connect makes the device ready during the ring; whether the call is ready when the user picks up depends on your agent being in the room by then. Start the agent when you send the push, not when the device asks for credentials after the answer, and preferably send the push only once the agent is in the room, with a bound of a few seconds after which you ring anyway. Without inline credentials, return that agent's room to the credential request the device makes during the ring, which carries the ring's `call_id`. An agent that starts only at the answer leaves the user on a connecting call for as long as it takes to start; an agent that never comes fails the call as unreachable after the app's join timeout (30 seconds by default from the device's join, then once more after an ordinary answer request). What the user hears in each case is in the [Integration Guide, "Getting your agent there before the user answers"](IntegrationGuide.md#getting-your-agent-there-before-the-user-answers).
 
 When the ring ends without an answer (declined, timed out, cancelled, or the phone's CallKit reset), the device leaves the room it joined. If its connection was up, it sends the `end-call` signal first (the same RTVI client message as a hangup), so your agent can end at once. The receipt is the ring's usual one.
 
@@ -217,6 +219,7 @@ Details:
 
 ## Guidance
 
+- **Start the agent first, then ring, and ask for pre-connect** on every ring to a device that lists it ([Pre-connect](#pre-connect)). The phone joins within a fraction of a second; the agent's start is what the user waits for.
 - **Mint a fresh `call_id` for every ring** and keep it unique. It is the CallKit call id and the key in every receipt. A push that repeats the id of the call still ringing or in progress is treated as a second delivery of that ring and ignored, so it cannot be used to ring again.
 - **Do not ring again until the previous ring has resolved** (a receipt arrived, or enough time passed that it has clearly ended). A second ring while the first is still ringing is reported and ended immediately as busy, and the user may see it flash.
 - **With pre-connect, withdraw a ring by ending the agent**, when the device is in the room with it ([Withdrawing a pre-connected ring](#withdrawing-a-pre-connected-ring)), rather than with a cancel push.
