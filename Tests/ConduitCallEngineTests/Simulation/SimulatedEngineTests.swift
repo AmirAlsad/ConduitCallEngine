@@ -79,7 +79,7 @@ struct SimulatedEngineTests {
             displayName: "Echo",
             handle: "echo@example.invalid",
             makeTransport: { transport },
-            connect: { connection }
+            connect: { _ in connection }
         )
     }
 

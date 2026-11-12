@@ -78,7 +78,9 @@ final class FakeTarget {
     var error: (any Error)?
     var suspend = false
 
-    private(set) var connectCount = 0
+    /// Every request `connect` was called with, in order.
+    private(set) var requests: [ConnectRequest] = []
+    var connectCount: Int { requests.count }
     let transports: FakeTransportPool
     private var pending: [CheckedContinuation<Void, Never>] = []
 
@@ -94,12 +96,12 @@ final class FakeTarget {
             displayName: displayName,
             handle: handle,
             makeTransport: { [self] in transports.make() },
-            connect: { [self] in try await connect() }
+            connect: { [self] request in try await connect(request) }
         )
     }
 
-    private func connect() async throws -> CallConnection {
-        connectCount += 1
+    private func connect(_ request: ConnectRequest) async throws -> CallConnection {
+        requests.append(request)
         if suspend {
             await withCheckedContinuation { pending.append($0) }
         }

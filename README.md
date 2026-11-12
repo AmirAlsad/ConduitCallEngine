@@ -2,7 +2,7 @@
 
 An iOS library that turns a voice agent into a phone call. It presents the call through CallKit (system call UI, lock screen, Bluetooth and CarPlay routing, hold while the user takes a phone call), receives agent-initiated calls through PushKit VoIP pushes, runs the call state machine, owns the audio-session policy during a call, reconnects after network drops, and carries audio over WebRTC through pluggable transports.
 
-Your app describes each call with a small `CallTarget` value: an id, a display name, an optional CallKit handle, a factory for the transport, and an async `connect` closure that returns a room URL and token however your app obtains them. The engine reports call state and finished calls back to you. It knows about calls, not about agents, accounts, persistence or UI. An app with one built-in agent and an app with many are the same to the engine: the first one just has one target.
+Your app describes each call with a small `CallTarget` value: an id, a display name, an optional CallKit handle, a factory for the transport, and an async `connect` closure that returns a room URL and token however your app obtains them, told by a `ConnectRequest` whether it is for a new call or a reconnect. The engine reports call state and finished calls back to you. It knows about calls, not about agents, accounts, persistence or UI. An app with one built-in agent and an app with many are the same to the engine: the first one just has one target.
 
 What it does not include:
 
@@ -65,8 +65,9 @@ enum Assistant {
             displayName: "Assistant",
             handle: nil,
             makeTransport: { LiveKitTransport() },
-            // Runs for the first connect and again before every reconnect attempt.
-            connect: {
+            // Runs for the first connect and again before every reconnect attempt;
+            // its `ConnectRequest` argument says which.
+            connect: { _ in
                 if let inline { return inline }
                 return try await Assistant.fetchConnection()
             }

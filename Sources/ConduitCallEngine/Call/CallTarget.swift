@@ -6,7 +6,8 @@
 //  (identity for CallKit) and how to reach them. The engine creates the transport
 //  once per call via `makeTransport`, BEFORE resolving credentials, so a CallKit
 //  activation that lands mid-fetch reaches the transport; `connect` runs for the
-//  first connect and again for every reconnect attempt.
+//  first connect and again for every reconnect attempt, told which by its
+//  `ConnectRequest`.
 //
 
 import Foundation
@@ -19,14 +20,18 @@ public struct CallTarget {
     /// .emailAddress`, the only type its provider supports), whatever its format.
     public let handle: String?
     public let makeTransport: @MainActor () -> any CallTransport
-    public let connect: @MainActor () async throws -> CallConnection
+    /// Resolves the room to join: for the call's first connect, and again before
+    /// every engine reconnect attempt. The request says which. Throw
+    /// `TransportError.authenticationFailed` for credentials the backend rejected,
+    /// so the call fails as `.badToken`.
+    public let connect: @MainActor (ConnectRequest) async throws -> CallConnection
 
     public init(
         id: UUID,
         displayName: String,
         handle: String?,
         makeTransport: @escaping @MainActor () -> any CallTransport,
-        connect: @escaping @MainActor () async throws -> CallConnection
+        connect: @escaping @MainActor (ConnectRequest) async throws -> CallConnection
     ) {
         self.id = id
         self.displayName = displayName

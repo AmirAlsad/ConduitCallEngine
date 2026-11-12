@@ -248,7 +248,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         callProvider.reportOutgoingCallConnecting(id)
         transition(to: .connecting)
 
-        await connectTransport(for: target)
+        await connectTransport(for: target, request: connectRequest(.outgoing))
     }
 
     private func isStillDialing(_ token: UUID) -> Bool {
@@ -602,7 +602,13 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
             ringStatusURL = nil
         }
         transition(to: .connecting)
-        await connectTransport(for: target)
+        await connectTransport(for: target, request: connectRequest(.answered))
+    }
+
+    /// For an incoming call every request carries the ring's id; an outgoing call's
+    /// CallKit id is the engine's own, which no server knows.
+    private func connectRequest(_ purpose: ConnectRequest.Purpose) -> ConnectRequest {
+        ConnectRequest(purpose: purpose, callID: callDirection == .incoming ? activeCallID : nil)
     }
 
     /// Fire-and-forget receipt to the server that sent the push, authenticated with the
@@ -616,7 +622,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     /// Shared by `placeCall` and `answer`. The transport exists before the
     /// credential fetch so a CallKit activation landing mid-fetch still reaches
     /// `attachAudioSession()`.
-    private func connectTransport(for target: CallTarget) async {
+    private func connectTransport(for target: CallTarget, request: ConnectRequest) async {
         let transport = target.makeTransport()
         self.transport = transport
         mediaTask = nil
@@ -630,7 +636,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         }
 
         do {
-            let connection = try await target.connect()
+            let connection = try await target.connect(request)
             // The call may have ended while credentials were in flight.
             guard self.transport === transport else { return }
             try await transport.connect(connection)
@@ -846,7 +852,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         // Both awaits can outlive the call or the attempt: once either is over, this
         // attempt is inert.
         do {
-            let connection = try await target.connect()
+            let connection = try await target.connect(connectRequest(.reconnect(attempt: attempt)))
             guard isCurrentAttempt(id, on: transport) else { return }
             joiningAttemptID = id
             defer { if joiningAttemptID == id { joiningAttemptID = nil } }

@@ -25,8 +25,9 @@ enum ExampleAgent {
             return makeTransport()
             #endif
         },
-        // Runs for the first connect and again for every reconnect attempt.
-        connect: {
+        // Runs for the first connect and again for every reconnect attempt; the
+        // request says which, and carries an incoming call's id.
+        connect: { _ in
             #if targetEnvironment(simulator)
             return CallConnection(url: URL(string: "https://example.invalid/room")!, token: nil)
             #else

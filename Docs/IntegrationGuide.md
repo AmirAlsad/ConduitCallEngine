@@ -313,7 +313,7 @@ Here `agents` and `callTarget(inline:)` are your own: the latter builds a `CallT
 
 **A transport per target.** `makeTransport` is per target, so targets can use different transports. A target on Daily returns `PipecatDailyTransport()`, one on LiveKit returns `LiveKitTransport()`. The engine calls `makeTransport` once per call, before it fetches credentials, and reuses that transport for every reconnect attempt in the call.
 
-**Credentials per call.** `connect` runs for the first connection and again before every reconnect attempt, so it can mint fresh, short-lived credentials each time. Throw `TransportError.authenticationFailed` when your backend rejects the user's credentials (a 401 or 403) so the call fails as `.badToken`, which your UI can explain differently from a network failure.
+**Credentials per call.** `connect` runs for the first connection and again before every reconnect attempt, so it can mint fresh, short-lived credentials each time. Its `ConnectRequest` says which: `purpose` is `.outgoing` or `.answered` for a call's first connect and `.reconnect(attempt:)` for an engine retry, and `callID` is the ring's `call_id` on every request for an incoming call (nil for an outgoing one), so your backend can tell a reconnect from a new call and match it to the ring it sent. Throw `TransportError.authenticationFailed` when your backend rejects the user's credentials (a 401 or 403) so the call fails as `.badToken`, which your UI can explain differently from a network failure.
 
 **History.** Write history from `callEngine(_:didFinish:)`. A `CallRecord` has `targetID`, `direction`, `startedAt`, `duration` (connected seconds, 0 if it never connected), `outcome`, `failureReason` and `missedReason`. Check `targetID` against your targets: a ring for an unknown target is recorded against the pushed id, which may match nothing of yours. `missedReason` has stable string raw values and is `Codable`, like `CallOutcome`. Record only from `didFinish`, not also from state transitions, or you will write two rows per call.
 
@@ -583,7 +583,7 @@ final class TestHost: CallEngineDelegate {
             displayName: "Assistant",
             handle: nil,
             makeTransport: { [transport] in transport },
-            connect: { CallConnection(url: URL(string: "https://example.invalid/room")!, token: "t") }
+            connect: { _ in CallConnection(url: URL(string: "https://example.invalid/room")!, token: "t") }
         )
     }
 

@@ -367,4 +367,37 @@ struct CallCredentialResolutionTests {
         #expect(h.transport.lastConnection == h.target.connection)
         #expect(h.target.makeTransportCount == 1) // one transport, reused by every attempt
     }
+
+    // MARK: - What the target is told
+
+    @Test func anOutgoingCallsRequestsSayWhatTheyAreFor() async throws {
+        let h = CallEngineHarness()
+        await h.placeCall()
+        h.engine.handle(.connected)
+        h.engine.handle(.disconnected(reason: .networkDropped))
+        await h.engine.awaitPendingReconnect()
+        h.engine.handle(.disconnected(reason: .networkDropped))
+        await h.engine.awaitPendingReconnect()
+
+        #expect(h.target.requests == [
+            ConnectRequest(purpose: .outgoing, callID: nil),
+            ConnectRequest(purpose: .reconnect(attempt: 1), callID: nil),
+            ConnectRequest(purpose: .reconnect(attempt: 2), callID: nil),
+        ])
+    }
+
+    @Test func anIncomingCallsRequestsCarryTheRingsID() async throws {
+        let h = CallEngineHarness()
+        let callID = UUID()
+        h.ring(callID: callID)
+        await h.engine.answer()
+        h.engine.handle(.connected)
+        h.engine.handle(.disconnected(reason: .networkDropped))
+        await h.engine.awaitPendingReconnect()
+
+        #expect(h.target.requests == [
+            ConnectRequest(purpose: .answered, callID: callID),
+            ConnectRequest(purpose: .reconnect(attempt: 1), callID: callID),
+        ])
+    }
 }
