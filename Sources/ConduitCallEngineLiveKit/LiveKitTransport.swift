@@ -169,6 +169,10 @@ private final class RoomEventMapper: NSObject, RoomDelegate {
         if hasRemote, let event = gate.remoteDidJoin() { continuation.yield(event) }
     }
 
+    private func onReconnectStarted() {
+        if let event = gate.reconnectDidStart() { continuation.yield(event) }
+    }
+
     private func onSpeakers(botSpeaking: Bool, level: Float) {
         if botSpeaking != wasBotSpeaking {
             wasBotSpeaking = botSpeaking
@@ -187,7 +191,7 @@ private final class RoomEventMapper: NSObject, RoomDelegate {
         case .reconnecting:
             // Hop like the completion does, so a reconnect that starts right after
             // one completes cannot overtake that completion's `.connected`.
-            Task { @MainActor in self.continuation.yield(.reconnecting) }
+            Task { @MainActor in self.onReconnectStarted() }
         default:
             break
         }
@@ -209,7 +213,7 @@ private final class RoomEventMapper: NSObject, RoomDelegate {
     }
 
     nonisolated func room(_ room: Room, didStartReconnectWithMode mode: ReconnectMode) {
-        Task { @MainActor in self.continuation.yield(.reconnecting) }
+        Task { @MainActor in self.onReconnectStarted() }
     }
 
     nonisolated func room(_ room: Room, didCompleteReconnectWithMode mode: ReconnectMode) {

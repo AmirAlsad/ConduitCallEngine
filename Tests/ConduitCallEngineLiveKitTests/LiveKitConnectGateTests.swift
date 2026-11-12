@@ -96,6 +96,62 @@ struct LiveKitConnectGateTests {
         #expect(gate.reconnectDidComplete(roomConnected: true, remotesPresent: true) == nil)
     }
 
+    // MARK: - A dead attempt
+
+    /// A participant-left that the SDK delivers after this attempt's drop belongs to the
+    /// dropped room; reporting it as `.botLeft` would end a call the engine is reconnecting.
+    @Test func aRemoteLeavingAfterTheDropWasReportedIsNotBotLeft() {
+        var gate = connectedGate()
+        #expect(gate.roomDidDisconnect() == .disconnected(reason: .networkDropped))
+
+        #expect(gate.remoteDidLeave(remotesRemain: false) == nil)
+    }
+
+    @Test func aRemoteLeavingAfterAnAbandonedReconnectIsNotBotLeft() {
+        var gate = connectedGate()
+        #expect(gate.reconnectDidComplete(roomConnected: false, remotesPresent: false)
+            == .disconnected(reason: .networkDropped))
+
+        #expect(gate.remoteDidLeave(remotesRemain: false) == nil)
+    }
+
+    @Test func theAgentLeavingEndsTheAttempt() {
+        var gate = connectedGate()
+        #expect(gate.remoteDidLeave(remotesRemain: false) == .disconnected(reason: .botLeft))
+
+        #expect(gate.roomDidDisconnect() == nil)
+        #expect(gate.reconnectDidComplete(roomConnected: true, remotesPresent: true) == nil)
+    }
+
+    @Test func aReconnectStartReportsReconnectingOnlyWhileTheAttemptLives() {
+        var gate = connectedGate()
+        #expect(gate.reconnectDidStart() == .reconnecting)
+
+        _ = gate.roomDidDisconnect()
+        #expect(gate.reconnectDidStart() == nil)
+
+        var hungUp = connectedGate()
+        hungUp.userRequestedDisconnect = true
+        #expect(hungUp.reconnectDidStart() == nil)
+    }
+
+    @Test func nothingConnectsAfterTheHostDisconnected() {
+        var gate = LiveKitConnectGate()
+        _ = gate.roomDidConnect()
+        gate.userRequestedDisconnect = true
+
+        #expect(gate.remoteDidJoin() == nil)
+        #expect(gate.roomDidDisconnect() == .disconnected(reason: .requestedByUser))
+    }
+
+    @Test func theAgentLeavingAfterTheHostDisconnectedIsNotBotLeft() {
+        var gate = connectedGate()
+        gate.userRequestedDisconnect = true
+
+        #expect(gate.remoteDidLeave(remotesRemain: false) == nil)
+        #expect(gate.roomDidDisconnect() == .disconnected(reason: .requestedByUser))
+    }
+
     // MARK: - SDK reconnect completion
 
     @Test func aGenuineReconnectWithTheRemotePresentReportsConnected() {

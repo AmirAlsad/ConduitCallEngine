@@ -57,8 +57,7 @@ public final class PipecatDailyTransport: CallTransport {
     // MARK: - CallTransport
 
     public func connect(_ connection: CallConnection) async throws {
-        clientEvents.didReportConnected = false
-        clientEvents.userRequestedDisconnect = false
+        clientEvents.gate.connectDidStart()
         clientEvents.interruptions.connectDidStart()
         do {
             let params = DailyTransportConnectionParams(
@@ -66,13 +65,14 @@ public final class PipecatDailyTransport: CallTransport {
             )
             try await client.connect(transportParams: params)
         } catch {
+            clientEvents.gate.connectDidFail()
             Log.error(.transport, "Daily connect failed: \(error)")
             throw TransportError.connectionFailed(String(describing: error))
         }
     }
 
     public func disconnect() async {
-        clientEvents.userRequestedDisconnect = true
+        clientEvents.gate.userDidRequestDisconnect()
         clientEvents.interruptions.userDidRequestDisconnect()
         // Deliberate hangup: an explicit end-call message lets the remote side end
         // at once instead of waiting out the grace period it may give a dropped
@@ -122,8 +122,7 @@ public final class PipecatDailyTransport: CallTransport {
 private final class PipecatEventMapper: PipecatClientDelegate {
     private nonisolated let continuation: AsyncStream<TransportEvent>.Continuation
     let interruptions: DailyInterruptionReporter
-    var didReportConnected = false
-    var userRequestedDisconnect = false
+    var gate = DailyConnectionGate()
 
     init(continuation: AsyncStream<TransportEvent>.Continuation) {
         self.continuation = continuation
@@ -139,11 +138,11 @@ private final class PipecatEventMapper: PipecatClientDelegate {
         case .initializing, .initialized, .authenticating, .authenticated, .connecting, .connected:
             continuation.yield(.connecting)
         case .ready:
-            emitConnectedOnce()
+            reportReady()
         case .disconnecting:
             break
         case .disconnected:
-            continuation.yield(.disconnected(reason: userRequestedDisconnect ? .requestedByUser : .networkDropped))
+            if let event = gate.transportDidDisconnect() { continuation.yield(event) }
             interruptions.transportDidDisconnect()
         case .error:
             continuation.yield(.error(.connectionFailed("transport error")))
@@ -152,19 +151,20 @@ private final class PipecatEventMapper: PipecatClientDelegate {
         }
     }
 
-    private func emitConnectedOnce() {
-        guard !didReportConnected else { return }
-        didReportConnected = true
-        continuation.yield(.connected)
+    private func reportReady() {
+        guard let event = gate.transportDidBecomeReady() else { return }
+        continuation.yield(event)
         interruptions.callDidConnect()
     }
 
     nonisolated func onBotReady(botReadyData: BotReadyData) {
-        Task { @MainActor in self.emitConnectedOnce() }
+        Task { @MainActor in self.reportReady() }
     }
 
     nonisolated func onBotDisconnected(participant: Participant) {
-        continuation.yield(.disconnected(reason: .botLeft))
+        Task { @MainActor in
+            if let event = self.gate.botDidLeave() { self.continuation.yield(event) }
+        }
     }
 
     nonisolated func onDisconnected() {

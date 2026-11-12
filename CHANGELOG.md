@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Transport adapters
+
+- Both adapters treat a connect attempt as over once it has reported a disconnect, its connect has thrown, or the host has called `disconnect()`, and report nothing that would steer the engine after that. Previously the attempt's state was only reset when the next `connect` ran, which is after the host's credential code, so a late callback from the dropped call was judged as part of a live one: on LiveKit a late participant-left could end a reconnecting call as `.completed`, and on Daily a late bot-left could do the same, a late bot-ready could report a dead attempt as connected, and a failed reconnect attempt was counted twice (its connect threw and the Pipecat client also reported `.disconnected`). Neither adapter reports `.connected` after the host's `disconnect()` any more. ([#10](https://github.com/AmirAlsad/ConduitCallEngine/issues/10))
+
 ## 0.1.1 - 2026-11-11
 
 - Correct the stated requirement: the package needs Xcode 26 or later, not 16.3. The sources use iOS 26 SDK names and never compiled with Xcode 16. CI now builds with Xcode 26.
