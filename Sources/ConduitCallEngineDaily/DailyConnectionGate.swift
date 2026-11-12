@@ -4,7 +4,10 @@
 //
 //  Decides what a Daily connect attempt reports, kept pure and SDK-free so every
 //  rule is unit-testable. `.connected` is reported once per attempt, when the
-//  Pipecat client is ready or the bot reports ready. The disconnect reason is
+//  Pipecat client is ready or the bot reports ready, or, for a gate that counts
+//  presence as ready (an experimental ring-join strategy that holds the agent's audio
+//  back, so the bot cannot become ready), once the call is joined with a remote
+//  participant in it. The disconnect reason is
 //  `.requestedByUser` after the host's `disconnect()`, otherwise `.networkDropped`;
 //  the bot leaving is `.botLeft`.
 //
@@ -42,7 +45,11 @@ struct DailyConnectionGate {
         case refuse
     }
 
+    /// Whether a joined call with a remote participant counts as connected.
+    let readyOnPresence: Bool
     private(set) var reportedConnected = false
+    private(set) var isJoined = false
+    private(set) var hasRemote = false
     private(set) var isAttemptOver = false
     private(set) var userRequestedDisconnect = false
 
@@ -55,8 +62,30 @@ struct DailyConnectionGate {
         return healed ? .reportConnected : .refuse
     }
 
+    init(readyOnPresence: Bool = false) {
+        self.readyOnPresence = readyOnPresence
+    }
+
     mutating func connectDidStart() {
-        self = DailyConnectionGate()
+        self = DailyConnectionGate(readyOnPresence: readyOnPresence)
+    }
+
+    /// The Daily call is joined; `remotePresent` is whether a remote participant is in it.
+    mutating func transportDidJoin(remotePresent: Bool) -> TransportEvent? {
+        isJoined = true
+        if remotePresent { hasRemote = true }
+        return presenceEvent()
+    }
+
+    /// A remote participant (the bot) joined the call.
+    mutating func botDidJoin() -> TransportEvent? {
+        hasRemote = true
+        return presenceEvent()
+    }
+
+    private mutating func presenceEvent() -> TransportEvent? {
+        guard readyOnPresence, isJoined, hasRemote else { return nil }
+        return transportDidBecomeReady()
     }
 
     /// The adapter's connect threw; that throw is how this attempt's failure is reported.

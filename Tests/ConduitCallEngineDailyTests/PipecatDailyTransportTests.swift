@@ -13,7 +13,8 @@
 import Foundation
 import Testing
 import ConduitCallEngine
-@testable import ConduitCallEngineDaily
+import PipecatClientIOS
+@_spi(RingJoinExperiment) @testable import ConduitCallEngineDaily
 
 @MainActor
 struct PipecatDailyTransportTests {
@@ -33,7 +34,7 @@ struct PipecatDailyTransportTests {
     private let clients = Clients()
     private let connection = CallConnection(url: URL(string: "https://example.daily.co/room")!, token: "t")
 
-    private func makeTransport() -> PipecatDailyTransport {
+    private func makeTransport(ringJoinStrategy: DailyRingJoinStrategy = .unsupported) -> PipecatDailyTransport {
         PipecatDailyTransport(
             makePipecatTransport: { [clients] in
                 let fake = FakePipecatTransport()
@@ -51,7 +52,8 @@ struct PipecatDailyTransportTests {
                 control.refusesBeforeJoin = clients.refusesBeforeJoin
                 clients.controls.append(control)
                 return control
-            }
+            },
+            ringJoinStrategy: ringJoinStrategy
         )
     }
 
@@ -442,5 +444,104 @@ struct PipecatDailyTransportTests {
         await drain()
 
         #expect(fake.calls == ["connect", "send client-message", "disconnect", "release"])
+    }
+
+    // MARK: - Connecting while ringing (experimental strategies)
+
+    private let bot = Participant(id: ParticipantId(id: "bot"), name: "bot", local: false)
+
+    @Test func byDefaultTheTransportCannotConnectWhileRinging() {
+        #expect(makeTransport().canConnectWhileRinging == false)
+    }
+
+    @Test(arguments: DailyRingJoinStrategy.allCases.filter { $0 != .unsupported })
+    func anExperimentalStrategyCanConnectWhileRinging(strategy: DailyRingJoinStrategy) {
+        #expect(makeTransport(ringJoinStrategy: strategy).canConnectWhileRinging)
+    }
+
+    /// D1 joins as without the switch: nothing touches the agent's audio, and the call
+    /// connects when the bot is ready, not when it is merely present.
+    @Test(.timeLimit(.minutes(1)))
+    func defaultSubscriptionsJoinsAsBefore() async throws {
+        let transport = makeTransport(ringJoinStrategy: .defaultSubscriptions)
+        let log = record(transport)
+        try await transport.connect(connection)
+        let fake = try #require(clients.made.first)
+
+        fake.delegate?.onBotConnected(participant: bot)
+        await drain()
+        #expect(callEvents(log).isEmpty)
+
+        fake.becomeReady()
+        await transport.attachAudioSession()
+        await drain()
+        #expect(callEvents(log) == [.connected])
+        #expect(fake.calls == ["connect"])
+    }
+
+    @Test(.timeLimit(.minutes(1)), arguments: [
+        (DailyRingJoinStrategy.agentAudioUnsubscribedUntilAnswer, DailyRemoteAudio.unsubscribed),
+        (.agentAudioStagedUntilAnswer, .staged),
+    ])
+    func aRingJoinHoldsTheAgentAudioBackUntilTheAttach(
+        strategy: DailyRingJoinStrategy, heldBack: DailyRemoteAudio
+    ) async throws {
+        let transport = makeTransport(ringJoinStrategy: strategy)
+        let log = record(transport)
+
+        try await transport.connect(connection)
+        let fake = try #require(clients.made.first)
+        fake.delegate?.onBotConnected(participant: bot)
+        await drain()
+        #expect(fake.calls == ["agent audio \(heldBack)", "connect"])
+        #expect(callEvents(log) == [.connected])
+
+        await transport.send(.answered)
+        await transport.attachAudioSession()
+        await drain()
+        #expect(fake.calls == ["agent audio \(heldBack)", "connect", "send client-message", "agent audio subscribed"])
+
+        fake.becomeReady()
+        await drain()
+        #expect(callEvents(log) == [.connected])
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func aRingJoinWithTheBotAlreadyThereConnectsOnTheJoin() async throws {
+        let transport = makeTransport(ringJoinStrategy: .agentAudioUnsubscribedUntilAnswer)
+        let log = record(transport)
+        try #require(clients.controls.first).hasRemoteParticipant = true
+
+        try await transport.connect(connection)
+        await drain()
+
+        #expect(callEvents(log) == [.connected])
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func aRingJoinRefusedBeforeTheJoinHoldsTheAgentBackOnceJoined() async throws {
+        clients.refusesBeforeJoin = true
+        let transport = makeTransport(ringJoinStrategy: .agentAudioUnsubscribedUntilAnswer)
+
+        try await transport.connect(connection)
+
+        let fake = try #require(clients.made.first)
+        #expect(fake.calls == ["connect", "agent audio unsubscribed"])
+    }
+
+    /// An outgoing call through the same transport is attached before it joins, so
+    /// the agent's audio is never held back.
+    @Test(.timeLimit(.minutes(1)))
+    func aRingJoinStrategyAttachedBeforeTheJoinKeepsTheAgentAudible() async throws {
+        let transport = makeTransport(ringJoinStrategy: .agentAudioUnsubscribedUntilAnswer)
+        await transport.attachAudioSession()
+        await drain()
+
+        try await transport.connect(connection)
+
+        let fake = try #require(clients.made.first)
+        let audioChanges = fake.calls.filter { $0.hasPrefix("agent audio") }
+        #expect(audioChanges.allSatisfy { $0 == "agent audio subscribed" })
+        #expect(fake.calls.contains("connect"))
     }
 }

@@ -12,6 +12,12 @@
 //  when the room is connected and a remote participant is present, bot-speaking
 //  from active speakers. Device-only (WebRTC audio aborts in the simulator).
 //
+//  Connecting while the call still rings is supported (`canConnectWhileRinging`):
+//  joining the room touches no audio. LiveKit does not configure the session (the
+//  automatic configuration is off), the remote audio it subscribes to only queues a
+//  playout request while the engine is unavailable, the mic is published only by
+//  `setMicEnabled(true)`, and route changes only emit `.audioDevicesChanged`.
+//
 
 import AVFoundation
 import Foundation
@@ -59,6 +65,11 @@ public final class LiveKitTransport: CallTransport {
         if let routeObserver { NotificationCenter.default.removeObserver(routeObserver) }
     }
 
+    /// True: `connect` configures and activates no audio session, starts no audio I/O
+    /// and plays nothing until `attachAudioSession()`, and `send(_:)` reaches the agent
+    /// over the room's data channel as soon as the room is connected.
+    public nonisolated var canConnectWhileRinging: Bool { true }
+
     // MARK: - CallTransport
 
     public func connect(_ connection: CallConnection) async throws {
@@ -83,6 +94,7 @@ public final class LiveKitTransport: CallTransport {
             // Engine off until CallKit activates — unless activation already
             // happened (also keeps the engine alive across a mid-call reconnect).
             try AudioManager.shared.setEngineAvailability(isSessionAttached ? .default : .none)
+            Log.info(.audio, "LiveKit connect: audio engine \(isSessionAttached ? "available (attached)" : "unavailable until attach")")
             try await room.connect(url: connection.url.absoluteString, token: connection.token ?? "")
         } catch {
             Log.error(.transport, "LiveKit connect failed: \(error)")
