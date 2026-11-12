@@ -203,13 +203,13 @@ struct SimulatedEngineTests {
         #expect(transport.disconnectCount == 1)
     }
 
-    @Test func providerResetReturnsToIdle() async throws {
+    @Test func providerResetFailsTheCall() async throws {
         _ = try await connectedOutgoingCall()
 
         system.resetProvider()
 
-        #expect(engine.state == .idle)
-        #expect(engine.activeCall == nil)
+        #expect(engine.state == .failed(.unknown))
+        #expect(host.records.map(\.failureReason) == [.unknown])
         await settle { transport.disconnectCount == 1 }
         #expect(transport.disconnectCount == 1)
     }

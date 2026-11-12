@@ -356,27 +356,81 @@ struct CallEngineTests {
 
     // MARK: - Lifecycle
 
-    @Test func providerResetReturnsToIdle() async throws {
-        let h = CallEngineHarness()
-        await h.placeCall()
-        h.engine.handle(.connected)
+    enum LiveCallStage: String, CaseIterable, Sendable {
+        case dialing, connecting, connected, reconnecting
+    }
+
+    /// The system dropped the call: the host hears a terminal transition (so its
+    /// cues stop) and gets the call's one record.
+    @Test(arguments: LiveCallStage.allCases)
+    func providerResetFailsTheLiveCall(stage: LiveCallStage) async throws {
+        let clock = MutableClock()
+        let h = CallEngineHarness(now: clock.now)
+        var place: Task<Void, Never>?
+        if stage == .dialing {
+            h.provider.suspendStart = true
+            place = Task { await h.placeCall() }
+            await waitUntil { h.provider.pendingStartCount == 1 }
+            #expect(h.engine.state == .dialing)
+        } else {
+            await h.placeCall()
+        }
+        if stage == .connected || stage == .reconnecting { h.engine.handle(.connected) }
+        if stage == .reconnecting { h.engine.handle(.disconnected(reason: .networkDropped)) }
+        clock.advance(20)
+        let before = h.engine.state.label
 
         h.engine.providerWasReset()
 
-        #expect(h.engine.state == .idle)
-        #expect(h.engine.activeCall == nil)
-        #expect(h.delegate.records.isEmpty) // a reset is not a finished call
-        #expect(h.delegate.transitions.last == "connected→idle")
+        #expect(h.engine.state == .failed(.unknown))
+        #expect(h.delegate.transitions.last == "\(before)→failed(unknown)")
+        #expect(h.delegate.records.count == 1)
+        let record = try #require(h.delegate.records.first)
+        #expect(record.outcome == .failed)
+        #expect(record.failureReason == .unknown)
+        #expect(record.duration == (stage == .connected || stage == .reconnecting ? 20 : 0))
+        #expect(h.provider.reportedEnded.isEmpty) // the reset already ended it in CallKit
+        #expect(h.engine.reconnectTask == nil)
+        #expect(!h.interruption.isObserving)
 
-        // Nor is a ringing call that the provider resets: no record, no receipt.
+        if let place {
+            h.provider.releaseStart() // CallKit's start returns after the reset
+            await place.value
+            #expect(h.engine.state == .failed(.unknown))
+            #expect(h.delegate.records.count == 1)
+            #expect(h.provider.endRequests == [h.callID])
+        } else {
+            await waitUntil { h.transport.disconnectCount == 1 }
+            #expect(h.transport.disconnectCount == 1)
+        }
+
+        h.engine.reset()
+        #expect(h.engine.state == .idle)
+    }
+
+    @Test func providerResetOfARingRecordsItAndReturnsToIdle() async throws {
+        let h = CallEngineHarness()
         h.ring(statusURL: URL(string: "https://engine.example.com/inbound/status/live")!)
         #expect(h.engine.state == .incomingRinging)
+
         h.engine.providerWasReset()
 
         #expect(h.engine.state == .idle)
-        #expect(h.delegate.records.isEmpty)
-        #expect(h.ringStatusReporter.reports.isEmpty)
+        #expect(h.delegate.transitions == ["idle→incomingRinging", "incomingRinging→idle"])
+        #expect(h.delegate.records.map(\.outcome) == [.failed])
+        #expect(h.delegate.records.map(\.failureReason) == [.unknown])
+        #expect(h.provider.reportedEnded.isEmpty)
+        #expect(h.ringStatusReporter.reports.isEmpty) // no receipt for a reset ring
         #expect(h.delegate.bearerRequests.isEmpty)
+    }
+
+    @Test func providerResetWhileIdleChangesNothing() async throws {
+        let h = CallEngineHarness()
+
+        h.engine.providerWasReset()
+
+        #expect(h.engine.state == .idle)
+        #expect(h.delegate.events.isEmpty)
     }
 
     @Test func resetReturnsToIdleAfterTerminalState() async throws {

@@ -58,7 +58,7 @@ idle -> incomingRinging -> connecting -> ...   (after the user answers)
 | `.ended(CallOutcome)` | Finished. | true | true |
 | `.failed(CallFailureReason)` | Could not be established or could not recover. | true | true |
 
-Terminal states stay until you call `reset()` (typically when your call screen is dismissed), or until the next `placeCall` or incoming ring, which reset first. A ring that ends before the user could take it (Focus filtered it, its target is unknown, or CallKit refused it) and a CallKit provider reset go straight back to `.idle` without a terminal state.
+Terminal states stay until you call `reset()` (typically when your call screen is dismissed), or until the next `placeCall` or incoming ring, which reset first. A ring that ends before the user could take it (Focus filtered it, its target is unknown, CallKit refused it, or the CallKit provider reset) goes straight back to `.idle` without a terminal state. A provider reset during a call that is dialing, connecting, connected or reconnecting fails it with `.failed(.unknown)`.
 
 ### Outcomes and failure reasons
 
@@ -77,7 +77,7 @@ A call that reaches `.ended(outcome)` is recorded with the same outcome, so a ho
 | `.badToken` | `TransportError.authenticationFailed` thrown by the target's `connect` closure or by `transport.connect` on the first connect; a `.disconnected(reason: .authFailed)` event at any time; an `.error(.authenticationFailed)` event while connecting. |
 | `.transportError` | Any other error from the first connect; any other `.error` event while connecting; a drop before the call ever connected. |
 | `.lostConnection` | The reconnection budget ran out. |
-| `.unknown` | CallKit refused to start an outgoing call. In a `CallRecord` only (the state goes from `.incomingRinging` back to `.idle`): CallKit refused to report an incoming call (other than Focus filtering), or a ring arrived for a target your delegate did not resolve. |
+| `.unknown` | CallKit refused to start an outgoing call, or reset its provider during a call. In a `CallRecord` only (the state goes from `.incomingRinging` back to `.idle`): CallKit refused to report an incoming call (other than Focus filtering) or reset its provider while it rang, or a ring arrived for a target your delegate did not resolve. |
 | `.agentUnreachable` | Declared but not produced by the engine in this version. |
 
 `CallOutcome`, `CallDirection` and `CallFailureReason` have stable string raw values and are `Codable`, so you can persist them.
@@ -109,7 +109,7 @@ Every callback is synchronous and on the main actor, made in the order the engin
 |---|---|---|
 | `callEngine(_:targetForIncomingCall:)` | Once per push, after the CallKit report is issued: inside the push handling for a ring, or after CallKit accepts the report for a push that arrives during another call. Return the `CallTarget`, or nil for an unknown target (the ring is then ended and recorded as failed, and the engine returns to idle). | nil, so every ring is ended. Implement it if you take incoming calls. |
 | `callEngine(_:didChangeStateFrom:to:)` | On every real state change, after the engine has set the transition's other fields, so `activeCall` and the rest are consistent when you read them. Not called when the state is set to the value it already has. | nothing |
-| `callEngine(_:didFinish:)` | Once per call, when it reaches its end: ended, failed, busy ring, Focus-filtered ring. Not for a malformed push or a provider reset. | nothing |
+| `callEngine(_:didFinish:)` | Once per call, when it reaches its end: ended, failed, busy ring, Focus-filtered ring, a ring that could not proceed, a CallKit provider reset. Not for a malformed push. | nothing |
 | `callEngine(_:ringStatusBearerForTarget:)` | When a receipt is about to be sent, only for pushes that carried `status_url`. Return the bearer for the `Authorization` header, or nil for none. | nil |
 | `callEngine(_:didUpdateVoIPPushToken:)` | When PushKit issues or rotates the VoIP token. | nothing |
 
@@ -452,7 +452,7 @@ and in `makeTransport`, return a `FakeTransport()` in the simulator. `FakeTransp
 | `answerIncomingCall() async` | The user answers; returns once the connect attempt has run. |
 | `endCallFromSystem(_:)` | The user ends or declines from the system UI. |
 | `setMutedFromSystem(_:muted:)` | The user toggles mute from the system UI. |
-| `resetProvider()` | CallKit resets the provider. |
+| `resetProvider()` | CallKit resets the provider: a live call fails with `.unknown`, a ring returns to idle, and both are recorded. |
 | `outgoingStartError` | While set, every outgoing start throws it, as a rejected start does; the call fails with `.unknown`. |
 | `activateAudioSession() async` | CallKit activates the audio session; returns once the engine has attached the transport and applied mic state. |
 | `deactivateAudioSession()` | CallKit deactivates the session; the engine detaches the transport on its next main-actor turn. |
@@ -655,7 +655,6 @@ Fix: record only from `didFinish`; the engine already makes the end of a call id
 - **Fixed policies.** The reconnection budget and backoff, the loudspeaker default, and the CallKit provider configuration (email handles, calls in the Phone app's Recents, no ringtone or icon customization) are not configurable.
 - **No programmatic answer.** Incoming calls are answered from the system UI only.
 - **Not exposed:** the remote audio level, user-speaking events, and PushKit token invalidation (logged only).
-- **A CallKit provider reset** tears the call down and returns to idle without a `CallRecord`.
 - **`CallFailureReason.agentUnreachable`** exists but is never produced.
 - **The user's mic controls are not gated on audio activation or interruptions.** Unmuting (in-app or from the system UI) and pressing push-to-talk enable the transport's mic immediately, even before CallKit has activated the session or while `isInterrupted` is true. See [section 4](#4-audio-session-ownership).
 - **The engine must outlive push registration.** Once `startPushRegistration()` has run, the engine has to stay alive for the rest of the process; if it is deallocated, an incoming push is completed without reporting a call.

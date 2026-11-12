@@ -330,11 +330,12 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         }
     }
 
-    /// A ring that cannot become a call (its target is unknown, or CallKit refused
-    /// the report) is over before the user could take it. Like a ring Focus filtered,
-    /// it is recorded and the engine returns to idle, never entering an active state.
-    private func endRingThatCannotProceed() {
-        if let id = activeCallID { callProvider.reportCallEnded(id, reason: .failed) }
+    /// A ring that cannot become a call (its target is unknown, CallKit refused the
+    /// report, or the provider reset) is over before the user could take it. Like a
+    /// ring Focus filtered, it is recorded and the engine returns to idle, never
+    /// entering an active state.
+    private func endRingThatCannotProceed(reportToCallKit: Bool = true) {
+        if reportToCallKit, let id = activeCallID { callProvider.reportCallEnded(id, reason: .failed) }
         interruptionObserver.stopObserving()
         finish(outcome: .failed, failureReason: .unknown)
         resetState()
@@ -662,10 +663,19 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         Task { [weak self] in await self?.transport?.setMicEnabled(self?.micShouldBeOn ?? false) }
     }
 
+    /// The reset already ended every call in CallKit, so nothing is reported back
+    /// to it; the host still hears the call end and gets its record.
     package func providerWasReset() {
         Log.warning(.callkit, "Provider reset; tearing down call")
-        teardownTransport()
-        resetState()
+        switch state {
+        case .incomingRinging:
+            endRingThatCannotProceed(reportToCallKit: false)
+        case .dialing, .connecting, .connected, .reconnecting:
+            fail(.unknown, reportToCallKit: false)
+        case .idle, .ended, .failed:
+            teardownTransport()
+            resetState()
+        }
     }
 
     // MARK: - Audio interruptions (AudioInterruptionObserverDelegate)
@@ -780,10 +790,10 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
 
     // MARK: - Terminal transitions
 
-    private func fail(_ reason: CallFailureReason) {
+    private func fail(_ reason: CallFailureReason, reportToCallKit: Bool = true) {
         guard !state.isTerminal else { return }
         transition(to: .failed(reason))
-        if let id = activeCallID { callProvider.reportCallEnded(id, reason: .failed) }
+        if reportToCallKit, let id = activeCallID { callProvider.reportCallEnded(id, reason: .failed) }
         finish(outcome: .failed, failureReason: reason)
         teardownTransport()
     }

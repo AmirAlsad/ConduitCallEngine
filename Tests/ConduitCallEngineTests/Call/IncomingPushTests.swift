@@ -422,7 +422,7 @@ struct IncomingPushTests {
         #expect(h.delegate.records.map(\.outcome) == [.canceled])
     }
 
-    @Test func startFailingAfterAProviderResetDoesNotFail() async throws {
+    @Test func startFailingAfterAProviderResetDoesNotFailAgain() async throws {
         let h = CallEngineHarness()
         h.provider.suspendStart = true
         let place = Task { await h.placeCall() }
@@ -430,14 +430,14 @@ struct IncomingPushTests {
         #expect(h.provider.pendingStartCount == 1)
 
         h.engine.providerWasReset()
-        #expect(h.engine.state == .idle)
+        #expect(h.engine.state == .failed(.unknown))
         h.provider.startError = TransportError.connectionFailed("callkit refused")
         h.provider.releaseStart()
         await place.value
 
-        #expect(h.engine.state == .idle)
-        #expect(h.delegate.transitions.last == "dialing→idle")
-        #expect(h.delegate.records.isEmpty)
+        #expect(h.engine.state == .failed(.unknown))
+        #expect(h.delegate.transitions.last == "dialing→failed(unknown)")
+        #expect(h.delegate.records.count == 1) // the reset's, not a second from the start
         #expect(h.provider.reportedEnded.isEmpty)
     }
 }
