@@ -155,6 +155,9 @@ final class RecordingCallEngineDelegate: CallEngineDelegate {
     /// `engine.repeatingCue` as the delegate read it at each cue, in cue order.
     private(set) var repeatingCueAtEachCue: [RepeatingCue?] = []
     var log: EventLog?
+    /// Runs inside each `callEngine(_:cue:)`, after it is recorded, as a host's
+    /// reaction to the cue would.
+    var onCue: ((CallEngine, CallCue) -> Void)?
     var targets: [UUID: CallTarget] = [:]
     var bearers: [UUID: String] = [:]
 
@@ -242,6 +245,7 @@ final class RecordingCallEngineDelegate: CallEngineDelegate {
         events.append(.cue(cue))
         repeatingCueAtEachCue.append(engine.repeatingCue)
         log?.append("cue(\(cue.label))")
+        onCue?(engine, cue)
     }
 
     func callEngine(
@@ -301,6 +305,7 @@ final class CallEngineHarness {
         pushToTalk: Bool = false,
         ringTimeout: Duration? = nil,
         joinTimeout: Duration? = nil,
+        micWithholdTimeout: Duration = .seconds(5),
         supportsHolding: Bool = true,
         now: @escaping () -> Date = { Date() },
         sleep: @escaping (Duration) async throws -> Void = { _ in }
@@ -319,6 +324,7 @@ final class CallEngineHarness {
                 unknownCallerName: "Agent",
                 ringTimeout: ringTimeout,
                 joinTimeout: joinTimeout,
+                micWithholdTimeout: micWithholdTimeout,
                 supportsHolding: supportsHolding,
                 isPushToTalkEnabled: { pushToTalk }
             ),

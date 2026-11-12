@@ -36,6 +36,16 @@ public struct CallEngineConfiguration: @unchecked Sendable {
     /// anyway). Measured with the engine's injected sleep. nil waits indefinitely, as
     /// 0.1 did. Default 30 seconds.
     public var joinTimeout: Duration?
+    /// The longest the host can keep the mic closed with `CallEngine.setMicWithheld(_:)`
+    /// once the call is connected and CallKit has activated its audio, whichever
+    /// comes last (or from the withhold, if that is later). When it runs out, the
+    /// engine releases the withhold itself, logs a warning, and the mic follows the
+    /// rest of its rule again; `CallEngine.isMicWithheld` turns false. It bounds a
+    /// host that forgets to release, so set it a little beyond your longest
+    /// connecting or connected sound; there is no unbounded setting, since a mic the
+    /// user cannot see is closed is the failure it prevents. Measured with the
+    /// engine's injected sleep. Default 5 seconds.
+    public var micWithholdTimeout: Duration
     /// Whether calls are reported to CallKit as holdable. When true (the default),
     /// iOS can put the call on hold (for example to answer or place a phone call)
     /// and the host can hold it with `CallEngine.setOnHold(_:)`; see
@@ -51,12 +61,14 @@ public struct CallEngineConfiguration: @unchecked Sendable {
         unknownCallerName: String = "Unknown",
         ringTimeout: Duration? = .seconds(60),
         joinTimeout: Duration? = .seconds(30),
+        micWithholdTimeout: Duration = .seconds(5),
         supportsHolding: Bool = true,
         isPushToTalkEnabled: @escaping @MainActor () -> Bool = { false }
     ) {
         self.unknownCallerName = unknownCallerName
         self.ringTimeout = ringTimeout
         self.joinTimeout = joinTimeout
+        self.micWithholdTimeout = micWithholdTimeout
         self.supportsHolding = supportsHolding
         self.isPushToTalkEnabled = isPushToTalkEnabled
     }

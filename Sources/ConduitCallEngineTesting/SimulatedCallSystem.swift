@@ -256,6 +256,11 @@ public final class SimulatedCallSystem {
         /// The wait before the engine sends the call's state again after a signal
         /// did not leave the device (`CallSignalDelivery.failed`).
         case signalRetry
+        /// `CallEngineConfiguration.micWithholdTimeout`: the bound on the host's
+        /// `CallEngine.setMicWithheld(true)`, running once the call is connected
+        /// with its audio activated. Firing it releases the withhold, as the engine
+        /// does when the bound runs out.
+        case micWithholdTimeout
     }
 
     /// Run `timer` out now, as if its wait were over, if it is running: the engine
@@ -272,6 +277,7 @@ public final class SimulatedCallSystem {
         case .transportHealTimeout: return engine.fireTimer(.selfHealTimeout)
         case .reconnectBackoff: return engine.fireTimer(.reconnectBackoff)
         case .signalRetry: return engine.fireTimer(.signalRetry)
+        case .micWithholdTimeout: return engine.fireTimer(.micWithholdTimeout)
         }
     }
 

@@ -30,6 +30,9 @@ public final class FakeTransport: CallTransport {
     public private(set) var isMicEnabled = false
     /// How many times the engine called `setMicEnabled(_:)`.
     public private(set) var setMicEnabledCallCount = 0
+    /// Every value the engine passed to `setMicEnabled(_:)`, in order, so a test
+    /// can check the mic was never opened in between.
+    public private(set) var micEnabledHistory: [Bool] = []
     /// Whether the last of `attachAudioSession()` and `detachAudioSession()` was an attach.
     public private(set) var isAudioAttached = false
     /// How many `connect(_:)` calls found their task cancelled when they finished.
@@ -106,6 +109,7 @@ public final class FakeTransport: CallTransport {
     public func setMicEnabled(_ enabled: Bool) async {
         isMicEnabled = enabled
         setMicEnabledCallCount += 1
+        micEnabledHistory.append(enabled)
     }
 
     /// The routes `availableAudioDevices()` returns: a speaker and an earpiece by default.

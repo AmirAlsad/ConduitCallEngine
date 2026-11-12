@@ -3,10 +3,11 @@
 //  ConduitCallEngineTests
 //
 //  The one mic rule: the transport's mic is on only while CallKit has activated
-//  the session, the call is not on hold, no interruption holds it, and the user
-//  wants it on (unmuted, or in push-to-talk mode the button held). Every input re-derives the mic from
-//  that rule, so the order the inputs arrive in never matters; the permutation
-//  test drives every order against a reference model of the rule.
+//  the session, the call is not on hold, no interruption holds it, the host is
+//  not withholding it, and the user wants it on (unmuted, or in push-to-talk mode
+//  the button held). Every input re-derives the mic from that rule, so the order
+//  the inputs arrive in never matters; the permutation tests drive every order
+//  against a reference model of the rule.
 //
 
 import Foundation
@@ -139,11 +140,31 @@ struct MicRuleTests {
         let events: [MicEvent] = [.activate, .deactivate, .hold, .unhold, .interrupt, .endInterruption, .unmute]
         try await MicRuleScenario.runEveryOrder(of: events, shouldResume: shouldResume)
     }
+
+    /// 2,520 orders per argument: the host's withhold and its release, in either
+    /// order, woven through activation, deactivation, an interruption and an unmute.
+    @Test(arguments: [true, false])
+    func everyOrderWithAWithholdLeavesTheMicWhereTheRuleSays(shouldResume: Bool) async throws {
+        let events: [MicEvent] = [.activate, .deactivate, .interrupt, .endInterruption, .unmute, .withhold, .release]
+        try await MicRuleScenario.runEveryOrder(of: events, shouldResume: shouldResume)
+    }
+
+    /// 2,520 orders: the withhold and its release woven through the connection,
+    /// activation, a hold and an unmute, from a call that has not connected yet, so
+    /// the withhold also comes before the connect and the activation.
+    @Test func everyOrderOfAWithholdAroundTheConnectAndAHoldLeavesTheMicWhereTheRuleSays() async throws {
+        let events: [MicEvent] = [.connect, .activate, .hold, .unhold, .unmute, .withhold, .release]
+        try await MicRuleScenario.runEveryOrder(of: events, shouldResume: true)
+    }
 }
 
 /// An input to the mic rule, as the system or the user delivers it.
 enum MicEvent: String, CustomStringConvertible, Sendable {
     case activate, deactivate, interrupt, endInterruption, unmute, hold, unhold
+    /// The transport reports `.connected`. An order without it starts connected.
+    case connect
+    /// The host's `setMicWithheld(true)` and `setMicWithheld(false)`.
+    case withhold, release
 
     var description: String { rawValue }
 }
@@ -153,15 +174,20 @@ struct MicRuleModel {
     enum Interruption: Equatable { case none, interrupted(reactivated: Bool), awaitingActivation }
 
     let shouldResume: Bool
+    var isConnected = true
     var isActivated = false
     var isMuted = true
     var isHeld = false
+    var isWithheld = false
+    /// The withhold's bound runs once the call is connected with its audio
+    /// activated while withheld, and stops only at the release.
+    var isWithholdBoundRunning = false
     var interruption = Interruption.none
 
     var isInterrupted: Bool { interruption != .none }
     /// Media runs on a session CallKit activated, and not while held.
     var isAttached: Bool { isActivated && !isHeld }
-    var micIsOn: Bool { isActivated && !isHeld && !isInterrupted && !isMuted }
+    var micIsOn: Bool { isActivated && !isHeld && !isInterrupted && !isWithheld && !isMuted }
 
     mutating func apply(_ event: MicEvent) {
         switch event {
@@ -189,7 +215,15 @@ struct MicRuleModel {
             isHeld = true
         case .unhold:
             isHeld = false
+        case .connect:
+            isConnected = true
+        case .withhold:
+            isWithheld = true
+        case .release:
+            isWithheld = false
+            isWithholdBoundRunning = false
         }
+        if isWithheld, isConnected, isActivated { isWithholdBoundRunning = true }
     }
 }
 
@@ -198,11 +232,20 @@ enum MicRuleScenario {
     /// Drive one connected, muted call through `order` and compare the mic with
     /// the model after every step. Returns a description of the first mismatch.
     static func run(_ order: [MicEvent], shouldResume: Bool) async -> String? {
-        let h = CallEngineHarness()
+        // A sleep that lasts until the call's end cancels it, so the withhold's
+        // bound never runs out by itself.
+        let h = CallEngineHarness(sleep: { _ in try await Task.sleep(for: .seconds(24 * 60 * 60)) })
         await h.placeCall()
-        h.engine.handle(.connected)
+        if !order.contains(.connect) { h.engine.handle(.connected) }
         await h.engine.setMuted(true)
+        let failure = await drive(h, through: order, shouldResume: shouldResume)
+        await h.engine.endCall()
+        return failure
+    }
+
+    private static func drive(_ h: CallEngineHarness, through order: [MicEvent], shouldResume: Bool) async -> String? {
         var model = MicRuleModel(shouldResume: shouldResume)
+        model.isConnected = !order.contains(.connect)
 
         for (step, event) in order.enumerated() {
             switch event {
@@ -221,6 +264,12 @@ enum MicRuleScenario {
                 h.provider.simulateSetHeld(h.callID, onHold: true)
             case .unhold:
                 h.provider.simulateSetHeld(h.callID, onHold: false)
+            case .connect:
+                h.engine.handle(.connected)
+            case .withhold:
+                h.engine.setMicWithheld(true)
+            case .release:
+                h.engine.setMicWithheld(false)
             }
             await h.engine.awaitPendingMediaWork()
             model.apply(event)
@@ -229,6 +278,8 @@ enum MicRuleScenario {
             let where_ = "\(order) step \(step) (\(event))"
             if mic && !h.engine.isAudioActivated { return "\(where_): mic on before activation" }
             if mic && h.engine.isOnHold { return "\(where_): mic on while held" }
+            if mic && h.engine.isInterrupted { return "\(where_): mic on while interrupted" }
+            if mic && h.engine.isMicWithheld { return "\(where_): mic on while withheld" }
             if h.transport.isAudioAttached != model.isAttached {
                 return "\(where_): attached \(h.transport.isAudioAttached), rule says \(model.isAttached)"
             }
@@ -238,6 +289,16 @@ enum MicRuleScenario {
             }
             if h.engine.isOnHold != model.isHeld {
                 return "\(where_): isOnHold \(h.engine.isOnHold), rule says \(model.isHeld)"
+            }
+            if h.engine.isMicWithheld != model.isWithheld {
+                return "\(where_): isMicWithheld \(h.engine.isMicWithheld), rule says \(model.isWithheld)"
+            }
+            if h.engine.isTimerRunning(.micWithholdTimeout) != model.isWithholdBoundRunning {
+                return "\(where_): withhold bound running \(!model.isWithholdBoundRunning), rule says \(model.isWithholdBoundRunning)"
+            }
+            // A withhold is not mute, in the engine or in CallKit.
+            if h.engine.isMuted != model.isMuted || h.provider.muteStates[h.callID] != model.isMuted {
+                return "\(where_): muted \(h.engine.isMuted) / CallKit \(String(describing: h.provider.muteStates[h.callID])), rule says \(model.isMuted)"
             }
         }
         return nil

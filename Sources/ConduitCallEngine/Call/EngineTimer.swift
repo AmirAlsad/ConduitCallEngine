@@ -20,4 +20,7 @@ package enum EngineTimer: Hashable, CaseIterable, Sendable {
     case reconnectBackoff
     /// The wait before a signal that did not leave the device is sent again.
     case signalRetry
+    /// The bound on a host's withhold of the mic (`micWithholdTimeout`), from the
+    /// moment the call is connected with its audio activated.
+    case micWithholdTimeout
 }

@@ -68,6 +68,12 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     /// or presses push-to-talk. If CallKit activated the session during the
     /// interruption, its end clears this either way.
     public var isInterrupted: Bool { interruption != .none }
+    /// Whether the host is keeping the mic closed with `setMicWithheld(_:)`, for
+    /// example while its own connecting or connected sound plays. Not mute: it
+    /// changes neither `isMuted` nor CallKit's mute state. Cleared when the call
+    /// ends, and by the engine itself `CallEngineConfiguration.micWithholdTimeout`
+    /// after the call is connected with its audio activated.
+    public private(set) var isMicWithheld = false
     /// The audio routes the user can pick, for an in-call route picker. Empty until
     /// CallKit has activated the call's session.
     public private(set) var audioDevices: [AudioDeviceInfo] = []
@@ -185,6 +191,9 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     private var activationTask: Task<Void, Never>?
     /// Ends the ring if nobody answers it in time; see `startRingTimer`.
     private var ringTimerTask: Task<Void, Never>?
+    /// Ends a host's withhold of the mic that outlasts its bound; see
+    /// `startMicWithholdTimeoutIfDue`.
+    private var micWithholdTask: Task<Void, Never>?
     /// What each running timer does when its wait is over, so a simulated system
     /// can run one out early (`fireTimer(_:)`).
     private var timerExpiries: [EngineTimer: @MainActor () -> Void] = [:]
@@ -606,6 +615,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     private func endMissedRing(_ reason: MissedCallReason, callKitReason: CallEndReason, receipt: RingStatus) {
         guard let id = activeCallID else { return }
         cancelRingTimer()
+        endMicWithhold()
         callProvider.reportCallEnded(id, reason: callKitReason)
         interruptionObserver.stopObserving()
         finish(outcome: .noAnswer, missedReason: reason)
@@ -632,6 +642,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
             // The system suppressed the ring (Focus/DND) — a missed call, not a
             // failure. Record it and return to idle so the next push rings normally.
             Log.info(.call, "Incoming call filtered by Focus; recording as missed")
+            endMicWithhold()
             interruptionObserver.stopObserving()
             finish(outcome: .noAnswer, missedReason: .filteredByFocus)
             if let url = ringStatusURL {
@@ -666,6 +677,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     /// entering an active state.
     private func endRingThatCannotProceed(reportToCallKit: Bool = true) {
         if reportToCallKit, let id = activeCallID { callProvider.reportCallEnded(id, reason: .failed) }
+        endMicWithhold()
         interruptionObserver.stopObserving()
         finish(outcome: .failed, failureReason: .unknown)
         resetState()
@@ -1456,6 +1468,11 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         }
     }
 
+    /// Test hook: whether `timer` is running.
+    package func isTimerRunning(_ timer: EngineTimer) -> Bool {
+        timerExpiries[timer] != nil
+    }
+
     /// Test hook: run `timer` out now, as if its wait were over, when it is running.
     /// Returns whether it was.
     package func fireTimer(_ timer: EngineTimer) -> Bool {
@@ -1473,6 +1490,9 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         case .signalRetry:
             signalRetryTask?.cancel()
             signalRetryTask = nil
+        case .micWithholdTimeout:
+            micWithholdTask?.cancel()
+            micWithholdTask = nil
         case .reconnectBackoff:
             break // its expiry replaces the waiting task itself
         }
@@ -1543,6 +1563,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         }
         // A call that connected before this activation is marked connected now.
         markConnectedIfDue()
+        startMicWithholdTimeoutIfDue()
         // A transport created later attaches as soon as it exists; a held call's
         // attaches on the resume.
         guard let transport else { return }
@@ -1935,6 +1956,63 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         await applyMic()?.value
     }
 
+    /// Keep the mic closed while your app plays its own sound into the call, such
+    /// as a ringback that is still finishing or a spoken "Connected", so the agent
+    /// does not hear it; `false` gives the mic back. Not mute: `isMuted`, CallKit's
+    /// mute state and the system call UI do not change, and the agent stays
+    /// audible. It changes nothing but the mic: no state, cue, signal, record,
+    /// attach or detach.
+    ///
+    /// Callable at any time, during a call or before one: a withhold set with no
+    /// call in progress applies to the next call. Like the other inputs to the mic
+    /// rule, it takes effect whatever order it arrives in relative to CallKit's
+    /// activation, the connection, mute, push-to-talk, hold and interruptions, and
+    /// releasing it re-derives the mic from the rule rather than opening it. It
+    /// takes effect before the engine's next mic command, so a withhold made
+    /// inside `callEngine(_:cue:)` closes the mic before the engine would open it
+    /// for the change that delivered the cue.
+    ///
+    /// The withhold ends by itself when the call ends, and the engine releases it,
+    /// with a warning in the log, once the call has been connected with its audio
+    /// activated for `CallEngineConfiguration.micWithholdTimeout`, so a release
+    /// that never comes cannot leave the user with a dead mic. See `isMicWithheld`.
+    public func setMicWithheld(_ withheld: Bool) {
+        guard withheld != isMicWithheld else { return }
+        isMicWithheld = withheld
+        if withheld {
+            startMicWithholdTimeoutIfDue()
+        } else {
+            cancelMicWithholdTimeout()
+        }
+        applyMic()
+    }
+
+    /// Bound a withhold once the call is connected with its audio activated,
+    /// whichever comes last; it then runs until the release or the call's end.
+    private func startMicWithholdTimeoutIfDue() {
+        guard isMicWithheld, micWithholdTask == nil, case .connected = state, isAudioActivated else { return }
+        let timeout = configuration.micWithholdTimeout
+        micWithholdTask = startTimer(.micWithholdTimeout, after: timeout) { [weak self] in
+            guard let self else { return }
+            self.micWithholdTask = nil
+            Log.warning(.call, "The mic was still withheld \(timeout) after the call connected; releasing it")
+            self.isMicWithheld = false
+            self.applyMic()
+        }
+    }
+
+    private func cancelMicWithholdTimeout() {
+        micWithholdTask?.cancel()
+        micWithholdTask = nil
+        timerExpiries[.micWithholdTimeout] = nil
+    }
+
+    /// The call is over, so a withhold made for it ends with it.
+    private func endMicWithhold() {
+        cancelMicWithholdTimeout()
+        isMicWithheld = false
+    }
+
     /// Ask CallKit to hold or resume the call, as the system UI would. CallKit
     /// performs the hold through the engine, which then updates `isOnHold`; on a
     /// device that can land just after this returns. Does nothing without a call
@@ -2029,10 +2107,10 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     }
 
     /// The one mic rule: on only on a session CallKit has activated, while the
-    /// call is not on hold and no other audio holds the session, then following
-    /// mute, or in push-to-talk mode the button.
+    /// call is not on hold, no other audio holds the session and the host is not
+    /// withholding it, then following mute, or in push-to-talk mode the button.
     private var micShouldBeOn: Bool {
-        guard isAudioActivated, !isOnHold, !isInterrupted else { return false }
+        guard isAudioActivated, !isOnHold, !isInterrupted, !isMicWithheld else { return false }
         return isPushToTalkEnabled() ? isPushToTalkHeld : !isMuted
     }
 
@@ -2110,6 +2188,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
 
     private func teardownTransport() {
         cancelRingTimer()
+        endMicWithhold()
         interruptionObserver.stopObserving()
         interruption = .none
         // The session CallKit activated belonged to this call.
@@ -2187,6 +2266,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         guard old != new else { return }
         delegate?.callEngine(self, didChangeStateFrom: old, to: new)
         deliverCues(from: old, to: new)
+        if case .connected = new { startMicWithholdTimeoutIfDue() }
     }
 
     /// Cues are a function of the transition: the loop each state wants, and the

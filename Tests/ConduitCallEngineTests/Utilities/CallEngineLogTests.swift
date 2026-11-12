@@ -101,6 +101,32 @@ struct CallEngineLogTests {
         }
     }
 
+    /// A host that withholds the mic and never releases it finds out from the log.
+    @Test func aWithholdTheBoundEndsIsLoggedAsAWarning() async throws {
+        try await capturing { sink in
+            let system = SimulatedCallSystem()
+            let engine = CallEngine.simulated(system: system)
+            let target = CallTarget(
+                id: UUID(),
+                displayName: "Assistant",
+                makeTransport: { FakeTransport() },
+                connect: { _ in CallConnection(url: URL(string: "https://example.invalid/room")!, token: "t") }
+            )
+            engine.setMicWithheld(true)
+            await engine.placeCall(target)
+            system.deliverTransportEvent(.connected)
+            await system.activateAudioSession()
+
+            #expect(system.fireTimer(.micWithholdTimeout))
+
+            let released = try #require(sink.events.last { $0.message.contains("mic was still withheld") })
+            #expect(released.level == .warning)
+            #expect(released.category == .call)
+            #expect(released.message.contains("\(Duration.seconds(5))"))
+            await engine.endCall()
+        }
+    }
+
     // MARK: - Redaction
 
     @Test(arguments: [
