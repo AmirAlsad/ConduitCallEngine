@@ -10,7 +10,7 @@ import Foundation
 import Testing
 import ConduitCallEngine
 import ConduitCallEngineTesting
-@testable import ConduitCallEngineDaily
+@_spi(RingJoinExperiment) @testable import ConduitCallEngineDaily
 
 @MainActor
 struct DailyUnderEngineTests {
@@ -65,6 +65,60 @@ struct DailyUnderEngineTests {
         await waitUntil { rig.engine.state.isTerminal }
 
         #expect(rig.engine.state == .failed(.agentUnreachable))
+    }
+
+    // MARK: - Experimental ring joins
+
+    /// The engine sends `call-answered` after the attach it issued on CallKit's
+    /// activation; with the agent's audio held back until that attach, the attach
+    /// must not return before Daily has subscribed, or the agent starts its greeting
+    /// before the user can hear it.
+    @Test(.timeLimit(.minutes(1)))
+    func aRingJoinedWithTheAgentHeldBackIsAudibleBeforeTheAgentHearsOfTheAnswer() async throws {
+        let rig = DailyEngineRig(strategy: .agentAudioUnsubscribedUntilAnswer)
+        rig.ringPreparation = .media
+        rig.refreshTarget()
+        _ = rig.ring()
+        await waitUntil { rig.pipecat?.calls.contains("connect") == true }
+        let pipecat = try #require(rig.pipecat)
+        pipecat.botJoins() // present; its audio is unsubscribed, so it is not ready
+        await waitUntil { rig.engine.ringPreparationPhase == .ready } // connected on presence
+        try #require(rig.controls.last).suspensions = 20 // Daily takes a while to subscribe
+
+        await rig.system.answerIncomingCall()
+        await rig.system.activateAudioSession()
+        await waitUntil { pipecat.calls.contains("send client-message") }
+        await drain()
+
+        let subscribed = try #require(pipecat.calls.firstIndex(of: "agent audio subscribed"))
+        let answered = try #require(pipecat.calls.firstIndex(of: "send client-message"))
+        #expect(subscribed < answered)
+    }
+
+    /// An outgoing call on a transport made with a ring-join strategy: CallKit
+    /// activates it while it dials, so it is attached before it joins, the agent's
+    /// audio is subscribed, and presence must not count as ready (the mic would open
+    /// before the bot can hear the user).
+    @Test(.timeLimit(.minutes(1)))
+    func anOutgoingCallOnARingJoinTransportWaitsForBotReady() async throws {
+        let rig = DailyEngineRig(strategy: .agentAudioUnsubscribedUntilAnswer)
+        rig.system.suspendsOutgoingStarts = true
+        let placing = Task { await rig.engine.placeCall(rig.target) }
+        await waitUntil { rig.system.pendingOutgoingStartCount == 1 }
+        await rig.system.activateAudioSession()
+        rig.system.releaseOutgoingStarts()
+        await placing.value
+        await drain()
+        let pipecat = try #require(rig.pipecat)
+        pipecat.botAnswersClientReady = false
+
+        pipecat.botJoins()
+        await drain()
+        #expect(rig.engine.state == .connecting)
+
+        pipecat.becomeReady()
+        await waitUntil { rig.engine.state.isConnected }
+        #expect(rig.engine.state.isConnected)
     }
 
     // MARK: - Signals that do not leave the device

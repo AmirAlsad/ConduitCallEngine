@@ -554,10 +554,11 @@ struct PipecatDailyTransportTests {
         #expect(fake.calls == ["agent audio \(heldBack)", "connect"])
         #expect(callEvents(log) == [.connected])
 
-        await transport.send(.answered)
+        // The engine's order: the attach CallKit's activation brings, then the answer.
         await transport.attachAudioSession()
+        await transport.send(.answered)
         await drain()
-        #expect(fake.calls == ["agent audio \(heldBack)", "connect", "send client-message", "agent audio subscribed"])
+        #expect(fake.calls == ["agent audio \(heldBack)", "connect", "agent audio subscribed", "send client-message"])
 
         fake.becomeReady()
         await drain()
@@ -585,6 +586,46 @@ struct PipecatDailyTransportTests {
 
         let fake = try #require(clients.made.first)
         #expect(fake.calls == ["connect", "agent audio unsubscribed"])
+    }
+
+    /// The attach that ends the hold-back returns once Daily has the subscription, so
+    /// the `call-answered` the engine sends next reaches an agent the user can hear.
+    @Test(.timeLimit(.minutes(1)))
+    func theAttachThatEndsARingJoinsHoldBackReturnsOnceSubscribed() async throws {
+        let transport = makeTransport(ringJoinStrategy: .agentAudioUnsubscribedUntilAnswer)
+        try await transport.connect(connection)
+        let fake = try #require(clients.made.first)
+        try #require(clients.controls.first).suspensions = 20
+
+        await transport.attachAudioSession()
+
+        #expect(fake.calls.last == "agent audio subscribed")
+    }
+
+    /// Presence counts as ready only for a join made while the agent's audio is held
+    /// back. A join after an attach (an outgoing call, or a reconnect of an answered
+    /// ring) has the agent subscribed, and waits for bot-ready as without the switch.
+    @Test(.timeLimit(.minutes(1)))
+    func presenceCountsOnlyForAJoinWhileTheAgentIsHeldBack() async throws {
+        let transport = makeTransport(ringJoinStrategy: .agentAudioUnsubscribedUntilAnswer)
+        let log = record(transport)
+        try await transport.connect(connection)
+        let fake = try #require(clients.made.first)
+        fake.delegate?.onBotConnected(participant: bot)
+        await drain()
+        #expect(callEvents(log) == [.connected]) // the ring's join, held back
+        await transport.attachAudioSession()
+        fake.setState(state: .disconnected) // a drop after the answer
+        await drain()
+
+        try await transport.connect(connection) // the engine's reconnect
+        fake.delegate?.onBotConnected(participant: bot)
+        await drain()
+        #expect(callEvents(log) == [.connected, .disconnected(reason: .networkDropped)])
+
+        fake.becomeReady()
+        await drain()
+        #expect(callEvents(log) == [.connected, .disconnected(reason: .networkDropped), .connected])
     }
 
     /// An outgoing call through the same transport is attached before it joins, so

@@ -22,10 +22,12 @@ public enum DailyRingJoinStrategy: String, CaseIterable, Sendable {
     /// the join). The agent is reported connected once it is ready, as without the switch.
     case defaultSubscriptions = "D1"
     /// D2: join with the agent's audio unsubscribed and subscribe at the first attach
-    /// (after the answer, once CallKit activates the session). The Pipecat client only
-    /// sends client-ready once the agent's audio is playable, so the bot is not ready
-    /// before then; the agent is reported connected once the call is joined and a
-    /// remote participant is in it.
+    /// (after the answer, once CallKit activates the session); that attach returns
+    /// once Daily has subscribed. The Pipecat client only sends client-ready once the
+    /// agent's audio is playable, so the bot is not ready before then; a join made
+    /// before the first attach is reported connected once the call is joined and a
+    /// remote participant is in it. Later joins (an outgoing call, which is attached
+    /// before it joins, or a reconnect) wait for bot-ready as without the switch.
     case agentAudioUnsubscribedUntilAnswer = "D2"
     /// D3: as D2, with the agent's audio staged (prepared to subscribe quickly) instead
     /// of unsubscribed.
@@ -42,9 +44,4 @@ extension DailyRingJoinStrategy {
         }
     }
 
-    /// Whether the call counts as connected once joined with a remote participant
-    /// present, because the bot cannot become ready while its audio is held back.
-    var reportsPresenceAsReady: Bool {
-        agentAudioUntilAnswer != nil
-    }
 }

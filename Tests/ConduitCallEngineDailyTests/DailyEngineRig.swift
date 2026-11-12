@@ -128,6 +128,21 @@ final class DailyEngineRig {
     /// The Pipecat transport of the adapter's current session.
     var pipecat: FakePipecatTransport? { pipecats.last }
 
+    /// Hand the host the target as configured now (after changing `ringPreparation`).
+    func refreshTarget() {
+        host.target = target
+    }
+
+    /// Ring with `preconnect` and return the ring's call id.
+    func ring(preconnect: String? = "media") -> UUID {
+        engine.startPushRegistration()
+        let id = UUID()
+        var push: [AnyHashable: Any] = ["target_id": targetID.uuidString, "call_id": id.uuidString]
+        push["preconnect"] = preconnect
+        system.deliverPush(push) {}
+        return id
+    }
+
     /// Place a call and let CallKit activate it, so the transport has joined and the
     /// engine is waiting for the agent.
     func placeActivatedCall() async throws -> UUID {

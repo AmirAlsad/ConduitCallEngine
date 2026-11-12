@@ -1598,10 +1598,12 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         }
     }
 
+    /// `resumed` says the user can hear the agent again, so it follows the attach
+    /// and mic commands issued so far; `held` goes at once.
     private func sendHoldSignal(_ signal: CallSignal) {
         holdSignalGeneration += 1
         let generation = holdSignalGeneration
-        send(signal) { [weak self] delivery in
+        send(signal, after: signal == .resumed ? mediaTask : nil) { [weak self] delivery in
             guard let self, generation == self.holdSignalGeneration else { return }
             switch delivery {
             case .sent, .unsupported:

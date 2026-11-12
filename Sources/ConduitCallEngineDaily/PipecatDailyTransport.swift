@@ -120,7 +120,6 @@ public final class PipecatDailyTransport: CallTransport {
         let events = PipecatEventMapper(
             continuation: continuation,
             pathMonitor: makePathMonitor(),
-            readyOnPresence: ringJoinStrategy.reportsPresenceAsReady,
             isRemotePresent: { [weak callControl] in callControl?.hasRemoteParticipant ?? false }
         )
         client.delegate = events
@@ -157,14 +156,15 @@ public final class PipecatDailyTransport: CallTransport {
                 throw TransportError.connectionFailed("Daily transport was disconnected while taking a session over")
             }
         }
-        session.events.gate.connectDidStart()
+        // Presence counts as ready only for a join the bot cannot get ready in.
+        session.events.gate.connectDidStart(readyOnPresence: remoteAudio.holdsAgentBack)
         session.events.interruptions.connectDidStart()
         remoteAudio.sessionDidReset()
         if ringJoinStrategy != .unsupported {
             Log.info(.transport, "Daily connect: ring-join strategy \(ringJoinStrategy.rawValue), agent audio before the first attach: \(Self.describe(ringJoinStrategy.agentAudioUntilAnswer)), attached=\(remoteAudio.isAttached)")
         }
         // Before the join, so a held call that reconnects joins with the agent silent.
-        await applyRemoteAudio()
+        await applyRemoteAudio().value
         do {
             let params = DailyTransportConnectionParams(
                 roomUrl: connection.url.absoluteString, token: connection.token
@@ -178,7 +178,7 @@ public final class PipecatDailyTransport: CallTransport {
         session.events.transportDidJoin()
         // Daily may not take a subscription change before the join; it does now.
         remoteAudio.joinDidComplete()
-        await applyRemoteAudio()
+        await applyRemoteAudio().value
     }
 
     /// The client states in which `PipecatClient.connect` throws `BotAlreadyStartedError`.
@@ -303,11 +303,14 @@ public final class PipecatDailyTransport: CallTransport {
     }
 
     /// Daily owns the AVAudioSession, so attaching only lets the agent be heard again
-    /// after a detach; the mic stays off until the engine enables it.
+    /// after a detach (or, on a call joined with its audio held back, for the first
+    /// time); the mic stays off until the engine enables it. Returns once Daily has the
+    /// subscription, within `attachBound`, so what the engine sends after the attach
+    /// (`call-answered`, `call-resumed`) reaches an agent the user can hear.
     public func attachAudioSession() async {
         remoteAudio.attach()
         Log.info(.audio, "Daily attach: agent audio wanted \(Self.describe(remoteAudio.wanted))")
-        startApplyingRemoteAudio()
+        await Self.wait(for: applyRemoteAudio(), atMost: Self.attachBound)
     }
 
     /// Stops the agent's playout by unsubscribing from its audio (the engine closes the
@@ -315,16 +318,47 @@ public final class PipecatDailyTransport: CallTransport {
     public func detachAudioSession() async {
         remoteAudio.detach()
         Log.info(.audio, "Daily detach: agent audio wanted \(Self.describe(remoteAudio.wanted))")
-        startApplyingRemoteAudio()
+        applyRemoteAudio()
     }
 
-    private func startApplyingRemoteAudio() {
-        Task { await self.applyRemoteAudio() }
+    /// The longest `attachAudioSession()` waits for Daily to apply a subscription.
+    private static let attachBound: Duration = .seconds(2)
+
+    /// The application of subscription changes in progress.
+    private var remoteAudioApplication: Task<Void, Never>?
+
+    /// Applies the gate's wanted subscription until Daily has it, one change at a time
+    /// and always toward the latest wanted state. A call while an application runs
+    /// returns that one, which picks up the latest state.
+    @discardableResult
+    private func applyRemoteAudio() -> Task<Void, Never> {
+        if let remoteAudioApplication { return remoteAudioApplication }
+        let task = Task { [weak self] in
+            await self?.applyRemoteAudioChanges()
+            self?.remoteAudioApplication = nil
+        }
+        remoteAudioApplication = task
+        return task
     }
 
-    /// Applies the gate's wanted subscription until Daily has it. Returns at once when
-    /// another call is already applying; that one picks up the latest state.
-    private func applyRemoteAudio() async {
+    /// Waits for `task`, or for `bound` to pass, whichever comes first.
+    private static func wait(for task: Task<Void, Never>, atMost bound: Duration) async {
+        let (outcome, report) = AsyncStream.makeStream(of: Void.self)
+        let waiter = Task {
+            await task.value
+            report.yield()
+        }
+        let timer = Task {
+            try? await Task.sleep(for: bound)
+            report.yield()
+        }
+        for await _ in outcome { break }
+        waiter.cancel()
+        timer.cancel()
+        report.finish()
+    }
+
+    private func applyRemoteAudioChanges() async {
         while let application = remoteAudio.beginApplying() {
             guard let callControl = session?.callControl else {
                 remoteAudio.applyDidFail(application)
@@ -364,12 +398,11 @@ private final class PipecatEventMapper: PipecatClientDelegate {
     init(
         continuation: AsyncStream<TransportEvent>.Continuation,
         pathMonitor: NetworkPathMonitoring,
-        readyOnPresence: Bool,
         isRemotePresent: @escaping @MainActor () -> Bool
     ) {
         self.continuation = continuation
         self.interruptions = DailyInterruptionReporter(pathMonitor: pathMonitor) { continuation.yield($0) }
-        self.gate = DailyConnectionGate(readyOnPresence: readyOnPresence)
+        self.gate = DailyConnectionGate()
         self.isRemotePresent = isRemotePresent
     }
 

@@ -353,6 +353,25 @@ struct CallHoldTests {
 
     // MARK: - Telling the agent
 
+    /// `call-resumed` tells the agent the user can hear it again, so it follows the
+    /// attach the resume issued (Daily subscribes to the agent's audio there).
+    @Test func aResumeReachesTheAgentAfterTheAttach() async throws {
+        let h = CallEngineHarness()
+        await liveCall(h)
+        await setHeld(h, true)
+        h.transport.suspendAttach = true
+
+        h.provider.simulateSetHeld(h.callID, onHold: false)
+        await waitUntil { h.transport.pendingAttachCount == 1 }
+        await settle()
+        #expect(h.transport.sentSignals == [.held])
+
+        h.transport.releaseAttach()
+        await h.engine.awaitPendingMediaWork()
+        await h.engine.awaitPendingSignals()
+        #expect(h.transport.sentSignals == [.held, .resumed])
+    }
+
     @Test func aHeldCallTellsTheAgentAgainAfterEveryReconnect() async throws {
         let h = CallEngineHarness()
         await liveCall(h)

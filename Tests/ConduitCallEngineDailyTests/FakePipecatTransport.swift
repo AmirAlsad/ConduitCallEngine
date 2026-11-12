@@ -34,8 +34,8 @@ final class FakePipecatTransport: Transport {
     var onMessage: ((RTVIMessageInbound) -> Void)?
     private var currentState: TransportState = .disconnected
 
-    /// Whether the bot is in the room (`botJoins()`); a joined client sees it. A
-    /// client that leaves, or joins again (a new room), starts without it.
+    /// Whether the bot is in the room (`botJoins()`, before or after the client joins);
+    /// a joined client sees it. A client that leaves the call starts without it.
     private(set) var isBotPresent = false
     /// Whether a bot that becomes able to hear the client answers client-ready with
     /// bot-ready, as a Pipecat bot does. False stands for a bot that never gets ready.
@@ -94,7 +94,6 @@ final class FakePipecatTransport: Transport {
 
     func connect(transportParams: TransportConnectionParams?) async throws {
         calls.append("connect")
-        isBotPresent = false
         setState(state: joinsOnConnect ? .connected : .connecting)
         if joinsOnConnect, isBotPresent {
             delegate?.onBotConnected(participant: Participant(id: ParticipantId(id: "bot"), name: "bot", local: false))

@@ -51,6 +51,12 @@ struct DailyRemoteAudioGate {
         self.untilFirstAttach = untilFirstAttach
     }
 
+    /// Whether the agent's audio is held back now: a gate made with `untilFirstAttach`
+    /// that has not been attached yet. A join then cannot get the bot ready.
+    var holdsAgentBack: Bool {
+        untilFirstAttach != nil && !hasAttached
+    }
+
     /// The subscription the agent's audio should have now; `nil` leaves Daily's default.
     var wanted: DailyRemoteAudio? {
         if isAttached {

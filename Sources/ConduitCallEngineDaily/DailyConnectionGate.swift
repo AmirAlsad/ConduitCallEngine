@@ -4,10 +4,12 @@
 //
 //  Decides what a Daily connect attempt reports, kept pure and SDK-free so every
 //  rule is unit-testable. `.connected` is reported once per attempt, when the
-//  Pipecat client is ready or the bot reports ready, or, for a gate that counts
-//  presence as ready (an experimental ring-join strategy that holds the agent's audio
-//  back, so the bot cannot become ready), once the call is joined with a remote
-//  participant in it. The disconnect reason is
+//  Pipecat client is ready or the bot reports ready, or, for an attempt that counts
+//  presence as ready (a join made while an experimental ring-join strategy holds the
+//  agent's audio back, so the bot cannot become ready), once the call is joined with
+//  a remote participant in it. Each connect decides that for its own attempt, so a
+//  later join with the agent's audio subscribed (an outgoing call, a reconnect after
+//  the answer) waits for bot-ready as without the strategy. The disconnect reason is
 //  `.requestedByUser` after the host's `disconnect()`, otherwise `.networkDropped`;
 //  the bot leaving is `.botLeft`.
 //
@@ -57,8 +59,9 @@ struct DailyConnectionGate {
         case takeOver
     }
 
-    /// Whether a joined call with a remote participant counts as connected.
-    let readyOnPresence: Bool
+    /// Whether, for this attempt, a joined call with a remote participant counts as
+    /// connected.
+    private(set) var readyOnPresence = false
     private(set) var reportedConnected = false
     private(set) var isJoined = false
     private(set) var hasRemote = false
@@ -78,12 +81,11 @@ struct DailyConnectionGate {
         }
     }
 
-    init(readyOnPresence: Bool = false) {
+    /// A connect starts a fresh attempt; `readyOnPresence` is whether it joins with
+    /// the agent's audio held back.
+    mutating func connectDidStart(readyOnPresence: Bool = false) {
+        self = DailyConnectionGate()
         self.readyOnPresence = readyOnPresence
-    }
-
-    mutating func connectDidStart() {
-        self = DailyConnectionGate(readyOnPresence: readyOnPresence)
     }
 
     /// The Daily call is joined; `remotePresent` is whether a remote participant is in it.
