@@ -35,6 +35,19 @@ struct PushRegistrationTests {
         #expect(h.engine.voipPushToken == token)
     }
 
+    @Test func aTokenInvalidationReachesTheDelegate() {
+        let h = CallEngineHarness()
+        h.engine.startPushRegistration()
+        h.pushRegistry.simulateTokenUpdate(Data([0x01]))
+
+        h.pushRegistry.simulateTokenInvalidation()
+
+        #expect(h.delegate.tokenInvalidations == 1)
+        #expect(h.engine.voipPushToken == nil)
+        h.pushRegistry.simulateTokenUpdate(Data([0x02]))
+        #expect(h.engine.voipPushToken == Data([0x02]))
+    }
+
     private func makeEngine(provider: FakeCallProvider, registry: FakeVoIPPushRegistry) -> CallEngine {
         CallEngine(
             callProvider: provider,

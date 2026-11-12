@@ -181,6 +181,12 @@ final class Swift6Host: CallEngineDelegate {
     func callEngine(_ engine: CallEngine, didUpdateVoIPPushToken token: Data) {
         tokens.append(token)
     }
+
+    private(set) var invalidations = 0
+
+    func callEngineDidInvalidateVoIPPushToken(_ engine: CallEngine) {
+        invalidations += 1
+    }
 }
 
 /// Collects log events from any thread.
@@ -458,6 +464,9 @@ struct Swift6HostTests {
         system.deliverVoIPPushToken(Data([1, 2]))
         #expect(host.tokens == [Data([1, 2])])
         #expect(engine.voipPushToken == Data([1, 2]))
+        system.invalidateVoIPPushToken()
+        #expect(host.invalidations == 1)
+        #expect(engine.voipPushToken == nil)
         #expect(system.presentConnectedCall(active, secondsElapsed: 10, botSpeaking: false))
         #expect(engine.repeatingCue == nil)
         _ = (engine.isAudioActivated, engine.isInterrupted, engine.isBotSpeaking, engine.audioDevices,

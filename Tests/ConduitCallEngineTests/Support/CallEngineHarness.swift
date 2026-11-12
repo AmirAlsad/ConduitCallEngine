@@ -269,6 +269,12 @@ final class RecordingCallEngineDelegate: CallEngineDelegate {
         events.append(.pushToken(token))
         log?.append("push-token")
     }
+
+    private(set) var tokenInvalidations = 0
+
+    func callEngineDidInvalidateVoIPPushToken(_ engine: CallEngine) {
+        tokenInvalidations += 1
+    }
 }
 
 @MainActor

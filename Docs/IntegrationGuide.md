@@ -120,6 +120,7 @@ Every callback is synchronous and on the main actor, made in the order the engin
 | `callEngine(_:didFinish:)` | Once per call, when it reaches its end: ended, failed, busy ring, Focus-filtered ring, a ring that timed out or that the caller cancelled, a ring that could not proceed, a CallKit provider reset. Not for a malformed push, a cancel push, or a ring whose cancel already arrived. | nothing |
 | `callEngine(_:ringStatusBearerForTarget:)` | When a receipt is about to be sent, only for pushes that carried `status_url` and whose target your delegate resolved. Return the bearer for the `Authorization` header, or nil for none. | nil |
 | `callEngine(_:didUpdateVoIPPushToken:)` | When PushKit issues or rotates the VoIP token. | nothing |
+| `callEngineDidInvalidateVoIPPushToken(_:)` | When PushKit invalidates the VoIP token; `voipPushToken` is nil until PushKit issues a new one. | nothing |
 
 ### Logging
 
@@ -308,7 +309,7 @@ The token belongs to the install, not to a target: every target gets the same to
 - On every `didUpdateVoIPPushToken` callback.
 - When the user signs in, or turns on incoming calls for a target.
 - When a target's display name or handle changes, so the server echoes current values.
-- Tell the server to forget the token when the user signs out, or turns incoming calls off. Reinstalling the app produces a new token; APNs answers pushes to the old one with 410.
+- Tell the server to forget the token when the user signs out, or turns incoming calls off, and on `callEngineDidInvalidateVoIPPushToken(_:)`, when PushKit invalidates it. Reinstalling the app produces a new token; APNs answers pushes to the old one with 410.
 
 Retry failed sends yourself; nothing in the engine retries them.
 
@@ -622,7 +623,7 @@ and in `makeTransport`, return a `FakeTransport(reportsConnectedAfter: .seconds(
 | Member | Does |
 |---|---|
 | `deliverPush(_:completion:)` | PushKit delivers a VoIP push. Requires `engine.startPushRegistration()`. |
-| `deliverVoIPPushToken(_:)`, `voipPushToken` | PushKit issues a token; the token it holds. |
+| `deliverVoIPPushToken(_:)`, `invalidateVoIPPushToken()`, `voipPushToken` | PushKit issues or invalidates a token; the token it holds. |
 | `answerIncomingCall() async` | The user answers; returns once the connect attempt has run. |
 | `endCallFromSystem(_:)` | The user ends or declines from the system UI. |
 | `setMutedFromSystem(_:muted:)` | The user toggles mute from the system UI. Ignored unless `callID` is the live call's. |
@@ -859,6 +860,6 @@ Fix: record only from `didFinish`; the engine already makes the end of a call id
 - **Daily never reports bad credentials itself.** Only your `connect` closure can produce `.badToken` on Daily.
 - **Fixed policies.** The reconnection budget and backoff, the loudspeaker default, and the CallKit provider configuration (email handles, calls in the Phone app's Recents, no ringtone or icon customization) are not configurable.
 - **No programmatic answer.** Incoming calls are answered from the system UI only.
-- **Not exposed:** the remote audio level, user-speaking events, and PushKit token invalidation (logged only).
+- **Not exposed:** the remote audio level and user-speaking events.
 - **An engine that has started push registration is never deallocated.** It keeps itself alive so every push is reported.
 - **The delegate must be set before `startPushRegistration()`.** A push waiting at launch can be delivered as soon as the registry exists, and a push handled with no delegate fails as an unknown target.

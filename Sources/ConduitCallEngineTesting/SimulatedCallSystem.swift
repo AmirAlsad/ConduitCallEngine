@@ -108,6 +108,12 @@ public final class SimulatedCallSystem {
         pushRegistry.simulateTokenUpdate(token)
     }
 
+    /// PushKit invalidated the token: `voipPushToken` becomes nil and the engine tells
+    /// its delegate (`callEngineDidInvalidateVoIPPushToken(_:)`).
+    public func invalidateVoIPPushToken() {
+        pushRegistry.simulateTokenInvalidation()
+    }
+
     /// The VoIP token the system currently holds, without delivering an update.
     public var voipPushToken: Data? {
         get { pushRegistry.pushToken }

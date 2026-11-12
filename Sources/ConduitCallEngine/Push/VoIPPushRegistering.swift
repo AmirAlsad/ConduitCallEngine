@@ -24,6 +24,7 @@ package protocol VoIPPushRegistering: AnyObject {
     /// Start receiving VoIP pushes. Called once.
     func start(
         onTokenUpdate: @escaping @MainActor (Data) -> Void,
+        onTokenInvalidated: @escaping @MainActor () -> Void,
         onIncomingPush: @escaping @MainActor (_ payload: [AnyHashable: Any], _ completion: @escaping () -> Void) -> Void
     )
 }
@@ -33,16 +34,19 @@ package protocol VoIPPushRegistering: AnyObject {
 final class SystemVoIPPushRegistry: NSObject, VoIPPushRegistering, PKPushRegistryDelegate {
     private var registry: PKPushRegistry?
     private var onTokenUpdate: (@MainActor (Data) -> Void)?
+    private var onTokenInvalidated: (@MainActor () -> Void)?
     private var onIncomingPush: (@MainActor ([AnyHashable: Any], @escaping () -> Void) -> Void)?
 
     var pushToken: Data? { registry?.pushToken(for: .voIP) }
 
     func start(
         onTokenUpdate: @escaping @MainActor (Data) -> Void,
+        onTokenInvalidated: @escaping @MainActor () -> Void,
         onIncomingPush: @escaping @MainActor ([AnyHashable: Any], @escaping () -> Void) -> Void
     ) {
         guard registry == nil else { return }
         self.onTokenUpdate = onTokenUpdate
+        self.onTokenInvalidated = onTokenInvalidated
         self.onIncomingPush = onIncomingPush
         let registry = PKPushRegistry(queue: .main)
         registry.delegate = self
@@ -82,5 +86,7 @@ final class SystemVoIPPushRegistry: NSObject, VoIPPushRegistering, PKPushRegistr
         didInvalidatePushTokenFor type: PKPushType
     ) {
         Log.warning(.callKit, "VoIP push token invalidated")
+        guard type == .voIP else { return }
+        MainActor.assumeIsolated { onTokenInvalidated?() }
     }
 }

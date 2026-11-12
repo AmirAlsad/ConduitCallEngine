@@ -276,6 +276,10 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
                 guard let self else { return }
                 delegate?.callEngine(self, didUpdateVoIPPushToken: token)
             },
+            onTokenInvalidated: { [weak self] in
+                guard let self else { return }
+                delegate?.callEngineDidInvalidateVoIPPushToken(self)
+            },
             // Strong on purpose: the registry this engine owns now holds the engine.
             onIncomingPush: { payload, completion in
                 self.handleIncomingPush(payload, completion: completion)
