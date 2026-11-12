@@ -121,6 +121,8 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     /// is no longer this one was superseded (the call recovered, was held, or a
     /// newer attempt started) and changes nothing when its awaits return.
     private var reconnectAttemptID: UUID?
+    /// The attempt whose `transport.connect` is under way, if any.
+    private var joiningAttemptID: UUID?
     /// Ends the wait for `.connected` after a connect returned; see `startJoinDeadline`.
     private var joinDeadlineTask: Task<Void, Never>?
     /// Ends the wait for a transport that is healing itself; see `enterReconnectingDisplay`.
@@ -711,12 +713,9 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
 
         case .reconnecting:
             reconnectAttempt = 0
-            reconnectAttemptID = nil
-            reconnectTask?.cancel()
-            reconnectTask = nil
+            stopReconnectAttempt()
             isReconnectionPaused = false
             cancelSelfHealDeadline()
-            cancelJoinDeadline()
             transition(to: .connected(since: firstConnectedAt ?? now()))
             applyMic()
             // A new connection may be a new agent session: tell it again.
@@ -830,10 +829,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     /// A held call spends no attempts: any pending one is cancelled, the count
     /// starts over, and the call shows `reconnecting(attempt: 0)` until the resume.
     private func pauseReconnection() {
-        reconnectAttemptID = nil
-        reconnectTask?.cancel()
-        reconnectTask = nil
-        cancelJoinDeadline()
+        stopReconnectAttempt()
         reconnectAttempt = 0
         isReconnectionPaused = true
         Log.info(.call, "Connection lost while held; reconnecting after the resume")
@@ -851,6 +847,8 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         do {
             let connection = try await target.connect()
             guard isCurrentAttempt(id, on: transport) else { return }
+            joiningAttemptID = id
+            defer { if joiningAttemptID == id { joiningAttemptID = nil } }
             try await transport.connect(connection)
             guard isCurrentAttempt(id, on: transport), state == .reconnecting(attempt: attempt) else { return }
             startJoinDeadline(for: transport)
@@ -864,6 +862,20 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
                 scheduleReconnect()
             }
         }
+    }
+
+    /// Stop the attempt in progress because the call recovered or was held. Its
+    /// backoff and its credential fetch are cancelled, but a `transport.connect`
+    /// it has started runs to its end, with its outcome ignored: the transport may
+    /// be taking its session over there, and an SDK whose join honours task
+    /// cancellation would abandon the very session the call now counts on.
+    private func stopReconnectAttempt() {
+        if joiningAttemptID == nil || joiningAttemptID != reconnectAttemptID {
+            reconnectTask?.cancel()
+        }
+        reconnectAttemptID = nil
+        reconnectTask = nil
+        cancelJoinDeadline()
     }
 
     private func isCurrentAttempt(_ id: UUID, on transport: CallTransport) -> Bool {
@@ -1378,6 +1390,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         // The session CallKit activated belonged to this call.
         isAudioActivated = false
         reconnectAttemptID = nil
+        joiningAttemptID = nil
         reconnectTask?.cancel()
         reconnectTask = nil
         cancelSelfHealDeadline()

@@ -174,6 +174,79 @@ struct TransportSelfHealTests {
         #expect(h.engine.state == .reconnecting(attempt: 1))
     }
 
+    // MARK: - A recovery while the engine's attempt is joining
+
+    /// The engine's attempt is inside `transport.connect` when `.connected` arrives
+    /// (the join itself reported it, or the heal finished). A transport may be taking
+    /// its session over there; cancelling that join could abort the session the call
+    /// now counts as connected.
+    private func attemptJoining() async throws -> Task<Void, Never> {
+        await h.placeCall()
+        h.engine.handle(.connected)
+        h.transport.suspendConnect = true
+        h.engine.handle(.disconnected(reason: .networkDropped))
+        await waitUntil { h.transport.connectCount == 2 }
+        #expect(h.transport.connectCount == 2)
+        return try #require(h.engine.reconnectTask)
+    }
+
+    @Test func aRecoveryDuringTheJoinLeavesTheJoinRunning() async throws {
+        let attempt = try await attemptJoining()
+
+        h.engine.handle(.connected)
+        #expect(h.engine.state.isConnected)
+        h.transport.releaseConnect()
+        await attempt.value
+
+        #expect(h.transport.cancelledConnectCount == 0)
+        #expect(h.engine.state.isConnected)
+        #expect(h.engine.reconnectTask == nil)
+    }
+
+    @Test func aJoinThatFailsAfterTheCallRecoveredChangesNothing() async throws {
+        let attempt = try await attemptJoining()
+        h.engine.handle(.connected)
+        let transitions = h.delegate.transitions
+
+        h.transport.connectError = .connectionFailed("superseded")
+        h.transport.releaseConnect()
+        await attempt.value
+        await settle()
+
+        #expect(h.engine.state.isConnected)
+        #expect(h.delegate.transitions == transitions)
+        #expect(h.transport.connectCount == 2) // no further attempt
+    }
+
+    @Test func aRecoveryWhileFetchingCredentialsStillCancelsTheAttempt() async throws {
+        await h.placeCall()
+        h.engine.handle(.connected)
+        h.target.suspend = true
+        h.engine.handle(.disconnected(reason: .networkDropped))
+        await waitUntil { h.target.connectCount == 2 }
+        let attempt = try #require(h.engine.reconnectTask)
+
+        h.engine.handle(.connected)
+        h.target.release()
+        await attempt.value
+
+        #expect(h.transport.connectCount == 1) // never joined: the call had recovered
+    }
+
+    @Test func aHoldDuringTheJoinLeavesItRunning() async throws {
+        let attempt = try await attemptJoining()
+
+        #expect(h.engine.providerPerformSetHeld(h.callID, onHold: true))
+        #expect(h.engine.state == .reconnecting(attempt: 0))
+        h.transport.releaseConnect()
+        await attempt.value
+        h.engine.handle(.connected) // the join the hold did not cancel succeeded
+
+        #expect(h.transport.cancelledConnectCount == 0)
+        #expect(h.engine.state.isConnected)
+        #expect(h.engine.isOnHold)
+    }
+
     @Test func theRemoteLeavingWhileHealingEndsTheCall() async {
         await selfHealingCall()
 

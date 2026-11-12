@@ -20,6 +20,11 @@ public final class FakeTransport: CallTransport, @unchecked Sendable {
     public private(set) var isMicEnabled = false
     public private(set) var setMicEnabledCallCount = 0
     public private(set) var isAudioAttached = false
+    /// How many `connect(_:)` calls found their task cancelled when they finished.
+    /// An SDK whose join is cancellation-aware (LiveKit's `Room.connect`, for one)
+    /// abandons the join then, so a test can check the engine never cancels one it
+    /// still needs.
+    public private(set) var cancelledConnectCount = 0
 
     /// When set, the next `connect(_:)` throws this instead of succeeding.
     public var connectError: TransportError?
@@ -44,6 +49,7 @@ public final class FakeTransport: CallTransport, @unchecked Sendable {
                 if connectReleased { cont.resume() } else { connectContinuation = cont }
             }
         }
+        if Task.isCancelled { cancelledConnectCount += 1 }
         if let connectError { throw connectError }
     }
 
