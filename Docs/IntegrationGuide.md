@@ -402,7 +402,7 @@ The engine joins whatever room `connect` returns. Your server must put an agent 
 
 - **Joining.** `connection.url` is the LiveKit server URL (`wss://...`) and `connection.token` an access token with a join grant for the room.
 - **Readiness.** The call becomes `.connected` once the room is connected **and** at least one remote participant is present. Any remote participant counts as the agent, so dispatch the agent to the room when you mint the token. With no agent, the call stays in `.connecting`.
-- **End-call signal.** On a deliberate hangup, while the room is connected, the client publishes this JSON on the room's data channel, then disconnects:
+- **End-call signal.** On a deliberate hangup, unless the room is already disconnected or disconnecting, the client publishes this JSON on the room's data channel, then disconnects. A room that is still connecting (the host called `disconnect()` right after starting a connect) is given time to finish first, and a reconnecting room gets the signal once LiveKit's data channel is back; `disconnect()` waits at most 2 seconds for all of this before it leaves anyway:
 
   ```json
   {"id": "<8 characters>", "label": "rtvi-ai", "type": "client-message", "data": {"t": "end-call"}}

@@ -88,9 +88,8 @@ public final class LiveKitTransport: CallTransport {
     /// the grace period it may give a dropped participant. Sent as an RTVI client
     /// message over the data channel; a Pipecat bot must read it from the raw data
     /// event, because Pipecat's LiveKit input does not deliver client RTVI messages
-    /// to its RTVI processor.
+    /// to its RTVI processor. See `LiveKitEndCallSignal` for when it is sent.
     private func sendEndCallSignal() async {
-        guard room.connectionState == .connected else { return }
         let message: [String: Any] = [
             "id": String(UUID().uuidString.prefix(8)),
             "label": "rtvi-ai",
@@ -98,8 +97,18 @@ public final class LiveKitTransport: CallTransport {
             "data": ["t": "end-call"],
         ]
         guard let payload = try? JSONSerialization.data(withJSONObject: message) else { return }
-        do { try await room.localParticipant.publish(data: payload) }
-        catch { Log.warning(.transport, "end-call signal publish failed: \(error)") }
+        let room = room
+        await LiveKitEndCallSignal.run(within: LiveKitEndCallSignal.deadline) {
+            // A publish issued before the connect has set up the room's transports
+            // would not start the publisher's negotiation, so let the connect finish first.
+            while room.connectionState == .connecting {
+                try? await Task.sleep(for: .milliseconds(50))
+                if Task.isCancelled { return }
+            }
+            guard LiveKitEndCallSignal.shouldSend(in: LiveKitEndCallSignal.RoomPhase(room.connectionState)) else { return }
+            do { try await room.localParticipant.publish(data: payload) }
+            catch { Log.warning(.transport, "end-call signal publish failed: \(error)") }
+        }
     }
 
     public func setMicEnabled(_ enabled: Bool) async {
@@ -145,6 +154,19 @@ public final class LiveKitTransport: CallTransport {
             }
         }
         return .connectionFailed(String(describing: error))
+    }
+}
+
+private extension LiveKitEndCallSignal.RoomPhase {
+    init(_ state: ConnectionState) {
+        switch state {
+        case .disconnected: self = .disconnected
+        case .connecting: self = .connecting
+        case .reconnecting: self = .reconnecting
+        case .connected: self = .connected
+        case .disconnecting: self = .disconnecting
+        @unknown default: self = .disconnected
+        }
     }
 }
 
