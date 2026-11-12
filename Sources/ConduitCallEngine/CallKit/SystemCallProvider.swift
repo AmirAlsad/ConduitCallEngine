@@ -125,7 +125,7 @@ final class SystemCallProvider: NSObject, CallProviding, CXProviderDelegate {
         do {
             try await callController.request(CXTransaction(action: action))
         } catch {
-            Log.error(.callkit, "CXSetHeldCallAction(onHold: \(onHold)) refused: \(error)")
+            Log.error(.callKit, "CXSetHeldCallAction(onHold: \(onHold)) refused: \(error)")
         }
     }
 
@@ -183,14 +183,14 @@ final class SystemCallProvider: NSObject, CallProviding, CXProviderDelegate {
 
     nonisolated func provider(_ provider: CXProvider, didActivate audioSession: AVAudioSession) {
         MainActor.assumeIsolated {
-            Log.info(.callkit, "CXProvider didActivate audio session")
+            Log.info(.callKit, "CXProvider didActivate audio session")
             delegate?.providerDidActivate(SystemAudioSession(session: audioSession))
         }
     }
 
     nonisolated func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) {
         MainActor.assumeIsolated {
-            Log.info(.callkit, "CXProvider didDeactivate audio session")
+            Log.info(.callKit, "CXProvider didDeactivate audio session")
             delegate?.providerDidDeactivate(SystemAudioSession(session: audioSession))
         }
     }

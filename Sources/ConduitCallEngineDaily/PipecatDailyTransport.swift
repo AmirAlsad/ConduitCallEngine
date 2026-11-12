@@ -173,7 +173,7 @@ public final class PipecatDailyTransport: CallTransport {
         } catch {
             session.events.gate.connectDidFail()
             Log.error(.transport, "Daily connect failed: \(error)")
-            throw TransportError.connectionFailed(String(describing: error))
+            throw TransportError.connectionFailed(CredentialRedaction.redact(String(describing: error)))
         }
         session.events.transportDidJoin()
         // Daily may not take a subscription change before the join; it does now.
@@ -498,6 +498,6 @@ private final class PipecatEventMapper: PipecatClientDelegate {
     }
 
     nonisolated func onError(message: RTVIMessageInbound) {
-        continuation.yield(.error(.underlying(String(describing: message))))
+        continuation.yield(.error(.underlying(CredentialRedaction.redact(String(describing: message)))))
     }
 }

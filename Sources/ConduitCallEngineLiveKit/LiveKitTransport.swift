@@ -286,7 +286,7 @@ public final class LiveKitTransport: CallTransport {
         }
         return LiveKitConnectFailure.isRejectedCredentials(kind)
             ? .authenticationFailed
-            : .connectionFailed(String(describing: error))
+            : .connectionFailed(CredentialRedaction.redact(String(describing: error)))
     }
 }
 

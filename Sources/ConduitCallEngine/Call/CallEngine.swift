@@ -300,7 +300,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         do {
             id = try await callProvider.startOutgoingCall(handle: callHandle(for: target), displayName: target.displayName)
         } catch {
-            Log.error(.callkit, "startOutgoingCall failed: \(error)")
+            Log.error(.callKit, "startOutgoingCall failed: \(error)")
             // Only this call can fail here — not one that was reset or replaced meanwhile.
             guard isStillDialing(token) else { return }
             fail(.unknown)
@@ -378,7 +378,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
 
     private func handleMalformedPush(completion: @escaping () -> Void) {
         let id = UUID()
-        Log.warning(.callkit, "Malformed VoIP push; reporting call \(id) and ending it")
+        Log.warning(.callKit, "Malformed VoIP push; reporting call \(id) and ending it")
         reportIncomingCall(
             id: id,
             handle: CallTarget.defaultHandle(for: id),
@@ -603,13 +603,13 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
             resetState()
 
         case .failed(let message):
-            Log.error(.callkit, "reportIncomingCall failed: \(message)")
+            Log.error(.callKit, "reportIncomingCall failed: \(message)")
             endRingThatCannotProceed()
 
         case .duplicateCallID:
             // CallKit holds a call under this id that is not this ring, so the
             // report created nothing to end, and ending the id would end that call.
-            Log.error(.callkit, "reportIncomingCall refused: call id \(incoming.callID) already exists")
+            Log.error(.callKit, "reportIncomingCall refused: call id \(incoming.callID) already exists")
             endRingThatCannotProceed(reportToCallKit: false)
 
         case nil:
@@ -1416,7 +1416,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     // MARK: - CallKit audio-session handshake (CallProviderDelegate)
 
     package func providerDidActivate(_ audioSession: AudioSessionActivating) {
-        Log.info(.callkit, "Audio session activated")
+        Log.info(.callKit, "Audio session activated")
         activationTask = Task { [weak self] in await self?.activate(audioSession) }
     }
 
@@ -1436,13 +1436,13 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         // one that has already ended, and must not be replayed onto the next call
         // before CallKit activates that one.
         guard state != .idle, !state.isTerminal else {
-            Log.warning(.callkit, "Audio session activated with no call in progress; ignored")
+            Log.warning(.callKit, "Audio session activated with no call in progress; ignored")
             return
         }
         // CallKit activates an incoming call's session only once its answer action
         // is fulfilled, so during a ring nobody answered it belongs to an earlier call.
         guard state != .incomingRinging || isAnswerRequested else {
-            Log.warning(.callkit, "Audio session activated during an unanswered ring; ignored")
+            Log.warning(.callKit, "Audio session activated during an unanswered ring; ignored")
             return
         }
         isAudioActivated = true
@@ -1497,17 +1497,17 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     }
 
     package func providerDidDeactivate(_ audioSession: AudioSessionActivating) {
-        Log.info(.callkit, "Audio session deactivated")
+        Log.info(.callKit, "Audio session deactivated")
         isAudioActivated = false
         applyMic()
         enqueueMedia { await $0.detachAudioSession() }
     }
 
     package func providerPerformAnswerCall(_ id: UUID) {
-        Log.info(.callkit, "System requested answer")
+        Log.info(.callKit, "System requested answer")
         // Only the ringing call can be answered, not a busy ring CallKit still shows.
         guard activeCallID == id else {
-            Log.warning(.callkit, "Answer for call \(id), which is not the ringing call; ignored")
+            Log.warning(.callKit, "Answer for call \(id), which is not the ringing call; ignored")
             return
         }
         // Before the hop to `answer()`: from here on the ring is the user's, and
@@ -1518,7 +1518,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     }
 
     package func providerPerformEndCall(_ id: UUID) {
-        Log.info(.callkit, "System requested end call")
+        Log.info(.callKit, "System requested end call")
         // Idempotent against our own End path, which already finished and reset (so
         // `activeCallID` is nil): only act while this id is still the live call.
         guard activeCallID == id else { return }
@@ -1527,7 +1527,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
 
     package func providerPerformSetMuted(_ id: UUID, muted: Bool) {
         guard activeCallID == id else {
-            Log.warning(.callkit, "Mute for call \(id), which is not the live call; ignored")
+            Log.warning(.callKit, "Mute for call \(id), which is not the live call; ignored")
             return
         }
         isMuted = muted
@@ -1539,11 +1539,11 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
 
     package func providerPerformSetHeld(_ id: UUID, onHold: Bool) -> Bool {
         guard activeCallID == id else {
-            Log.warning(.callkit, "Hold for call \(id), which is not the live call; refused")
+            Log.warning(.callKit, "Hold for call \(id), which is not the live call; refused")
             return false
         }
         guard configuration.supportsHolding, canBeHeld else {
-            Log.warning(.callkit, "Hold for call \(id) refused in state \(String(describing: state))")
+            Log.warning(.callKit, "Hold for call \(id) refused in state \(String(describing: state))")
             return false
         }
         guard onHold != isOnHold else { return true }
@@ -1724,7 +1724,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     /// The reset already ended every call in CallKit, so nothing is reported back
     /// to it; the host still hears the call end and gets its record.
     package func providerWasReset() {
-        Log.warning(.callkit, "Provider reset; tearing down call")
+        Log.warning(.callKit, "Provider reset; tearing down call")
         switch state {
         case .incomingRinging:
             endRingThatCannotProceed(reportToCallKit: false)

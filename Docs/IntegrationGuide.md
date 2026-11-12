@@ -121,6 +121,20 @@ Every callback is synchronous and on the main actor, made in the order the engin
 | `callEngine(_:ringStatusBearerForTarget:)` | When a receipt is about to be sent, only for pushes that carried `status_url` and whose target your delegate resolved. Return the bearer for the `Authorization` header, or nil for none. | nil |
 | `callEngine(_:didUpdateVoIPPushToken:)` | When PushKit issues or rotates the VoIP token. | nothing |
 
+### Logging
+
+The engine and the bundled adapters log what they do: CallKit's actions and audio-session activations (including the ones the engine ignores, which `isAudioActivated` does not show), each connect and drop, signals, routes, receipts. By default the lines go to unified logging under your app's bundle identifier, in the categories `📞 [Call]`, `☎️ [CallKit]`, `🔌 [Transport]`, `🔊 [Audio]` and `🌐 [Network]`, and only warnings and errors are logged in a release build. To get them yourself, set a handler:
+
+```swift
+CallEngineLog.minimumLevel = .info // .debug in debug builds, .warning in release builds by default
+CallEngineLog.handler = { event in
+    DiagnosticTrace.record("\(event.category) \(event.level): \(event.message)")
+    CallEngineLog.writeToOSLog(event) // keep Console output too
+}
+```
+
+A handler replaces unified logging (call `writeToOSLog(_:)` to keep it). It is called synchronously on the thread that logs, which can be an SDK's callback queue, so it must be quick; `handler` and `minimumLevel` can be set from any thread. An event below `minimumLevel` is dropped before its message is built. No message carries a credential: URL queries, fragments and user info, bearer values, JSON Web Tokens and the values of keys such as `token=` are removed from every message, including the error descriptions of the SDKs and of your own `connect`, before your handler or Console sees it. The bundled adapters do the same to the messages of the `TransportError`s they build from SDK errors.
+
 ### Switching over the engine's enums
 
 Every public enum says in its documentation whether it is closed or open.
@@ -699,7 +713,7 @@ A simulated engine activates the audio session only when you call `activateAudio
 
 ## 13. Device verification checklist
 
-Run these on a physical iPhone with a release-like build before shipping. Keep Console open, filtered to your bundle id: the engine logs under your app's subsystem, in categories named `[Call]`, `[CallKit]`, `[Transport]`, `[Audio]` and `[Network]`. Debug and info messages are compiled out of release builds; warnings and errors remain.
+Run these on a physical iPhone with a release-like build before shipping. Keep Console open, filtered to your bundle id: the engine logs under your app's subsystem, in categories named `[Call]`, `[CallKit]`, `[Transport]`, `[Audio]` and `[Network]`. A release build logs only warnings and errors unless you lower `CallEngineLog.minimumLevel` ([Logging](#logging)); the checks below that quote info messages need it at `.info`.
 
 Outgoing:
 

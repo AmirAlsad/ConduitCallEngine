@@ -81,6 +81,6 @@ final class SystemVoIPPushRegistry: NSObject, VoIPPushRegistering, PKPushRegistr
         _ registry: PKPushRegistry,
         didInvalidatePushTokenFor type: PKPushType
     ) {
-        Log.warning(.callkit, "VoIP push token invalidated")
+        Log.warning(.callKit, "VoIP push token invalidated")
     }
 }

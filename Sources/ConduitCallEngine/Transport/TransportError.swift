@@ -11,7 +11,8 @@ import Foundation
 /// An error from a transport or from a target's `connect`, in the engine's vocabulary.
 /// Throw it from `CallTransport.connect(_:)` or `CallTarget.connect`, or emit it as
 /// `TransportEvent.error(_:)`. Only `.authenticationFailed` changes what the engine
-/// does; the messages are for logs.
+/// does; the messages are for logs. The bundled adapters remove credentials and URL
+/// queries from the messages they build out of SDK errors.
 ///
 /// Open: later versions may add cases. End a `switch` over it with `@unknown default`,
 /// which keeps it compiling, with a warning that names the new case, when one is added.
