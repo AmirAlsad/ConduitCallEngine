@@ -80,7 +80,6 @@ private extension DailyRemoteAudio {
     var dailyState: SubscriptionState {
         switch self {
         case .subscribed: .subscribed
-        case .staged: .staged
         case .unsubscribed: .unsubscribed
         }
     }

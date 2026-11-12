@@ -31,13 +31,25 @@ public protocol CallTransport: AnyObject {
     /// and nonisolated: a main-actor conformer declares it `nonisolated`.
     var events: AsyncStream<TransportEvent> { get }
 
-    /// Join `connection`. Called for a call's first connect (during the ring, for a
-    /// ring prepared at the `.media` tier) and once per engine reconnect attempt, on
-    /// the same instance, possibly while the SDK is still healing the previous
-    /// session. Throw `TransportError.authenticationFailed` only for credentials the
-    /// server rejected; report `.connected` through `events` once the agent can hear
-    /// the user, not when this returns.
+    /// Join `connection`. Called for a call's first connect (unless a ring prepared
+    /// at the `.media` tier joined it with `connectWhileRinging(_:)`) and once per
+    /// engine reconnect attempt, on the same instance, possibly while the SDK is
+    /// still healing the previous session. Throw `TransportError.authenticationFailed`
+    /// only for credentials the server rejected; report `.connected` through `events`
+    /// once the agent can hear the user, not when this returns.
     func connect(_ connection: CallConnection) async throws
+    /// Join `connection` while an incoming call still rings, before the answer and
+    /// before CallKit activates the audio session (pre-connect's `.media` tier).
+    /// Called only on a transport whose `canConnectWhileRinging` is true, once per
+    /// ring, in place of `connect(_:)`; every later connect of the call (a reconnect
+    /// attempt, or the unprepared connect after a preparation that failed following
+    /// the answer) is `connect(_:)`. The contract is `connect(_:)`'s, plus
+    /// `canConnectWhileRinging`'s: nothing audible, no audio session work and no
+    /// capture until `attachAudioSession()`. Implement it when a join during a ring
+    /// must differ from one made for a call already under way (the Daily adapter
+    /// holds the agent's audio back until that attach); the default implementation
+    /// calls `connect(_:)`.
+    func connectWhileRinging(_ connection: CallConnection) async throws
     /// Leave because the call is over, sending an end-call signal to the agent if the
     /// protocol has one, and report `.disconnected(reason: .requestedByUser)`.
     func disconnect() async
@@ -72,10 +84,10 @@ public protocol CallTransport: AnyObject {
     @discardableResult
     func send(_ signal: CallSignal) async -> CallSignalDelivery
 
-    /// Whether the engine may call `connect(_:)` while an incoming call is still
-    /// ringing, before the answer and before CallKit activates the audio session
-    /// (pre-connect's `.media` tier). True only if this transport's `connect(_:)`
-    /// then joins without configuring or activating `AVAudioSession`, starting audio
+    /// Whether the engine may join this transport while an incoming call is still
+    /// ringing (`connectWhileRinging(_:)`), before the answer and before CallKit
+    /// activates the audio session (pre-connect's `.media` tier). True only if that
+    /// join completes without configuring or activating `AVAudioSession`, starting audio
     /// input or output, or making the remote party audible, until the engine calls
     /// `attachAudioSession()` after CallKit's activation, and `send(_:)` reaches the
     /// remote agent, which waits for `CallSignal.connected` before it speaks. Read
@@ -90,6 +102,12 @@ public protocol CallTransport: AnyObject {
 extension CallTransport {
     /// False: a transport that does not declare it is never connected during a ring.
     public var canConnectWhileRinging: Bool { false }
+
+    /// Joins as `connect(_:)` does: a transport that does not implement it joins
+    /// the same way during a ring as for any other connect.
+    public func connectWhileRinging(_ connection: CallConnection) async throws {
+        try await connect(connection)
+    }
 
     /// Drops the signal: a transport that does not implement `send(_:)` leaves its
     /// agent uninformed, and the call works as before.

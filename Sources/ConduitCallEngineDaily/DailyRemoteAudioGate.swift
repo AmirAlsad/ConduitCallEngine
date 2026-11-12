@@ -10,9 +10,9 @@
 //  subscribes again.
 //
 //  A call that is never detached after an attach keeps Daily's default subscription
-//  and is never touched, so a call without a hold behaves as before. A gate made with
-//  `untilFirstAttach` holds the agent's audio in that state from the join until the
-//  first attach.
+//  and is never touched, so a call without a hold behaves as before. A join made
+//  while the call rings (`holdAgentBackUntilFirstAttach()`) holds the agent's audio
+//  unsubscribed from before that join until the first attach, which subscribes it.
 //
 //  Changes are applied one at a time, always toward the latest wanted state, so a
 //  quick hold and resume ends where the engine left it. A connect or disconnect
@@ -25,7 +25,6 @@
 
 enum DailyRemoteAudio: String, Equatable, Sendable {
     case subscribed
-    case staged
     case unsubscribed
 }
 
@@ -36,8 +35,10 @@ struct DailyRemoteAudioGate {
         let session: Int
     }
 
-    /// The agent's audio from the join until the first attach; `nil` leaves Daily's default.
-    let untilFirstAttach: DailyRemoteAudio?
+    /// Whether a join while ringing holds the agent's audio unsubscribed until the
+    /// first attach (`holdAgentBackUntilFirstAttach()`). Stays true after that attach,
+    /// which then subscribes explicitly.
+    private(set) var holdsBackUntilFirstAttach = false
     private(set) var isAttached = false
     private(set) var hasAttached = false
     private(set) var hasDetachedAfterAttach = false
@@ -47,22 +48,27 @@ struct DailyRemoteAudioGate {
     private(set) var session = 0
     private var refused: DailyRemoteAudio?
 
-    init(untilFirstAttach: DailyRemoteAudio? = nil) {
-        self.untilFirstAttach = untilFirstAttach
-    }
-
-    /// Whether the agent's audio is held back now: a gate made with `untilFirstAttach`
-    /// that has not been attached yet. A join then cannot get the bot ready.
+    /// Whether the agent's audio is held back now: a join while ringing asked for it
+    /// and the gate has not been attached since. A join then cannot get the bot ready.
     var holdsAgentBack: Bool {
-        untilFirstAttach != nil && !hasAttached
+        holdsBackUntilFirstAttach && !hasAttached
     }
 
     /// The subscription the agent's audio should have now; `nil` leaves Daily's default.
     var wanted: DailyRemoteAudio? {
         if isAttached {
-            return untilFirstAttach != nil || hasDetachedAfterAttach ? .subscribed : nil
+            return holdsBackUntilFirstAttach || hasDetachedAfterAttach ? .subscribed : nil
         }
-        return hasAttached ? .unsubscribed : untilFirstAttach
+        return hasAttached || holdsBackUntilFirstAttach ? .unsubscribed : nil
+    }
+
+    /// A join while the call rings: hold the agent's audio unsubscribed from before
+    /// the join until the first attach. Does nothing once the gate has been attached:
+    /// the call is under way, and a later join keeps the subscription it has.
+    mutating func holdAgentBackUntilFirstAttach() {
+        guard !hasAttached else { return }
+        holdsBackUntilFirstAttach = true
+        refused = nil
     }
 
     mutating func attach() {

@@ -865,7 +865,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         setRingPreparationPhase(.connecting)
         ringJoinWork = Task { [weak self] in
             do {
-                try await transport.connect(connection)
+                try await transport.connectWhileRinging(connection)
                 self?.ringTransportConnectReturned(transport, error: nil)
             } catch {
                 self?.ringTransportConnectReturned(transport, error: error)

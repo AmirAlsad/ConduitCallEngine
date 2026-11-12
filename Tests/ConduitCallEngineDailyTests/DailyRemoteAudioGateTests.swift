@@ -4,7 +4,8 @@
 //
 //  When a Daily call's agent audio is unsubscribed and subscribed again: a detach
 //  after an attach silences it, the next attach restores it, a call never detached is
-//  left alone, and changes are applied one at a time toward the latest wanted state.
+//  left alone, a join while ringing holds it back until the first attach, and changes
+//  are applied one at a time toward the latest wanted state.
 //
 
 import Testing
@@ -41,19 +42,34 @@ struct DailyRemoteAudioGateTests {
         #expect(gate.wanted == .subscribed)
     }
 
-    @Test(arguments: [DailyRemoteAudio.unsubscribed, .staged])
-    func aHeldBackStartIsKeptUntilTheFirstAttach(until: DailyRemoteAudio) {
-        var gate = DailyRemoteAudioGate(untilFirstAttach: until)
-        #expect(gate.wanted == until)
-
-        gate.detach()
-        #expect(gate.wanted == until)
-
-        gate.attach()
-        #expect(gate.wanted == .subscribed)
+    @Test func aJoinWhileRingingHoldsTheAgentBackUntilTheFirstAttach() {
+        var gate = DailyRemoteAudioGate()
+        gate.holdAgentBackUntilFirstAttach()
+        #expect(gate.wanted == .unsubscribed)
+        #expect(gate.holdsAgentBack)
 
         gate.detach()
         #expect(gate.wanted == .unsubscribed)
+        #expect(gate.holdsAgentBack)
+
+        gate.attach()
+        #expect(gate.wanted == .subscribed)
+        #expect(!gate.holdsAgentBack)
+
+        gate.detach()
+        #expect(gate.wanted == .unsubscribed)
+    }
+
+    /// Once attached, the call is under way: a hold-back asked for later changes
+    /// nothing, so the call keeps Daily's default subscription.
+    @Test func aHoldBackAfterAnAttachChangesNothing() {
+        var gate = DailyRemoteAudioGate()
+        gate.attach()
+
+        gate.holdAgentBackUntilFirstAttach()
+
+        #expect(gate.wanted == nil)
+        #expect(!gate.holdsAgentBack)
     }
 
     // `beginApplying()` mutates, which `#expect` and `#require` cannot evaluate, so

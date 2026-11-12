@@ -262,6 +262,53 @@ struct PreconnectTests {
         expectNoAudioWork(on: transport)
     }
 
+    // MARK: - Which join is made while ringing
+
+    /// A transport can tell its join during the ring from every other: only the
+    /// `.media` ring's own join is `connectWhileRinging(_:)`. The connect after the
+    /// preparation failed following the answer, and a reconnect, are `connect(_:)`.
+    @Test func onlyTheRingsOwnJoinIsAJoinWhileRinging() async throws {
+        let sleeper = ManualSleeper()
+        let h = harness(joinTimeout: .seconds(30), sleep: { await sleeper.sleep($0) })
+        await ring(h)
+        #expect(h.transport.ringingConnectCount == 1)
+        #expect(h.transport.connectCount == 1)
+
+        await h.engine.answer()
+        #expect(h.engine.fireTimer(.joinTimeout)) // the agent never came: connect afresh
+        await h.engine.awaitPendingWork()
+        #expect(h.transport.connectCount == 2)
+        h.engine.handle(.connected)
+        h.engine.handle(.disconnected(reason: .networkDropped))
+        #expect(h.engine.fireTimer(.reconnectBackoff))
+        await h.engine.awaitPendingReconnect()
+        #expect(h.transport.connectCount == 3)
+
+        #expect(h.transport.ringingConnectCount == 1)
+        #expect(h.target.requests.map(\.purpose) == [
+            .ringing(joinsBeforeAnswer: true), .answered, .reconnect(attempt: 1),
+        ])
+    }
+
+    enum NoRingJoin: String, CaseIterable, Sendable {
+        case credentialsRing, mediaRingOnATransportThatCannotJoinWhileRinging, plainRing, outgoingCall
+    }
+
+    @Test(arguments: NoRingJoin.allCases)
+    func noOtherCallJoinsWhileRinging(_ call: NoRingJoin) async throws {
+        let h = harness(allows: call == .credentialsRing ? .credentials : .media, capable: call != .mediaRingOnATransportThatCannotJoinWhileRinging)
+        switch call {
+        case .credentialsRing: await ring(h, preconnect: "credentials")
+        case .mediaRingOnATransportThatCannotJoinWhileRinging: await ring(h)
+        case .plainRing: await ring(h, preconnect: nil)
+        case .outgoingCall: await h.placeCall()
+        }
+        if call != .outgoingCall { await h.engine.answer() }
+
+        #expect(h.transport.connectCount == 1)
+        #expect(h.transport.ringingConnectCount == 0)
+    }
+
     @Test func theUsersControlsDuringAMediaRingDoNotReachTheTransport() async throws {
         let h = harness()
         let callID = UUID()

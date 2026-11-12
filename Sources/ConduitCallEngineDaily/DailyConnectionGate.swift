@@ -5,11 +5,11 @@
 //  Decides what a Daily connect attempt reports, kept pure and SDK-free so every
 //  rule is unit-testable. `.connected` is reported once per attempt, when the
 //  Pipecat client is ready or the bot reports ready, or, for an attempt that counts
-//  presence as ready (a join made while an experimental ring-join strategy holds the
-//  agent's audio back, so the bot cannot become ready), once the call is joined with
-//  a remote participant in it. Each connect decides that for its own attempt, so a
-//  later join with the agent's audio subscribed (an outgoing call, a reconnect after
-//  the answer) waits for bot-ready as without the strategy. The disconnect reason is
+//  presence as ready (a join made while the call rings, which holds the agent's audio
+//  back until the first attach, so the bot cannot become ready), once the call is
+//  joined with a remote participant in it. Each connect decides that for its own
+//  attempt, so a normal join (an outgoing call, an answer that joins after CallKit
+//  activated, a reconnect) waits for bot-ready. The disconnect reason is
 //  `.requestedByUser` after the host's `disconnect()`, otherwise `.networkDropped`;
 //  the bot leaving is `.botLeft`.
 //

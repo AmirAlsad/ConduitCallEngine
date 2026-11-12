@@ -20,8 +20,12 @@ public final class FakeTransport: CallTransport {
     public nonisolated let events: AsyncStream<TransportEvent>
     private nonisolated let continuation: AsyncStream<TransportEvent>.Continuation
 
-    /// How many times the engine called `connect(_:)`.
+    /// How many times the engine joined it: `connect(_:)`, and
+    /// `connectWhileRinging(_:)`, which also counts in `ringingConnectCount`.
     public private(set) var connectCount = 0
+    /// How many of those connects the engine made while the call was ringing
+    /// (`connectWhileRinging(_:)`, pre-connect's `.media` tier).
+    public private(set) var ringingConnectCount = 0
     /// How many times the engine called `disconnect()`.
     public private(set) var disconnectCount = 0
     /// What the last `connect(_:)` was given.
@@ -89,6 +93,13 @@ public final class FakeTransport: CallTransport {
                 continuation.yield(.connected)
             }
         }
+    }
+
+    /// Counts the ring's join in `ringingConnectCount`, then joins as `connect(_:)`
+    /// does, which counts it in `connectCount` too.
+    public func connectWhileRinging(_ connection: CallConnection) async throws {
+        ringingConnectCount += 1
+        try await connect(connection)
     }
 
     /// Resume a `connect(_:)` suspended by `suspendConnect` (resolves on the next call

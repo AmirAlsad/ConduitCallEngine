@@ -17,7 +17,8 @@
 //  Nor can playout be paused, so `detachAudioSession` (a hold, CallKit deactivating
 //  the session) stops the agent's audio by unsubscribing from it and
 //  `attachAudioSession` subscribes again (`DailyRemoteAudioGate`). A call that is
-//  never detached keeps Daily's default subscription.
+//  never detached, and was not joined while ringing, keeps Daily's default
+//  subscription.
 //
 //  Interruptions: Daily heals short network outages inside its SDK without changing
 //  the Pipecat transport state, so nothing in the client's callbacks reports them.
@@ -25,10 +26,19 @@
 //  (`DailyInterruptionReporter`): losing it emits `.reconnecting`, getting it back
 //  emits `.connected`. This reflects the path, not Daily's media state.
 //
-//  Connecting while ringing is not supported (`canConnectWhileRinging` is false):
-//  whether a Daily join during a ring disturbs the ringtone or the audio session is
-//  for a device test to show. That test selects one of three experimental join
-//  strategies through SPI (`DailyRingJoinStrategy`).
+//  Connecting while ringing is supported (`canConnectWhileRinging`). A join made
+//  while the call rings (`connectWhileRinging`) unsubscribes from the agent's audio
+//  before it joins and keeps it unsubscribed until the first attach, which comes
+//  after the answer once CallKit activates the session and subscribes again,
+//  returning once Daily has the subscription. Joined with Daily's default
+//  subscriptions during a ring, a device test (iPhone 17, iOS 27.0) heard no agent
+//  audio for the whole call and the route flipped between speaker and earpiece;
+//  joined unsubscribed, the ring was silent and the answered call played the agent
+//  cleanly. Pipecat's client sends client-ready only for playable audio, so the bot
+//  cannot report ready while it is held back: for such a join, the agent being in
+//  the room counts as ready. Every other join (an outgoing call, an answer that
+//  joins after the ring, a reconnect) keeps Daily's default subscriptions and waits
+//  for bot-ready.
 //
 //  A `connect` while the client is still in the call never joins on that client:
 //  while Daily heals the call it is refused, and on a session whose bot never got
@@ -49,9 +59,10 @@ import PipecatClientIOSDaily
 /// The Daily transport: the Pipecat iOS client in a Daily room, behind
 /// `CallTransport`. `CallConnection.url` is the Daily room URL and `token` its meeting
 /// token; the call is `.connected` once the Pipecat client is ready or the bot
-/// reports ready. Main-actor isolated; create one per call, on a device only (Daily's
-/// WebRTC audio aborts in the simulator). The Integration Guide, section 11, has
-/// what the server side must do.
+/// reports ready, or, for a join made while the call rings, once the agent is in the
+/// room. Supports joining while ringing. Main-actor isolated; create one per call, on
+/// a device only (Daily's WebRTC audio aborts in the simulator). The Integration
+/// Guide, section 11, has what the server side must do.
 @MainActor
 public final class PipecatDailyTransport: CallTransport {
     public nonisolated let events: AsyncStream<TransportEvent>
@@ -59,8 +70,7 @@ public final class PipecatDailyTransport: CallTransport {
     private let makePipecatTransport: @MainActor () -> Transport
     private let makePathMonitor: @MainActor () -> NetworkPathMonitoring
     private let makeCallControl: @MainActor (any Transport) -> DailyCallControlling?
-    private var remoteAudio: DailyRemoteAudioGate
-    private nonisolated let ringJoinStrategy: DailyRingJoinStrategy
+    private var remoteAudio = DailyRemoteAudioGate()
 
     /// A Pipecat client and the mapper that is its delegate. `disconnect()` takes the
     /// session away and releases its client, so a later `connect` builds a new one.
@@ -81,27 +91,17 @@ public final class PipecatDailyTransport: CallTransport {
         self.init(makePipecatTransport: { PipecatClientIOSDaily.DailyTransport() })
     }
 
-    /// EXPERIMENTAL, for the device test of joining while ringing; not supported API.
-    @_spi(RingJoinExperiment)
-    public convenience init(ringJoinStrategy: DailyRingJoinStrategy) {
-        self.init(
-            makePipecatTransport: { PipecatClientIOSDaily.DailyTransport() },
-            ringJoinStrategy: ringJoinStrategy
-        )
-    }
-
-    /// False: the Daily adapter joins only once the user has answered, because
-    /// whether a Daily join during a ring disturbs the ringtone or the audio session
-    /// is not yet verified on a device.
-    public nonisolated var canConnectWhileRinging: Bool {
-        ringJoinStrategy != .unsupported
-    }
+    /// True: a join while the call rings (`connectWhileRinging(_:)`) holds the agent's
+    /// audio unsubscribed until `attachAudioSession()`, so nothing is heard before
+    /// the answer, and joins with the mic off, as every join does. Daily still
+    /// manages `AVAudioSession` itself; on the device tested, a ring joined this way
+    /// left the ringtone and the answered call's audio and route undisturbed.
+    public nonisolated var canConnectWhileRinging: Bool { true }
 
     init(
         makePipecatTransport: @escaping @MainActor () -> Transport,
         makePathMonitor: @escaping @MainActor () -> NetworkPathMonitoring = { SystemNetworkPathMonitor() },
-        makeCallControl: @escaping @MainActor (any Transport) -> DailyCallControlling? = DailyCallClientControl.make(for:),
-        ringJoinStrategy: DailyRingJoinStrategy = .unsupported
+        makeCallControl: @escaping @MainActor (any Transport) -> DailyCallControlling? = DailyCallClientControl.make(for:)
     ) {
         let (stream, continuation) = AsyncStream.makeStream(of: TransportEvent.self)
         self.events = stream
@@ -109,8 +109,6 @@ public final class PipecatDailyTransport: CallTransport {
         self.makePipecatTransport = makePipecatTransport
         self.makePathMonitor = makePathMonitor
         self.makeCallControl = makeCallControl
-        self.ringJoinStrategy = ringJoinStrategy
-        self.remoteAudio = DailyRemoteAudioGate(untilFirstAttach: ringJoinStrategy.agentAudioUntilAnswer)
         self.session = makeSession()
     }
 
@@ -136,6 +134,15 @@ public final class PipecatDailyTransport: CallTransport {
     }
 
     // MARK: - CallTransport
+
+    /// Joins as `connect(_:)` does, with the agent's audio unsubscribed from before
+    /// the join until the first `attachAudioSession()`, and with the agent's presence
+    /// in the room counting as ready for this join and any other made before that
+    /// attach (the bot cannot report ready while its audio is unsubscribed).
+    public func connectWhileRinging(_ connection: CallConnection) async throws {
+        remoteAudio.holdAgentBackUntilFirstAttach()
+        try await connect(connection)
+    }
 
     public func connect(_ connection: CallConnection) async throws {
         var session = self.session ?? makeSession()
@@ -169,8 +176,8 @@ public final class PipecatDailyTransport: CallTransport {
         session.events.gate.connectDidStart(readyOnPresence: remoteAudio.holdsAgentBack)
         session.events.interruptions.connectDidStart()
         remoteAudio.sessionDidReset()
-        if ringJoinStrategy != .unsupported {
-            Log.info(.transport, "Daily connect: ring-join strategy \(ringJoinStrategy.rawValue), agent audio before the first attach: \(Self.describe(ringJoinStrategy.agentAudioUntilAnswer)), attached=\(remoteAudio.isAttached)")
+        if remoteAudio.holdsAgentBack {
+            Log.info(.transport, "Daily connect while ringing: agent audio before the first attach: unsubscribed, ready on presence")
         }
         // Before the join, so a held call that reconnects joins with the agent silent.
         await applyRemoteAudio().value
@@ -312,7 +319,7 @@ public final class PipecatDailyTransport: CallTransport {
     }
 
     /// Daily owns the AVAudioSession, so attaching only lets the agent be heard again
-    /// after a detach (or, on a call joined with its audio held back, for the first
+    /// after a detach (or, on a call joined while ringing, for the first
     /// time); the mic stays off until the engine enables it. Returns once Daily has the
     /// subscription, within `attachBound`, so what the engine sends after the attach
     /// (`call-connected`, `call-resumed`) reaches an agent the user can hear.

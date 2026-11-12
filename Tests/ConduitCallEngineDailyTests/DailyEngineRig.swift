@@ -12,7 +12,7 @@
 import Foundation
 import ConduitCallEngine
 import ConduitCallEngineTesting
-@_spi(RingJoinExperiment) @testable import ConduitCallEngineDaily
+@testable import ConduitCallEngineDaily
 
 /// A sleep the test ends by hand, recording how long each sleeper asked for.
 @MainActor
@@ -59,7 +59,6 @@ final class DailyEngineRig {
     let sleeper = HandSleeper()
     let host = RecordingHost()
     let engine: CallEngine
-    let strategy: DailyRingJoinStrategy
     let targetID = UUID()
 
     /// Every Pipecat transport made (one per adapter session), in order.
@@ -74,10 +73,8 @@ final class DailyEngineRig {
 
     init(
         joinTimeout: Duration? = .seconds(30),
-        minimumOutgoingConnecting: Duration = .zero,
-        strategy: DailyRingJoinStrategy = .unsupported
+        minimumOutgoingConnecting: Duration = .zero
     ) {
-        self.strategy = strategy
         let sleeper = sleeper
         engine = CallEngine.simulated(
             configuration: CallEngineConfiguration(
@@ -126,8 +123,7 @@ final class DailyEngineRig {
                 let control = FakeDailyCallControl(transport: transport as! FakePipecatTransport)
                 controls.append(control)
                 return control
-            },
-            ringJoinStrategy: strategy
+            }
         )
         transports.append(transport)
         return transport
