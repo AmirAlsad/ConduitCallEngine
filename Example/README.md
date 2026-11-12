@@ -13,7 +13,7 @@ on that to prove an app linking one adapter does not link the other SDK.
 - `AppDelegate` builds the `CallEngine`, is its delegate, and calls `startPushRegistration()`
   in `didFinishLaunchingWithOptions` (PushKit registration must happen at launch).
 - `ExampleAgent` is the one `CallTarget`. Its `connect` closure calls `ExampleBackend`.
-- `ExampleBackend` is a placeholder: it POSTs to a URL and decodes `{ "url": ..., "token": ... }`.
+- `ExampleBackend` is a placeholder: it POSTs the call-control signals the app sends (`call_signals`) to a URL and decodes `{ "url": ..., "token": ... }`.
   This is where your own backend goes.
 - `CallView` shows the call state with Call, Mute and End buttons bound to the engine.
 - In the simulator (`#if targetEnvironment(simulator)`) the engine comes from

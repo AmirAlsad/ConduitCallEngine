@@ -12,10 +12,30 @@ enum ExampleBackend {
         let token: String?
     }
 
-    /// POSTs to `<baseURL>/connect` and decodes `{ "url": ..., "token": ... }`.
+    private struct Registration: Encodable {
+        let token: String
+        let pushFeatures: [String]
+        let callSignals: [String]
+
+        enum CodingKeys: String, CodingKey {
+            case token
+            case pushFeatures = "push_features"
+            case callSignals = "call_signals"
+        }
+    }
+
+    /// The call-control signals this app's calls carry, sent with every request so the
+    /// backend's agent waits for `call-connected` before it speaks (Integration Guide,
+    /// "When your agent should start speaking").
+    static let callSignals = CallSignal.allCases.map(\.rawValue)
+
+    /// POSTs `{ "call_signals": [...] }` to `<baseURL>/connect` and decodes
+    /// `{ "url": ..., "token": ... }`.
     static func fetchConnection() async throws -> CallConnection {
         var request = URLRequest(url: baseURL.appending(path: "connect"))
         request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(["call_signals": callSignals])
         let (data, response) = try await URLSession.shared.data(for: request)
         guard (response as? HTTPURLResponse)?.statusCode == 200 else {
             throw URLError(.badServerResponse)
@@ -31,7 +51,11 @@ enum ExampleBackend {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         let hex = voipToken.map { String(format: "%02x", $0) }.joined()
-        request.httpBody = try? JSONEncoder().encode(["token": hex])
+        request.httpBody = try? JSONEncoder().encode(Registration(
+            token: hex,
+            pushFeatures: CallEngine.supportedPushFeatures.sorted(),
+            callSignals: callSignals
+        ))
         _ = try? await URLSession.shared.data(for: request)
     }
 }
