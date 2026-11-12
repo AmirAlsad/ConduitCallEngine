@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `TransportError.authenticationFailed` during a reconnect attempt (thrown by the target's `connect` or by the transport's), and an `.error(.authenticationFailed)` event while reconnecting, now fail the call at once as `.badToken`. They were retried like any other failed attempt until the budget ran out and the call failed as `.lostConnection`. (#11)
+
 - Audio activation is tied to the call in progress. An activation that arrives with no call in progress (from a call that ended while dialing) is ignored instead of being replayed onto the next call's transport before CallKit activates that call, and `isAudioActivated` is cleared when a call ends. Deferred work started by an activation, a deactivation, a system mute, an interruption, a route change or a device-list refresh now acts on the transport that was live when it started and stops if that call has ended, instead of looking up whichever transport is current when it runs. (#9)
 
 - Ring-status receipts are sent only for targets the delegate resolves. A push for an unknown target that was busy, filtered by Focus, or declined before CallKit accepted it used to POST to the push-supplied `status_url` with no bearer. For a push during another call, `targetForIncomingCall` is now asked whether or not CallKit accepted the report. (#8)

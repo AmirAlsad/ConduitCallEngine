@@ -74,7 +74,7 @@ A call that reaches `.ended(outcome)` is recorded with the same outcome, so a ho
 
 | `CallFailureReason` | Produced by |
 |---|---|
-| `.badToken` | `TransportError.authenticationFailed` thrown by the target's `connect` closure or by `transport.connect` on the first connect; a `.disconnected(reason: .authFailed)` event at any time; an `.error(.authenticationFailed)` event while connecting. |
+| `.badToken` | `TransportError.authenticationFailed` thrown by the target's `connect` closure or by `transport.connect`, on the first connect or a reconnect attempt; a `.disconnected(reason: .authFailed)` event at any time; an `.error(.authenticationFailed)` event while connecting or reconnecting. |
 | `.transportError` | Any other error from the first connect; any other `.error` event while connecting; a drop before the call ever connected. |
 | `.lostConnection` | The reconnection budget ran out. |
 | `.unknown` | CallKit refused to start an outgoing call, or reset its provider during a call. In a `CallRecord` only (the state goes from `.incomingRinging` back to `.idle`): CallKit refused to report an incoming call (other than Focus filtering) or reset its provider while it rang, or a ring arrived for a target your delegate did not resolve. |
@@ -327,7 +327,7 @@ Rules that come from the device bugs this code survived:
 | `.disconnected(reason: .botLeft)` | The agent hung up: `ended(.completed)`, or `ended(.noAnswer)` if the call never connected. |
 | `.disconnected(reason: .networkDropped)` or `.unknown` | Never connected: `failed(.transportError)`. Connected or reconnecting: schedule the next reconnect attempt. |
 | `.disconnected(reason: .authFailed)` | `failed(.badToken)`, in any state. |
-| `.error(.authenticationFailed)` | While connecting: `failed(.badToken)`. Otherwise logged. |
+| `.error(.authenticationFailed)` | While connecting or reconnecting: `failed(.badToken)`. Otherwise logged. |
 | `.error(_)` | While connecting: `failed(.transportError)`. Otherwise logged; a mid-call error does not end the call. |
 | `.botStartedSpeaking`, `.botStoppedSpeaking` | Update `isBotSpeaking`. |
 | `.audioDevicesChanged` | Refresh `audioDevices` and `selectedAudioDeviceID`, and apply the hands-free default if not yet applied. |
@@ -337,8 +337,8 @@ Rules that come from the device bugs this code survived:
 
 **Errors.** Map SDK errors to `TransportError` inside the adapter so no SDK type leaks out. How the engine reads them:
 
-- `TransportError.authenticationFailed` thrown from your `connect`, or from the target's `connect` closure, on the first connection becomes `failed(.badToken)`. Any other error there becomes `failed(.transportError)`.
-- During a reconnect attempt, any error, including `.authenticationFailed`, counts as a failed attempt and schedules the next one, until the budget is spent and the call fails with `.lostConnection`.
+- `TransportError.authenticationFailed` thrown from your `connect`, or from the target's `connect` closure, becomes `failed(.badToken)`, on the first connection or on a reconnect attempt. Any other error on the first connection becomes `failed(.transportError)`.
+- During a reconnect attempt, any other error counts as a failed attempt and schedules the next one, until the budget is spent and the call fails with `.lostConnection`.
 - `.connectionFailed`, `.timedOut`, `.botUnavailable` and `.underlying` are only distinguished in logs.
 
 **Audio device ids.** The hands-free default and `AudioRouteKind(deviceID:)` classify routes by keywords in `AudioDeviceInfo.id`: `speaker` (without `bluetooth`), `bluetooth`, `earpiece` or `receiver`, `wired` or `headphone`. Use ids containing these, or the engine cannot tell a speaker from a headset.
@@ -653,7 +653,6 @@ Fix: record only from `didFinish`; the engine already makes the end of a call id
 - **The native CallKit route button cannot move audio on the Daily adapter.** Use an in-app picker.
 - **Daily's short interruptions are inferred from the device's network path, not Daily's media state.** A path that stays satisfied while media stops is not reported until Daily disconnects, and recovery is announced when the path returns, possibly a moment before audio does.
 - **Daily never reports bad credentials itself.** Only your `connect` closure can produce `.badToken` on Daily.
-- **During reconnection, an authentication failure is retried** like any other failed attempt, and the call ends as `.lostConnection` rather than `.badToken`.
 - **Fixed policies.** The reconnection budget and backoff, the loudspeaker default, and the CallKit provider configuration (email handles, calls in the Phone app's Recents, no ringtone or icon customization) are not configurable.
 - **No programmatic answer.** Incoming calls are answered from the system UI only.
 - **Not exposed:** the remote audio level, user-speaking events, and PushKit token invalidation (logged only).

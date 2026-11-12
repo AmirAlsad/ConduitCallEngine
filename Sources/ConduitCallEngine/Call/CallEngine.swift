@@ -546,6 +546,8 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         switch state {
         case .connecting:
             fail(error == .authenticationFailed ? .badToken : .transportError)
+        case .reconnecting where error == .authenticationFailed:
+            fail(.badToken)
         default:
             Log.error(.transport, "Transport error during call: \(error)")
         }
@@ -594,7 +596,12 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         } catch {
             Log.error(.transport, "Reconnect attempt failed: \(error)")
             guard self.transport === transport, !Task.isCancelled else { return }
-            scheduleReconnect()
+            // Rejected credentials will be rejected again; only other failures retry.
+            if (error as? TransportError) == .authenticationFailed {
+                fail(.badToken)
+            } else {
+                scheduleReconnect()
+            }
         }
     }
 

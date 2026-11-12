@@ -237,8 +237,8 @@ struct CallCredentialResolutionTests {
         #expect(h.delegate.records.map(\.outcome) == [.canceled])
     }
 
-    @Test(arguments: [false, true])
-    func staleRetryLeavesTheNextCallAlone(staleAttemptFails: Bool) async throws {
+    @Test(arguments: [nil, TransportError.connectionFailed("stale"), .authenticationFailed])
+    func staleRetryLeavesTheNextCallAlone(staleAttemptError: TransportError?) async throws {
         let h = CallEngineHarness()
         await h.placeCall()
         h.engine.handle(.connected)
@@ -255,7 +255,7 @@ struct CallCredentialResolutionTests {
         h.engine.handle(.connected)
         let transitionsBefore = h.delegate.transitions
 
-        if staleAttemptFails { h.target.error = TransportError.connectionFailed("stale") }
+        h.target.error = staleAttemptError
         h.target.release() // the first call's retry resolves late
         await staleRetry.value
 
@@ -263,6 +263,62 @@ struct CallCredentialResolutionTests {
         #expect(h.transports.made.map(\.connectCount) == [1, 1])
         #expect(h.delegate.transitions == transitionsBefore) // no reconnecting, no failure
         #expect(h.engine.reconnectTask == nil)
+    }
+
+    // MARK: - Rejected credentials while reconnecting
+
+    enum Rejection: String, CaseIterable, Sendable {
+        case byTheTarget, byTheTransport
+    }
+
+    /// Rejected credentials will not get better with another attempt: the call
+    /// fails as `.badToken` at once, not as `.lostConnection` once the budget is spent.
+    @Test(arguments: Rejection.allCases)
+    func rejectedCredentialsDuringAReconnectFailAsBadToken(rejection: Rejection) async throws {
+        let h = CallEngineHarness()
+        await h.placeCall()
+        h.engine.handle(.connected)
+        switch rejection {
+        case .byTheTarget: h.target.error = TransportError.authenticationFailed
+        case .byTheTransport: h.transport.connectError = .authenticationFailed
+        }
+
+        h.engine.handle(.disconnected(reason: .networkDropped))
+        await h.engine.awaitPendingReconnect()
+
+        #expect(h.engine.state == .failed(.badToken))
+        #expect(h.delegate.records.map(\.failureReason) == [.badToken])
+        #expect(h.target.connectCount == 2) // no further attempt
+        #expect(h.engine.reconnectTask == nil)
+        #expect(h.delegate.transitions.last == "reconnecting(1)→failed(badToken)")
+    }
+
+    @Test(arguments: [0, 1])
+    func authErrorEventWhileReconnectingFailsAsBadToken(attempt: Int) async throws {
+        let h = CallEngineHarness()
+        await h.placeCall()
+        h.engine.handle(.connected)
+        if attempt == 0 {
+            h.engine.handle(.reconnecting)
+        } else {
+            h.engine.handle(.disconnected(reason: .networkDropped))
+        }
+        #expect(h.engine.state == .reconnecting(attempt: attempt))
+
+        h.engine.handle(.error(.authenticationFailed))
+
+        #expect(h.engine.state == .failed(.badToken))
+    }
+
+    @Test func otherErrorEventWhileReconnectingIsOnlyLogged() async throws {
+        let h = CallEngineHarness()
+        await h.placeCall()
+        h.engine.handle(.connected)
+        h.engine.handle(.disconnected(reason: .networkDropped))
+
+        h.engine.handle(.error(.timedOut))
+
+        #expect(h.engine.state == .reconnecting(attempt: 1))
     }
 
     // MARK: - Once per attempt
