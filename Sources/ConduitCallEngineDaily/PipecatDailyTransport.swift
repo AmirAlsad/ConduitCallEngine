@@ -35,9 +35,12 @@
 //  audio for the whole call and the route flipped between speaker and earpiece;
 //  joined unsubscribed, the ring was silent and the answered call played the agent
 //  cleanly. Pipecat's client sends client-ready only for playable audio, so the bot
-//  cannot report ready while it is held back: for such a join, the agent being in
-//  the room counts as ready. Every other join (an outgoing call, an answer that
-//  joins after the ring, a reconnect) keeps Daily's default subscriptions and waits
+//  cannot report ready while it is held back: for such a join, and any later one on
+//  this transport before the first attach, the agent being in the room counts as
+//  ready. A join while detached after an attach (a held call reconnecting) joins
+//  unsubscribed and waits for bot-ready, which comes after the resume's attach.
+//  Every other join (an outgoing call, an answer that joins after the ring, a
+//  reconnect of an attached call) keeps Daily's default subscriptions and waits
 //  for bot-ready.
 //
 //  A `connect` while the client is still in the call never joins on that client:
