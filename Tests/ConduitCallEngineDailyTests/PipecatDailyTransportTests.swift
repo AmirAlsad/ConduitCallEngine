@@ -290,6 +290,7 @@ struct PipecatDailyTransportTests {
         #expect((message["id"] as? String)?.count == 8)
         let data = try #require(message["data"] as? [String: Any])
         #expect(data["t"] as? String == signal.rawValue)
+        #expect(data["d"] is NSNull)
     }
 
     /// Pipecat's `sendClientMessage` refuses until the bot is ready, which on a call
