@@ -73,7 +73,8 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     /// Where the preparation of the ringing call stands (pre-connect; see
     /// `RingPreparation`), for diagnostics. `.idle` whenever no ring is being
     /// prepared, including once a ring is answered or ends. Changing it never
-    /// changes `state` or calls the delegate.
+    /// changes `state`; each change is reported to
+    /// `CallEngineDelegate.callEngine(_:didChangeRingPreparationPhaseFrom:to:)`.
     public private(set) var ringPreparationPhase: RingPreparationPhase = .idle
 
     // MARK: - Dependencies
@@ -748,7 +749,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         }
         Log.info(.call, "Ring preparation: \(tier)")
         let request = ConnectRequest(purpose: .ringing(joinsBeforeAnswer: tier == .media), callID: incoming.callID)
-        ringPreparationPhase = .fetchingCredentials
+        setRingPreparationPhase(.fetchingCredentials)
         let fetch = Task { try await target.connect(request) }
         preparationFetch = fetch
         preparationWork = Task { [weak self] in
@@ -779,10 +780,10 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         }
         guard let transport = ringTransport else {
             preparedConnection = connection
-            ringPreparationPhase = .credentialsReady
+            setRingPreparationPhase(.credentialsReady)
             return
         }
-        ringPreparationPhase = .connecting
+        setRingPreparationPhase(.connecting)
         ringJoinWork = Task { [weak self] in
             do {
                 try await transport.connect(connection)
@@ -823,14 +824,14 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         switch event {
         case .connected:
             if ringPreparationPhase == .connecting {
-                ringPreparationPhase = .ready
+                setRingPreparationPhase(.ready)
                 cancelJoinDeadline()
             }
         case .reconnecting:
             // Healing itself: the agent is there again once it reports `.connected`,
             // within the same bound as a join.
             if ringPreparationPhase == .ready {
-                ringPreparationPhase = .connecting
+                setRingPreparationPhase(.connecting)
                 if let ringTransport { startRingJoinDeadline(for: ringTransport) }
             }
         case .disconnected(reason: .botLeft) where ringPreparationPhase == .ready && !isAnswerRequested:
@@ -863,7 +864,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         preparationFetch = nil
         preparedConnection = nil
         discardRingTransports()
-        ringPreparationPhase = .failed
+        setRingPreparationPhase(.failed)
     }
 
     /// Undo a ring's preparation: the ring ended, or the call is torn down.
@@ -874,7 +875,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         preparationFetch = nil
         preparedConnection = nil
         discardRingTransports()
-        if ringPreparationPhase != .idle { ringPreparationPhase = .idle }
+        if ringPreparationPhase != .idle { setRingPreparationPhase(.idle) }
     }
 
     /// Disconnect the ring's transports (a joined one sends the end-call signal)
@@ -908,6 +909,14 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         case credentials(CallConnection, transport: CallTransport?)
     }
 
+    /// Set the ring's preparation phase and tell the delegate when it changed.
+    private func setRingPreparationPhase(_ phase: RingPreparationPhase) {
+        let old = ringPreparationPhase
+        ringPreparationPhase = phase
+        guard old != phase else { return }
+        delegate?.callEngine(self, didChangeRingPreparationPhaseFrom: old, to: phase)
+    }
+
     /// Hand the ring's preparation to the answer, leaving none behind.
     private func takeRingPreparation() -> AnsweredPreparation {
         let preparation: AnsweredPreparation
@@ -930,7 +939,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         ringTransport = nil
         transportForAnswer = nil
         isRingTransportJoined = false
-        ringPreparationPhase = .idle
+        setRingPreparationPhase(.idle)
         return preparation
     }
 

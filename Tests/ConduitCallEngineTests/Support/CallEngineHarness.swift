@@ -144,6 +144,14 @@ final class RecordingCallEngineDelegate: CallEngineDelegate {
     }
 
     private(set) var events: [Event] = []
+    /// Every ring-preparation phase change, with `engine.ringPreparationPhase` as the
+    /// delegate read it then. Kept out of `events`, which tests compare whole.
+    private(set) var phaseChanges: [(from: RingPreparationPhase, to: RingPreparationPhase, observed: RingPreparationPhase)] = []
+    /// Transitions, records, phase changes and PushKit's completions as labels, in
+    /// the order they arrived.
+    private(set) var phaseTrace: [String] = []
+
+    func notePushCompleted() { phaseTrace.append("push-completed") }
     /// `engine.repeatingCue` as the delegate read it at each cue, in cue order.
     private(set) var repeatingCueAtEachCue: [RepeatingCue?] = []
     var log: EventLog?
@@ -226,6 +234,7 @@ final class RecordingCallEngineDelegate: CallEngineDelegate {
 
     func callEngine(_ engine: CallEngine, didChangeStateFrom old: CallState, to new: CallState) {
         events.append(.transition(from: old, to: new))
+        phaseTrace.append("T(\(old.label)→\(new.label))")
         log?.append("T(\(old.label)→\(new.label))")
     }
 
@@ -235,8 +244,18 @@ final class RecordingCallEngineDelegate: CallEngineDelegate {
         log?.append("cue(\(cue.label))")
     }
 
+    func callEngine(
+        _ engine: CallEngine,
+        didChangeRingPreparationPhaseFrom old: RingPreparationPhase,
+        to new: RingPreparationPhase
+    ) {
+        phaseChanges.append((old, new, engine.ringPreparationPhase))
+        phaseTrace.append("P(\(old)→\(new))")
+    }
+
     func callEngine(_ engine: CallEngine, didFinish record: CallRecord) {
         events.append(.finish(record))
+        phaseTrace.append("finish(\(record.outcome.rawValue))")
         log?.append("finish(\(record.outcome.rawValue))")
     }
 
@@ -361,6 +380,7 @@ final class CallEngineHarness {
         engine.handleIncomingPush(push) { [self] in
             pushCompletions += 1
             log.append("push-completed")
+            delegate.notePushCompleted()
         }
     }
 }

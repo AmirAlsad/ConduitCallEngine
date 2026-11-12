@@ -33,6 +33,20 @@ public protocol CallEngineDelegate: AnyObject {
     /// guarantees. Called right after the `didChangeStateFrom:to:` of the change
     /// that caused it, with `engine.repeatingCue` already updated.
     func callEngine(_ engine: CallEngine, cue: CallCue)
+    /// The ringing call's preparation moved from `old` to `new` (pre-connect;
+    /// `CallEngine.ringPreparationPhase`, already `new` when this is called). Only for a
+    /// real change. The phase leaves `.idle` only while `state` is `.incomingRinging`,
+    /// and never with a state change. It returns to `.idle` before the transition out
+    /// of `.incomingRinging` when the ring is answered, and, when the ring ends
+    /// unanswered, after that ring's `callEngine(_:didFinish:)` and before `state` is
+    /// `.idle` again. The move to `.fetchingCredentials` comes when CallKit accepts the
+    /// ring's report, which can be inside the engine's handling of the VoIP push, so
+    /// return promptly. For diagnostics: a host needs it for nothing else.
+    func callEngine(
+        _ engine: CallEngine,
+        didChangeRingPreparationPhaseFrom old: RingPreparationPhase,
+        to new: RingPreparationPhase
+    )
     /// Once per call that ends, and once per ring that ends without an answer
     /// (declined, busy, filtered by Focus, timed out, cancelled by the caller, or
     /// unable to proceed). Not for a malformed push, a cancel push, or a ring whose
@@ -47,6 +61,11 @@ extension CallEngineDelegate {
     public func callEngine(_ engine: CallEngine, targetForIncomingCall call: IncomingCall) -> CallTarget? { nil }
     public func callEngine(_ engine: CallEngine, didChangeStateFrom old: CallState, to new: CallState) {}
     public func callEngine(_ engine: CallEngine, cue: CallCue) {}
+    public func callEngine(
+        _ engine: CallEngine,
+        didChangeRingPreparationPhaseFrom old: RingPreparationPhase,
+        to new: RingPreparationPhase
+    ) {}
     public func callEngine(_ engine: CallEngine, didFinish record: CallRecord) {}
     public func callEngine(_ engine: CallEngine, ringStatusBearerForTarget id: UUID) -> String? { nil }
     public func callEngine(_ engine: CallEngine, didUpdateVoIPPushToken token: Data) {}
