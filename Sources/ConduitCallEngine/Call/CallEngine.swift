@@ -209,6 +209,13 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     /// Reports a ready connection once `minimumConnectingDuration` has passed; see
     /// `completeConnectionWhenDue`.
     private var minimumConnectingTask: Task<Void, Never>?
+    /// Asks CallKit again for the audio it did not activate after a resume; see
+    /// `startActivationRecoveryIfNeeded`.
+    private var activationRecoveryTask: Task<Void, Never>?
+    /// The times CallKit has been asked again since the last resume.
+    private var activationRecoveryAttempts = 0
+    /// Where the hold-and-resume pair asking CallKit again stands.
+    private var activationRecoveryStep: ActivationRecoveryStep = .idle
     /// What each running timer does when its wait is over, so a simulated system
     /// can run one out early (`fireTimer(_:)`).
     private var timerExpiries: [EngineTimer: @MainActor () -> Void] = [:]
@@ -1580,6 +1587,9 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         case .minimumConnecting:
             minimumConnectingTask?.cancel()
             minimumConnectingTask = nil
+        case .activationRecovery:
+            activationRecoveryTask?.cancel()
+            activationRecoveryTask = nil
         case .reconnectBackoff:
             break // its expiry replaces the waiting task itself
         }
@@ -1645,6 +1655,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
             return
         }
         isAudioActivated = true
+        cancelActivationRecovery()
         switch interruption {
         case .none:
             break
@@ -1754,6 +1765,26 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
             Log.warning(.callKit, "Hold for call \(id) refused in state \(String(describing: state))")
             return false
         }
+        switch (activationRecoveryStep, onHold) {
+        case (.holding, true):
+            // The pair's own hold: CallKit holds the call for a moment, the engine does not.
+            activationRecoveryStep = .resuming
+            return true
+        case (.resuming, false):
+            activationRecoveryStep = .idle
+            startActivationRecoveryIfNeeded()
+            return true
+        case (.abandoned, false):
+            // CallKit keeps the hold that came in during the pair.
+            Log.info(.callKit, "Refusing the resume that asked CallKit again for the audio: the call was held since")
+            activationRecoveryStep = .idle
+            return false
+        case (.resuming, true):
+            // A hold the engine did not ask for, between the pair's hold and its resume.
+            activationRecoveryStep = .abandoned
+        default:
+            break
+        }
         guard onHold != isOnHold else { return true }
         if onHold { hold() } else { resume() }
         return true
@@ -1771,6 +1802,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         Log.info(.call, "Call held")
         isOnHold = true
         signalRetryCount = 0
+        cancelActivationRecovery()
         applyMic()
         enqueueMedia { await $0.detachAudioSession() }
         syncHoldSignal()
@@ -1820,6 +1852,91 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         }
         if case .connecting = state, isAwaitingAgent, let transport {
             startJoinDeadline(for: transport)
+        }
+        activationRecoveryAttempts = 0
+        startActivationRecoveryIfNeeded()
+    }
+
+    // MARK: - Audio after a resume
+    //
+    // CallKit normally activates a resumed call's audio within a few tens of
+    // milliseconds. After a phone call on iOS 27 it did not, and nothing else would
+    // have recovered the call: not held, no audio. Holding and resuming it again
+    // did bring the activation, so that is what the engine asks for, a few times at
+    // most, and never against a hold the user or the system asks for meanwhile.
+
+    /// Where the hold-and-resume pair that asks CallKit again for the audio stands.
+    private enum ActivationRecoveryStep: Equatable {
+        case idle
+        /// The pair's hold is requested; CallKit performing it changes nothing.
+        case holding
+        /// The pair's hold was performed; its resume changes nothing but starts
+        /// the wait for the next attempt.
+        case resuming
+        /// A hold the engine did not ask for came in during the pair, and stands:
+        /// the pair's resume is refused.
+        case abandoned
+    }
+
+    /// After a resume, give CallKit `activationRecoveryDelay` to activate the
+    /// call's audio before asking again.
+    private func startActivationRecoveryIfNeeded() {
+        guard !isAudioActivated, !isOnHold, canBeHeld, let id = activeCallID,
+              activationRecoveryTask == nil, activationRecoveryStep == .idle
+        else { return }
+        guard activationRecoveryAttempts < Self.activationRecoveryAttemptLimit else {
+            Log.warning(.callKit, "CallKit has still not activated the resumed call's audio after asking \(activationRecoveryAttempts) times; waiting for the system or the user")
+            return
+        }
+        activationRecoveryTask = startTimer(.activationRecovery, after: Self.activationRecoveryDelay) { [weak self] in
+            guard let self else { return }
+            self.activationRecoveryTask = nil
+            self.askForActivationAgain(for: id)
+        }
+    }
+
+    private func cancelActivationRecovery() {
+        activationRecoveryTask?.cancel()
+        activationRecoveryTask = nil
+        timerExpiries[.activationRecovery] = nil
+    }
+
+    private func askForActivationAgain(for id: UUID) {
+        guard activeCallID == id, !isAudioActivated, !isOnHold, canBeHeld, activationRecoveryStep == .idle else { return }
+        activationRecoveryAttempts += 1
+        Log.warning(.callKit, "CallKit did not activate the audio within \(Self.activationRecoveryDelay) of the resume; holding and resuming the call to ask again (\(activationRecoveryAttempts) of \(Self.activationRecoveryAttemptLimit))")
+        activationRecoveryStep = .holding
+        startDetachedWork { [weak self] in await self?.runActivationRecoveryPair(for: id) }
+    }
+
+    private func runActivationRecoveryPair(for id: UUID) async {
+        let held = await callProvider.setHeld(id, onHold: true)
+        guard activeCallID == id else { return }
+        guard held else {
+            Log.warning(.callKit, "CallKit refused the hold that asks again for the audio")
+            if activationRecoveryStep == .holding { activationRecoveryStep = .idle }
+            startActivationRecoveryIfNeeded()
+            return
+        }
+        guard activationRecoveryStep == .holding || activationRecoveryStep == .resuming else {
+            // A hold came in first and stands; nothing to resume.
+            if activationRecoveryStep == .abandoned { activationRecoveryStep = .idle }
+            return
+        }
+        let resumed = await callProvider.setHeld(id, onHold: false)
+        guard activeCallID == id, !resumed else { return }
+        switch activationRecoveryStep {
+        case .resuming:
+            // CallKit holds the call and will not resume it: show the hold, so the
+            // user's resume asks for it properly.
+            Log.error(.callKit, "CallKit refused the resume that asks again for the audio; the call stays held")
+            activationRecoveryStep = .idle
+            hold()
+        case .holding, .abandoned:
+            activationRecoveryStep = .idle
+            startActivationRecoveryIfNeeded()
+        case .idle:
+            break
         }
     }
 
@@ -2137,6 +2254,8 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
             Log.warning(.call, "setOnHold(\(onHold)) ignored; state is \(String(describing: state))")
             return
         }
+        // The user asking to resume overrides a refusal kept for the pair's resume.
+        if !onHold, activationRecoveryStep == .abandoned { activationRecoveryStep = .idle }
         await callProvider.setHeld(id, onHold: onHold)
         await mediaTask?.value
     }
@@ -2323,6 +2442,9 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         mediaTask = nil
         signalTask = nil
         cancelSignalRetry()
+        cancelActivationRecovery()
+        activationRecoveryStep = .idle
+        activationRecoveryAttempts = 0
         isOnHold = false
         isAgentToldHeld = false
         isReconnectionPaused = false
@@ -2365,6 +2487,9 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         isConnectionMarked = false
         isConnectionPending = false
         cancelMinimumConnecting()
+        cancelActivationRecovery()
+        activationRecoveryStep = .idle
+        activationRecoveryAttempts = 0
         connectingLoopStartedAt = nil
         audioDevices = []
         selectedAudioDeviceID = nil
@@ -2489,4 +2614,9 @@ extension CallEngine {
     package nonisolated static let minimumPushedRingTimeout: Duration = .seconds(10)
     /// The waits before each retry of a signal that did not leave the device.
     package nonisolated static let signalRetryDelays: [Duration] = [1, 2, 4, 8, 16, 30].map { .seconds($0) }
+    /// How long after a resume CallKit has to activate the call's audio before the
+    /// engine asks again. CallKit usually does it within a tenth of a second.
+    package nonisolated static let activationRecoveryDelay: Duration = .seconds(2)
+    /// How many times the engine asks again after one resume.
+    package nonisolated static let activationRecoveryAttemptLimit = 3
 }

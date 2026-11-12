@@ -143,8 +143,9 @@ struct JoinDeadlineTests {
         #expect(h.delegate.records.isEmpty)
 
         #expect(h.engine.providerPerformSetHeld(id, onHold: false))
-        await waitUntil { sleeper.pendingCount == 1 }
-        #expect(sleeper.requested == [.seconds(30), .seconds(30)])
+        // The resume also starts the wait for CallKit's audio, which this call never had.
+        await waitUntil { sleeper.pendingCount == 2 }
+        #expect(sleeper.requested.sorted() == [CallEngine.activationRecoveryDelay, .seconds(30), .seconds(30)])
         h.engine.handle(.connected)
 
         #expect(h.engine.state.isConnected)
@@ -163,9 +164,10 @@ struct JoinDeadlineTests {
         #expect(sleeper.requested.isEmpty)
 
         #expect(h.engine.providerPerformSetHeld(h.callID, onHold: false))
-        await waitUntil { sleeper.pendingCount == 1 }
-        #expect(sleeper.requested == [.seconds(30)])
-        sleeper.wakeFirst()
+        // The resume also starts the wait for CallKit's audio, which this call never had.
+        await waitUntil { sleeper.pendingCount == 2 }
+        #expect(sleeper.requested.sorted() == [CallEngine.activationRecoveryDelay, .seconds(30)])
+        sleeper.wakeAll()
         await waitUntil { h.engine.state.isTerminal }
 
         #expect(h.engine.state == .failed(.agentUnreachable))

@@ -26,4 +26,7 @@ package enum EngineTimer: Hashable, CaseIterable, Sendable {
     /// The bound on a host's withhold of the mic (`micWithholdTimeout`), from the
     /// moment the call is connected with its audio activated.
     case micWithholdTimeout
+    /// The wait for CallKit's audio activation after a resume, before the engine
+    /// asks again (`CallEngine.activationRecoveryDelay`).
+    case activationRecovery
 }

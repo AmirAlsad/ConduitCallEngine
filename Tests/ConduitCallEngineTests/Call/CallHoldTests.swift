@@ -24,6 +24,11 @@ struct CallHoldTests {
         await h.engine.activate(FakeAudioSession())
     }
 
+    private func activate(_ h: CallEngineHarness) async {
+        h.provider.simulateActivate(FakeAudioSession())
+        await h.engine.awaitPendingActivation()
+    }
+
     @discardableResult
     private func setHeld(_ h: CallEngineHarness, _ onHold: Bool, id: UUID? = nil) async -> Bool {
         let performed = h.provider.simulateSetHeld(id ?? h.callID, onHold: onHold)
@@ -183,6 +188,159 @@ struct CallHoldTests {
         #expect(h.delegate.cues.filter { $0 == .moment(.held) }.count == 1)
         #expect(h.delegate.cues.filter { $0 == .moment(.resumed) }.count == 1)
         #expect(h.delegate.cueViolations.isEmpty)
+    }
+
+    // MARK: - Audio after a resume
+
+    /// A harness whose timers wait until a test fires them.
+    private func timedHarness() -> CallEngineHarness {
+        CallEngineHarness(sleep: { _ in try await Task.sleep(for: .seconds(24 * 60 * 60)) })
+    }
+
+    /// Held by the system, CallKit deactivated the audio, and the resume came with
+    /// no activation: the call is not held and has no audio.
+    private func resumedWithoutAudio(_ h: CallEngineHarness) async {
+        await liveCall(h)
+        await setHeld(h, true)
+        h.provider.simulateDeactivate(FakeAudioSession())
+        await setHeld(h, false)
+    }
+
+    @Test func aResumeCallKitDoesNotFollowWithAnActivationIsAskedForAgain() async throws {
+        let h = timedHarness()
+        await resumedWithoutAudio(h)
+        #expect(h.engine.isTimerRunning(.activationRecovery))
+        let signals = h.transport.sentSignals
+        let cues = h.delegate.cues
+
+        #expect(h.engine.fireTimer(.activationRecovery))
+        await h.engine.awaitPendingWork()
+
+        // The hold and resume that brought the audio back by hand, silently.
+        #expect(h.provider.heldRequests.map(\.onHold) == [true, false])
+        #expect(h.provider.heldRequests.allSatisfy { $0.id == h.callID })
+        #expect(!h.engine.isOnHold)
+        #expect(h.transport.sentSignals == signals)
+        #expect(h.delegate.cues == cues)
+        #expect(h.engine.isTimerRunning(.activationRecovery)) // the next attempt waits
+
+        await activate(h)
+
+        #expect(!h.engine.isTimerRunning(.activationRecovery))
+        #expect(h.transport.isAudioAttached)
+        #expect(h.transport.isMicEnabled)
+        #expect(h.delegate.cueViolations.isEmpty)
+    }
+
+    @Test func theRequestIsRepeatedAFewTimesAtMost() async throws {
+        let h = timedHarness()
+        await resumedWithoutAudio(h)
+
+        var fired = 0
+        while h.engine.fireTimer(.activationRecovery) {
+            fired += 1
+            await h.engine.awaitPendingWork()
+            try #require(fired <= 10)
+        }
+
+        #expect(fired == CallEngine.activationRecoveryAttemptLimit)
+        #expect(h.provider.heldRequests.count == 2 * CallEngine.activationRecoveryAttemptLimit)
+        #expect(!h.engine.isOnHold)
+
+        // A new resume from the user starts a new budget.
+        await h.engine.setOnHold(true)
+        await h.engine.setOnHold(false)
+        #expect(h.engine.isTimerRunning(.activationRecovery))
+    }
+
+    @Test func theWaitIsTheEnginesSleep() async throws {
+        let sleeper = ManualSleeper()
+        let h = CallEngineHarness(sleep: { await sleeper.sleep($0) })
+        await resumedWithoutAudio(h)
+        await waitUntil { sleeper.pendingCount == 1 }
+
+        #expect(sleeper.requested == [CallEngine.activationRecoveryDelay])
+        sleeper.wakeFirst()
+        await waitUntil { h.provider.heldRequests.count == 2 }
+        #expect(h.provider.heldRequests.map(\.onHold) == [true, false])
+    }
+
+    @Test func aResumeWithTheAudioActivatedAsksForNothing() async throws {
+        let h = timedHarness()
+        await liveCall(h)
+        await setHeld(h, true)
+        await setHeld(h, false) // CallKit kept the session active
+
+        #expect(!h.engine.isTimerRunning(.activationRecovery))
+    }
+
+    @Test func anActivationBeforeTheWaitEndsAsksForNothing() async throws {
+        let h = timedHarness()
+        await resumedWithoutAudio(h)
+
+        await activate(h)
+
+        #expect(!h.engine.isTimerRunning(.activationRecovery))
+        #expect(!h.engine.fireTimer(.activationRecovery))
+        #expect(h.provider.heldRequests.isEmpty)
+    }
+
+    @Test func aHoldBeforeTheWaitEndsAsksForNothing() async throws {
+        let h = timedHarness()
+        await resumedWithoutAudio(h)
+
+        await setHeld(h, true)
+
+        #expect(h.engine.isOnHold)
+        #expect(!h.engine.isTimerRunning(.activationRecovery))
+        #expect(h.provider.heldRequests.isEmpty)
+    }
+
+    @Test func theCallEndingStopsTheWait() async throws {
+        let h = timedHarness()
+        await resumedWithoutAudio(h)
+
+        await h.engine.endCall()
+
+        #expect(!h.engine.isTimerRunning(.activationRecovery))
+    }
+
+    /// A hold that lands between the request's own hold and its resume stands: the
+    /// request's resume is refused, so CallKit keeps the call held.
+    @Test func aHoldDuringTheRequestStands() async throws {
+        let h = timedHarness()
+        await resumedWithoutAudio(h)
+        var injected = false
+        h.provider.onEvent = { [h] event in
+            guard event == "held-request(false)", !injected else { return }
+            injected = true
+            h.provider.simulateSetHeld(h.callID, onHold: true) // e.g. the user holds
+        }
+
+        #expect(h.engine.fireTimer(.activationRecovery))
+        await h.engine.awaitPendingWork()
+
+        #expect(injected)
+        #expect(h.engine.isOnHold)
+        #expect(!h.engine.isTimerRunning(.activationRecovery))
+        #expect(h.delegate.cues.last == .moment(.held))
+
+        // The user's own resume afterwards is performed.
+        await h.engine.setOnHold(false)
+        #expect(!h.engine.isOnHold)
+        #expect(h.delegate.cueViolations.isEmpty)
+    }
+
+    @Test func aRefusedHoldIsAskedForAgainLater() async throws {
+        let h = timedHarness()
+        await resumedWithoutAudio(h)
+        h.provider.refusesHeldRequests = true
+
+        #expect(h.engine.fireTimer(.activationRecovery))
+        await h.engine.awaitPendingWork()
+
+        #expect(!h.engine.isOnHold)
+        #expect(h.engine.isTimerRunning(.activationRecovery))
     }
 
     // MARK: - Refusals (the action names the call; the call must be holdable)

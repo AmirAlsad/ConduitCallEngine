@@ -52,6 +52,8 @@ package protocol CallProviding: AnyObject {
     func reportCallEnded(_ id: UUID, reason: CallEndReason)
     func setMuted(_ id: UUID, muted: Bool) async
     /// Request the system hold or resume the call. The system performs it through
-    /// `CallProviderDelegate.providerPerformSetHeld`, which decides.
-    func setHeld(_ id: UUID, onHold: Bool) async
+    /// `CallProviderDelegate.providerPerformSetHeld`, which decides, before or after
+    /// this returns. Returns whether the system accepted the request.
+    @discardableResult
+    func setHeld(_ id: UUID, onHold: Bool) async -> Bool
 }

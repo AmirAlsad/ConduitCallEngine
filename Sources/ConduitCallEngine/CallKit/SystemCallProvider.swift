@@ -22,6 +22,8 @@ final class SystemCallProvider: NSObject, CallProviding, CXProviderDelegate {
     private let provider: CXProvider
     private let callController = CXCallController()
     private let audioSession = SystemAudioSession()
+    /// Whether CallKit has the provider's audio session activated.
+    private var isSessionActivated = false
 
     override init() {
         let configuration = CXProviderConfiguration()
@@ -120,12 +122,15 @@ final class SystemCallProvider: NSObject, CallProviding, CXProviderDelegate {
         try? await callController.request(CXTransaction(action: action))
     }
 
-    func setHeld(_ id: UUID, onHold: Bool) async {
+    @discardableResult
+    func setHeld(_ id: UUID, onHold: Bool) async -> Bool {
         let action = CXSetHeldCallAction(call: id, onHold: onHold)
         do {
             try await callController.request(CXTransaction(action: action))
+            return true
         } catch {
             Log.error(.callKit, "CXSetHeldCallAction(onHold: \(onHold)) refused: \(error)")
+            return false
         }
     }
 
@@ -149,7 +154,10 @@ final class SystemCallProvider: NSObject, CallProviding, CXProviderDelegate {
     // CXProviderDelegate doesn't cross actor isolation.
 
     nonisolated func providerDidReset(_ provider: CXProvider) {
-        MainActor.assumeIsolated { delegate?.providerWasReset() }
+        MainActor.assumeIsolated {
+            isSessionActivated = false
+            delegate?.providerWasReset()
+        }
     }
 
     nonisolated func provider(_ provider: CXProvider, perform action: CXStartCallAction) {
@@ -176,7 +184,13 @@ final class SystemCallProvider: NSObject, CallProviding, CXProviderDelegate {
 
     nonisolated func provider(_ provider: CXProvider, perform action: CXSetHeldCallAction) {
         let performed = MainActor.assumeIsolated {
-            delegate?.providerPerformSetHeld(action.callUUID, onHold: action.isOnHold) ?? false
+            let performed = delegate?.providerPerformSetHeld(action.callUUID, onHold: action.isOnHold) ?? false
+            // Configure the session again, without activating it, before the resume
+            // is fulfilled, as before a start or an answer: CallKit activates it then.
+            if performed, !action.isOnHold, !isSessionActivated {
+                try? audioSession.prepareForVoIPCall()
+            }
+            return performed
         }
         if performed { action.fulfill() } else { action.fail() }
     }
@@ -184,6 +198,7 @@ final class SystemCallProvider: NSObject, CallProviding, CXProviderDelegate {
     nonisolated func provider(_ provider: CXProvider, didActivate audioSession: AVAudioSession) {
         MainActor.assumeIsolated {
             Log.info(.callKit, "CXProvider didActivate audio session")
+            isSessionActivated = true
             delegate?.providerDidActivate(SystemAudioSession(session: audioSession))
         }
     }
@@ -191,6 +206,7 @@ final class SystemCallProvider: NSObject, CallProviding, CXProviderDelegate {
     nonisolated func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) {
         MainActor.assumeIsolated {
             Log.info(.callKit, "CXProvider didDeactivate audio session")
+            isSessionActivated = false
             delegate?.providerDidDeactivate(SystemAudioSession(session: audioSession))
         }
     }

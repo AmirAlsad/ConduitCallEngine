@@ -142,14 +142,20 @@ package final class FakeCallProvider: CallProviding {
     }
     package func setMuted(_ id: UUID, muted: Bool) async { muteStates[id] = muted }
 
+    /// When true, every hold or resume request is refused before it is performed.
+    package var refusesHeldRequests = false
+
     /// Like CallKit, performs the request through the delegate, and only for a
     /// call it holds that was reported as holdable (CallKit is assumed to refuse
-    /// the others before they reach the provider).
-    package func setHeld(_ id: UUID, onHold: Bool) async {
+    /// the others before they reach the provider). Returns whether it accepted the
+    /// request, whatever the engine then made of it.
+    @discardableResult
+    package func setHeld(_ id: UUID, onHold: Bool) async -> Bool {
         onEvent?("held-request(\(onHold))")
         heldRequests.append((id, onHold))
-        guard liveCallIDs.contains(id), holdableCalls[id] == true else { return }
+        guard !refusesHeldRequests, liveCallIDs.contains(id), holdableCalls[id] == true else { return false }
         _ = delegate?.providerPerformSetHeld(id, onHold: onHold)
+        return true
     }
 
     // MARK: - System → engine drivers (for tests and the simulator)

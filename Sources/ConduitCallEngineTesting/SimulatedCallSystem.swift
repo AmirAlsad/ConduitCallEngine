@@ -268,6 +268,13 @@ public final class SimulatedCallSystem {
         /// while the transport has reported `.connected` and the engine holds the
         /// call in `.connecting`. Firing it reports the call connected now.
         case minimumConnectingDuration
+        /// The 2 seconds CallKit is given to activate a resumed call's audio
+        /// (`activateAudioSession()`), running from a resume whose session is not
+        /// activated until the activation, a hold, or the call's end. Firing it makes
+        /// the engine ask again by holding and resuming the call through CallKit,
+        /// which changes nothing the host sees but `holdRequests`; the wait then runs
+        /// again, up to 3 times per resume.
+        case activationRecovery
     }
 
     /// Run `timer` out now, as if its wait were over, if it is running: the engine
@@ -286,6 +293,7 @@ public final class SimulatedCallSystem {
         case .signalRetry: return engine.fireTimer(.signalRetry)
         case .micWithholdTimeout: return engine.fireTimer(.micWithholdTimeout)
         case .minimumConnectingDuration: return engine.fireTimer(.minimumConnecting)
+        case .activationRecovery: return engine.fireTimer(.activationRecovery)
         }
     }
 
@@ -351,7 +359,8 @@ public final class SimulatedCallSystem {
         }
     }
 
-    /// A hold or resume the engine requested from CallKit (`CallEngine.setOnHold(_:)`).
+    /// A hold or resume the engine requested from CallKit: the host's
+    /// `CallEngine.setOnHold(_:)`, or one the engine requested itself.
     public struct HoldRequest: Equatable, Sendable {
         public let callID: UUID
         public let onHold: Bool
@@ -362,9 +371,11 @@ public final class SimulatedCallSystem {
         }
     }
 
-    /// Every hold or resume the engine requested, in order. The simulated system
-    /// performs each one through the engine, as CallKit does, for a call it holds
-    /// that was reported as holdable.
+    /// Every hold or resume the engine requested, in order: the host's
+    /// `setOnHold(_:)`, and the hold-and-resume pairs the engine requests itself
+    /// when CallKit does not activate a resumed call's audio (`fireTimer(.activationRecovery)`).
+    /// The simulated system performs each one through the engine, as CallKit does,
+    /// for a call it holds that was reported as holdable.
     public var holdRequests: [HoldRequest] {
         provider.heldRequests.map { HoldRequest(callID: $0.id, onHold: $0.onHold) }
     }
