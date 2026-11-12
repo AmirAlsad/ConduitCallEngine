@@ -83,12 +83,33 @@ struct CallInboundTests {
 
     @Test func answerViaSystemDelegateConnects() async throws {
         let h = CallEngineHarness()
-        h.ring()
+        let callID = UUID()
+        h.ring(callID: callID)
 
-        h.provider.simulateAnswerCall(UUID()) // the real CXAnswerCallAction path
+        h.provider.simulateAnswerCall(callID) // the real CXAnswerCallAction path
 
         await waitUntil { h.transport.connectCount > 0 }
         #expect(h.transport.connectCount == 1)
+    }
+
+    @Test func answeringABusyRingDoesNotAnswerTheRingingCall() async throws {
+        let h = CallEngineHarness()
+        let ringing = UUID()
+        h.ring(callID: ringing, statusURL: statusEndpoint)
+        h.provider.completesIncomingReportsLater = true
+        let busy = UUID()
+        h.ring(callID: busy) // reported; not ended until CallKit accepts it
+
+        h.provider.simulateAnswerCall(busy)
+        await waitUntil { h.target.makeTransportCount > 0 }
+
+        #expect(h.engine.state == .incomingRinging)
+        #expect(h.target.makeTransportCount == 0)
+        #expect(h.ringStatusReporter.reports.isEmpty)
+
+        h.provider.completeIncomingReports()
+        #expect(h.provider.reportedEnded.map(\.id) == [busy])
+        #expect(h.engine.state == .incomingRinging)
     }
 
     @Test func declineWhileRingingLogsDeclined() async throws {

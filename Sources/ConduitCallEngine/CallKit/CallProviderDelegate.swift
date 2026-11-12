@@ -18,12 +18,13 @@ package protocol CallProviderDelegate: AnyObject {
     func providerDidActivate(_ audioSession: AudioSessionActivating)
     /// CallKit deactivated the audio session. The engine detaches media.
     func providerDidDeactivate(_ audioSession: AudioSessionActivating)
-    /// The user answered an incoming call from the system UI.
+    /// The user answered an incoming call from the system UI. Ignored unless `id`
+    /// is the ringing call.
     func providerPerformAnswerCall(_ id: UUID)
     /// The user ended the call from the system UI (lock screen, CarPlay). Also the
     /// decline path for an incoming call that's still ringing.
     func providerPerformEndCall(_ id: UUID)
-    /// The user toggled mute from the system UI.
+    /// The user toggled mute from the system UI. Ignored unless `id` is the live call.
     func providerPerformSetMuted(_ id: UUID, muted: Bool)
     /// The system reset the provider; tear everything down defensively.
     func providerWasReset()

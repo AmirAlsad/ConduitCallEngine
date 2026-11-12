@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- CallKit answer and mute actions now apply only to the call they name. An answer for a busy ring that CallKit still showed answered the ringing call, and a mute for another call's id muted the live one. (#6)
+
 - A CallKit provider reset now ends the call the way any other failure does: a call that is dialing, connecting, connected or reconnecting moves to `.failed(.unknown)` (so a host's transition-driven cues stop) and a ringing call returns to `.idle`; both produce a `CallRecord` (`outcome: .failed`, `failureReason: .unknown`). Before, the engine went to `.idle` with no terminal transition and no record. Nothing is reported back to CallKit, which has already ended the call, and no receipt is sent. (#5)
 
 - A ring for a target the delegate does not resolve, or one CallKit refuses for a reason other than Focus, now returns from `.incomingRinging` to `.idle` instead of entering `.failed(.unknown)`, an active state that put a failure screen up for a ring the user never answered. It is still ended in CallKit and recorded (`outcome: .failed`, `failureReason: .unknown`). (#4)

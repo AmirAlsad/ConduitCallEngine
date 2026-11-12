@@ -647,6 +647,11 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
 
     package func providerPerformAnswerCall(_ id: UUID) {
         Log.info(.callkit, "System requested answer")
+        // Only the ringing call can be answered, not a busy ring CallKit still shows.
+        guard activeCallID == id else {
+            Log.warning(.callkit, "Answer for call \(id), which is not the ringing call; ignored")
+            return
+        }
         Task { [weak self] in await self?.answer() }
     }
 
@@ -659,6 +664,10 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     }
 
     package func providerPerformSetMuted(_ id: UUID, muted: Bool) {
+        guard activeCallID == id else {
+            Log.warning(.callkit, "Mute for call \(id), which is not the live call; ignored")
+            return
+        }
         isMuted = muted
         Task { [weak self] in await self?.transport?.setMicEnabled(self?.micShouldBeOn ?? false) }
     }

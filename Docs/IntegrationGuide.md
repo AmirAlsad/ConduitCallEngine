@@ -451,7 +451,7 @@ and in `makeTransport`, return a `FakeTransport()` in the simulator. `FakeTransp
 | `deliverVoIPPushToken(_:)`, `voipPushToken` | PushKit issues a token; the token it holds. |
 | `answerIncomingCall() async` | The user answers; returns once the connect attempt has run. |
 | `endCallFromSystem(_:)` | The user ends or declines from the system UI. |
-| `setMutedFromSystem(_:muted:)` | The user toggles mute from the system UI. |
+| `setMutedFromSystem(_:muted:)` | The user toggles mute from the system UI. Ignored unless `callID` is the live call's. |
 | `resetProvider()` | CallKit resets the provider: a live call fails with `.unknown`, a ring returns to idle, and both are recorded. |
 | `outgoingStartError` | While set, every outgoing start throws it, as a rejected start does; the call fails with `.unknown`. |
 | `activateAudioSession() async` | CallKit activates the audio session; returns once the engine has attached the transport and applied mic state. |

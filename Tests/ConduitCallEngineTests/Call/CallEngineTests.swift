@@ -235,6 +235,22 @@ struct CallEngineTests {
         #expect(h.provider.muteStates[h.callID] == nil)
     }
 
+    @Test func systemMuteForAnotherCallIsIgnored() async throws {
+        let h = CallEngineHarness()
+        await h.placeCall()
+        h.engine.handle(.connected)
+        await h.engine.activate(FakeAudioSession())
+        #expect(h.transport.isMicEnabled)
+        let calls = h.transport.setMicEnabledCallCount
+
+        h.engine.providerPerformSetMuted(UUID(), muted: true) // e.g. a busy ring's id
+        await waitUntil { h.transport.setMicEnabledCallCount > calls }
+
+        #expect(!h.engine.isMuted)
+        #expect(h.transport.isMicEnabled)
+        #expect(h.transport.setMicEnabledCallCount == calls)
+    }
+
     // MARK: - Ending
 
     @Test func inAppEndDisconnectsRequestsEndAndLogsCompleted() async throws {
