@@ -6,8 +6,10 @@
 //  activation before or after the connect, the engine's request before or after,
 //  a join while ringing, a reconnect and a session taken over, a hold, and devices
 //  coming and going. "prefer <route>" in a session's call log is a request to
-//  Daily's call client; "connect preferring <device>" is a join whose microphone
-//  input names that Daily device. Whether Daily then keeps the route is device-only.
+//  Daily's call client, "prefer <route> for the join" the preferred device alone,
+//  before a join that starts before the activation; "connect preferring <device>" is
+//  a join whose microphone input names that Daily device. Whether Daily then keeps
+//  the route is device-only.
 //
 
 import AVFoundation
@@ -24,6 +26,7 @@ struct DailyAudioRouteTests {
         var controls: [FakeDailyCallControl] = []
         var mics: [String] = ["earpiece", "speakerphone"]
         var outputPort: AVAudioSession.Port? = .builtInReceiver
+        var availableInputs: [AVAudioSession.Port] = [.builtInMic]
         var portReads = 0
     }
 
@@ -47,7 +50,8 @@ struct DailyAudioRouteTests {
             readOutputPort: { [clients] in
                 clients.portReads += 1
                 return clients.outputPort
-            }
+            },
+            readAvailableInputs: { [clients] in clients.availableInputs }
         )
     }
 
@@ -70,32 +74,36 @@ struct DailyAudioRouteTests {
         #expect(fake.calls == ["prefer earpiece", "connect preferring earpiece"])
     }
 
-    /// Credentials first: the join has no route to name (CallKit has not activated
-    /// yet), so the route goes to Daily at the attach.
-    @Test func anActivationAfterTheConnectGivesDailyTheRouteAtTheAttach() async throws {
+    /// Credentials first: CallKit has not activated yet, so the join starts on a
+    /// provisional earpiece, given as the preferred device alone and named by the
+    /// join. The activation then reads the loudspeaker Daily may have configured
+    /// meanwhile, which nobody asked for, and keeps the earpiece.
+    @Test func aJoinBeforeTheActivationStartsOnTheEarpiece() async throws {
+        clients.outputPort = .builtInSpeaker
         let transport = makeTransport()
         try await transport.connect(connection)
         let fake = try #require(clients.made.first)
-        #expect(fake.calls == ["connect"])
+        #expect(fake.calls == ["prefer earpiece for the join", "connect preferring earpiece"])
 
         await transport.attachAudioSession()
 
-        #expect(fake.calls == ["connect", "prefer earpiece"])
+        #expect(fake.calls == ["prefer earpiece for the join", "connect preferring earpiece"])
+        #expect(clients.portReads == 2)
     }
 
     @Test(arguments: [
-        (AVAudioSession.Port.builtInSpeaker, "prefer speaker"),
-        (.bluetoothHFP, "prefer bluetooth"),
-        (.headphones, "prefer wired"),
+        (AVAudioSession.Port.builtInSpeaker, "prefer speaker", "speakerphone"),
+        (.bluetoothHFP, "prefer bluetooth", "bluetooth"),
+        (.headphones, "prefer wired", "wired"),
     ])
-    func theRouteAtActivationIsTheOneKept(port: AVAudioSession.Port, request: String) async throws {
+    func theRouteAtActivationIsTheOneKept(port: AVAudioSession.Port, request: String, device: String) async throws {
         clients.outputPort = port
         let transport = makeTransport()
-        try await transport.connect(connection)
-
         await transport.attachAudioSession()
 
-        #expect(clients.made.first?.calls == ["connect", request])
+        try await transport.connect(connection)
+
+        #expect(clients.made.first?.calls == [request, "connect preferring \(device)"])
     }
 
     @Test func aRouteDailyCannotNameIsLeftToDaily() async throws {
@@ -116,7 +124,7 @@ struct DailyAudioRouteTests {
 
         try await transport.connect(connection)
 
-        #expect(clients.made.first?.calls == ["prefer speaker", "connect preferring speakerphone"])
+        #expect(clients.made.first?.calls == ["prefer speaker for the join", "connect preferring speakerphone"])
     }
 
     /// The speaker default, or the user's pick, after the attach kept the earpiece.
@@ -139,25 +147,77 @@ struct DailyAudioRouteTests {
 
         await transport.setAudioDevice("airplay")
 
-        #expect(clients.made.first?.calls == ["connect"])
+        #expect(clients.made.first?.calls == ["prefer earpiece for the join", "connect preferring earpiece"])
     }
 
     // MARK: - Joining while ringing
 
-    /// Nothing reaches Daily before the first attach of a ring's join, not even an
-    /// engine request; the attach after the answer gives it the route.
-    @Test func aJoinWhileRingingAsksDailyForNoRouteBeforeTheFirstAttach() async throws {
+    /// A ring's join gives Daily only its provisional route, as the preferred device
+    /// alone before the join; an engine request waits for the first attach after the
+    /// answer, which gives it in full.
+    @Test func aJoinWhileRingingGivesDailyOnlyAProvisionalRouteBeforeTheFirstAttach() async throws {
         let transport = makeTransport()
         try await transport.connectWhileRinging(connection)
         await transport.setAudioDevice("speakerphone")
         let fake = try #require(clients.made.first)
-        #expect(fake.calls == ["agent audio unsubscribed", "connect"])
-        #expect(clients.portReads == 0)
+        #expect(fake.calls == ["agent audio unsubscribed", "prefer earpiece for the join", "connect preferring earpiece"])
+        #expect(clients.portReads == 1)
 
         await transport.attachAudioSession()
 
-        #expect(fake.calls == ["agent audio unsubscribed", "connect", "prefer speaker", "agent audio subscribed"])
-        #expect(clients.portReads == 1)
+        #expect(fake.calls == [
+            "agent audio unsubscribed", "prefer earpiece for the join", "connect preferring earpiece",
+            "prefer speaker", "agent audio subscribed",
+        ])
+        #expect(clients.portReads == 2)
+    }
+
+    /// The device case: nothing connected, and Daily's join leaves the session on
+    /// the loudspeaker and drops the preference. Nothing is asked of Daily during
+    /// the ring after the join; the answer's attach asks for the earpiece, and the
+    /// loudspeaker is never asked for.
+    @Test func aRingAnsweredWithNothingConnectedEndsOnTheEarpiece() async throws {
+        clients.outputPort = .builtInSpeaker
+        let transport = makeTransport()
+        let fake = try #require(clients.made.first)
+        let control = try #require(clients.controls.first)
+        fake.onJoin = { control.preferredAudioRoute = nil }
+        try await transport.connectWhileRinging(connection)
+        fake.announceMics(["earpiece", "speakerphone"])
+        await drain()
+        #expect(fake.calls == ["agent audio unsubscribed", "prefer earpiece for the join", "connect preferring earpiece"])
+
+        await transport.attachAudioSession()
+
+        #expect(fake.calls == [
+            "agent audio unsubscribed", "prefer earpiece for the join", "connect preferring earpiece",
+            "prefer earpiece", "agent audio subscribed",
+        ])
+        #expect(!fake.calls.contains { $0.contains("speaker") })
+    }
+
+    @Test func aRingJoinedWithABluetoothHeadsetConnectedStaysOnIt() async throws {
+        clients.mics = ["earpiece", "speakerphone", "bluetooth"]
+        clients.availableInputs = [.builtInMic, .bluetoothHFP]
+        let transport = makeTransport()
+        try await transport.connectWhileRinging(connection)
+        let fake = try #require(clients.made.first)
+        #expect(fake.calls == ["agent audio unsubscribed", "prefer bluetooth for the join", "connect preferring bluetooth"])
+        clients.outputPort = .bluetoothHFP
+
+        await transport.attachAudioSession()
+
+        #expect(fake.calls.filter { $0.hasPrefix("prefer") } == ["prefer bluetooth for the join"])
+    }
+
+    /// Car audio is Daily's: a ring with it connected asks Daily for nothing.
+    @Test func aRingJoinedInTheCarIsLeftToDaily() async throws {
+        clients.availableInputs = [.builtInMic, .carAudio]
+        let transport = makeTransport()
+
+        try await transport.connectWhileRinging(connection)
+
+        #expect(clients.made.first?.calls == ["agent audio unsubscribed", "connect"])
     }
 
     // MARK: - Reconnects, takeovers and holds
@@ -174,8 +234,8 @@ struct DailyAudioRouteTests {
 
         try await transport.connect(connection)
 
-        #expect(fake.calls == ["connect", "prefer earpiece", "connect preferring earpiece"])
-        #expect(clients.portReads == 1)
+        #expect(fake.calls == ["prefer earpiece for the join", "connect preferring earpiece", "connect preferring earpiece"])
+        #expect(clients.portReads == 2)
     }
 
     /// A session whose bot never got ready is left and replaced; the new Daily

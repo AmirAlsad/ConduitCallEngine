@@ -5,7 +5,8 @@
 //  The route a Daily call asks Daily to prefer, with the real engine driving the
 //  adapter (`DailyEngineRig`): CallKit's activation before and after the join, the
 //  speaker default and the user's pick, a reconnect, a hold, and a ring's join.
-//  The rig's session reports the earpiece, as a CallKit call with nothing connected.
+//  The rig's session reports the earpiece, as a CallKit call with nothing connected,
+//  until a test has Daily's join move it to the loudspeaker, as Daily's default does.
 //
 
 import Foundation
@@ -57,17 +58,24 @@ struct DailyRouteUnderEngineTests {
         #expect(routeRequests(pipecat) == ["prefer earpiece"])
     }
 
+    /// Credentials before the activation: the join starts on a provisional
+    /// earpiece, and the activation, reading the loudspeaker Daily's join left,
+    /// keeps the earpiece.
     @Test(.timeLimit(.minutes(1)))
-    func aCallJoinedBeforeItsActivationGetsTheRouteAtTheActivation() async throws {
+    func anOutgoingCallJoinedBeforeItsActivationStartsOnTheEarpiece() async throws {
         let rig = earpieceRig()
-        _ = try await rig.placeActivatedCall()
+        rig.dailyDropsPreferenceAtJoin = true
+        await rig.engine.placeCall(rig.target)
         let pipecat = try #require(rig.pipecat)
-        await rig.system.awaitPendingWork()
-        #expect(pipecat.calls == ["connect", "prefer earpiece"])
+        await waitUntil { pipecat.calls.count == 3 }
+        #expect(pipecat.calls == ["prefer earpiece for the join", "connect preferring earpiece", "prefer earpiece"])
+        rig.outputPort = .builtInSpeaker
 
+        await rig.system.activateAudioSession()
+        await rig.system.awaitPendingWork()
         await connect(rig, pipecat)
 
-        #expect(routeRequests(pipecat) == ["prefer earpiece"])
+        #expect(routeRequests(pipecat) == ["prefer earpiece for the join", "prefer earpiece"])
     }
 
     /// With the speaker default on, the engine asks for the speaker once the call
@@ -80,7 +88,7 @@ struct DailyRouteUnderEngineTests {
 
         await connect(rig, pipecat)
 
-        #expect(routeRequests(pipecat) == ["prefer earpiece", "prefer speaker"])
+        #expect(routeRequests(pipecat) == ["prefer earpiece for the join", "prefer speaker"])
     }
 
     @Test(.timeLimit(.minutes(1)))
@@ -100,7 +108,7 @@ struct DailyRouteUnderEngineTests {
         await waitUntil { rig.requests.count == 2 && pipecat.calls.last?.hasPrefix("connect") == true }
 
         #expect(pipecat.calls.last == "connect preferring speakerphone")
-        #expect(routeRequests(pipecat) == ["prefer earpiece", "prefer speaker"])
+        #expect(routeRequests(pipecat) == ["prefer earpiece for the join", "prefer speaker"])
     }
 
     @Test(.timeLimit(.minutes(1)))
@@ -116,31 +124,128 @@ struct DailyRouteUnderEngineTests {
         await rig.system.awaitPendingWork()
 
         #expect(pipecat.calls.contains("agent audio unsubscribed"))
-        #expect(routeRequests(pipecat) == ["prefer earpiece"])
+        #expect(routeRequests(pipecat) == ["prefer earpiece for the join"])
     }
 
-    /// A ring's join leaves audio alone until the answer: the route goes to Daily at
-    /// CallKit's activation, before the agent is subscribed and told the user is on
-    /// the line.
-    @Test(.timeLimit(.minutes(1)))
-    func aRingsJoinGetsTheRouteOnlyAtTheAnswersActivation() async throws {
-        let rig = earpieceRig(minimumOutgoingConnecting: .seconds(3))
+    // MARK: - A ring's join
+
+    /// Rings with `preconnect: media` and lets the bot join during the ring.
+    private func ringJoined(_ rig: DailyEngineRig) async throws -> FakePipecatTransport {
         rig.ringPreparation = .media
         rig.refreshTarget()
         _ = rig.ring()
-        await waitUntil { rig.pipecat?.calls.contains("connect") == true }
+        await waitUntil { rig.pipecat?.calls.contains { $0.hasPrefix("connect") } == true }
         let pipecat = try #require(rig.pipecat)
         pipecat.botJoins()
         await waitUntil { rig.engine.ringPreparationPhase == .ready }
-        #expect(pipecat.calls == ["agent audio unsubscribed", "connect"])
+        return pipecat
+    }
 
+    private func answer(_ rig: DailyEngineRig, _ pipecat: FakePipecatTransport) async {
         await rig.system.answerIncomingCall()
         await rig.system.activateAudioSession()
         await waitUntil { pipecat.calls.contains("send client-message") }
         await rig.system.awaitPendingWork()
+    }
+
+    /// The device case: a ring joined before the answer with nothing connected.
+    /// Daily gets the earpiece before the join, and nothing else during the ring;
+    /// Daily's join drops it and leaves the session on the loudspeaker, so the
+    /// answer's activation asks for the earpiece again. The loudspeaker is never
+    /// asked for.
+    @Test(.timeLimit(.minutes(1)))
+    func aRingAnsweredWithNothingConnectedEndsOnTheEarpiece() async throws {
+        let rig = earpieceRig(minimumOutgoingConnecting: .seconds(3))
+        rig.dailyDropsPreferenceAtJoin = true
+        let pipecat = try await ringJoined(rig)
+        #expect(pipecat.calls == ["agent audio unsubscribed", "prefer earpiece for the join", "connect preferring earpiece"])
+        rig.outputPort = .builtInSpeaker
+
+        await answer(rig, pipecat)
 
         #expect(pipecat.calls == [
-            "agent audio unsubscribed", "connect", "prefer earpiece", "agent audio subscribed", "send client-message",
+            "agent audio unsubscribed", "prefer earpiece for the join", "connect preferring earpiece",
+            "prefer earpiece", "agent audio subscribed", "send client-message",
         ])
+        #expect(!pipecat.calls.contains { $0.contains("speaker") })
+        #expect(rig.controls.last?.preferredAudioRoute == .earpiece)
+    }
+
+    /// Daily keeps what it was given before the join: the answer asks nothing more.
+    @Test(.timeLimit(.minutes(1)))
+    func aRingWhoseJoinKeptTheEarpieceAsksNothingAtTheAnswer() async throws {
+        let rig = earpieceRig(minimumOutgoingConnecting: .seconds(3))
+        let pipecat = try await ringJoined(rig)
+
+        await answer(rig, pipecat)
+
+        #expect(pipecat.calls == [
+            "agent audio unsubscribed", "prefer earpiece for the join", "connect preferring earpiece",
+            "agent audio subscribed", "send client-message",
+        ])
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func aRingJoinedWithABluetoothHeadsetConnectedStaysOnIt() async throws {
+        let rig = earpieceRig(minimumOutgoingConnecting: .seconds(3))
+        rig.mics = ["earpiece", "speakerphone", "bluetooth"]
+        rig.availableInputs = [.builtInMic, .bluetoothHFP]
+        let pipecat = try await ringJoined(rig)
+        #expect(pipecat.calls == ["agent audio unsubscribed", "prefer bluetooth for the join", "connect preferring bluetooth"])
+        rig.outputPort = .bluetoothHFP
+
+        await answer(rig, pipecat)
+
+        #expect(routeRequests(pipecat) == ["prefer bluetooth for the join"])
+    }
+
+    /// The host asked for the loudspeaker: it wins, from the answer's activation.
+    @Test(.timeLimit(.minutes(1)))
+    func aRingWithTheSpeakerDefaultMovesToTheSpeakerOnlyAfterTheAnswer() async throws {
+        let rig = earpieceRig(defaultsToSpeaker: true, minimumOutgoingConnecting: .seconds(3))
+        let pipecat = try await ringJoined(rig)
+        await rig.system.awaitPendingWork()
+        #expect(routeRequests(pipecat) == ["prefer earpiece for the join"])
+
+        await answer(rig, pipecat)
+        await waitUntil { pipecat.calls.contains("prefer speaker") }
+
+        #expect(routeRequests(pipecat) == ["prefer earpiece for the join", "prefer speaker"])
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func theUsersPickAfterARingsAnswerWins() async throws {
+        let rig = earpieceRig(minimumOutgoingConnecting: .seconds(3))
+        let pipecat = try await ringJoined(rig)
+        await answer(rig, pipecat)
+
+        await rig.engine.selectAudioDevice("speakerphone")
+
+        #expect(routeRequests(pipecat) == ["prefer earpiece for the join", "prefer speaker"])
+    }
+
+    /// A drop after the answer: the rejoin names the earpiece the call started on.
+    @Test(.timeLimit(.minutes(1)))
+    func aReconnectAfterARingsAnswerKeepsTheEarpiece() async throws {
+        let rig = earpieceRig(minimumOutgoingConnecting: .seconds(3))
+        rig.dailyDropsPreferenceAtJoin = true
+        let pipecat = try await ringJoined(rig)
+        rig.outputPort = .builtInSpeaker
+        await answer(rig, pipecat)
+        await waitUntil { rig.engine.state.isConnected }
+        rig.sleeper.wakeAll()
+        await drain()
+        let joins = pipecat.calls.filter { $0.hasPrefix("connect") }.count
+
+        pipecat.setState(state: .disconnected) // Daily left the call: a drop
+        await waitUntil { rig.sleeper.pendingCount == 1 }
+        rig.sleeper.wakeAll() // attempt 1's backoff
+        await waitUntil { pipecat.calls.filter { $0.hasPrefix("connect") }.count == joins + 1 }
+        await rig.system.awaitPendingWork()
+
+        let rejoins = pipecat.calls.filter { $0.hasPrefix("connect") }
+        #expect(rejoins.count == joins + 1)
+        #expect(rejoins.last == "connect preferring earpiece")
+        #expect(!pipecat.calls.contains { $0.contains("speaker") })
     }
 }

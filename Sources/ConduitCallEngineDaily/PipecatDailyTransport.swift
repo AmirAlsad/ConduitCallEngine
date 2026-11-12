@@ -26,7 +26,11 @@
 //  activated the session, the transport asks Daily to prefer the route the session
 //  is on; every new Daily client is given it before its join, and every join's
 //  microphone input names it, so Daily's own reconfigurations keep the call there.
-//  The engine's `setAudioDevice` wins over it. See `DailyAudioRouteGate`.
+//  A join before the first attach (a ring's, or credentials that came before the
+//  activation) gives Daily a provisional route first, a headset if one is connected
+//  or else the earpiece, as its preferred device only: Daily keeps it untouched until
+//  its join configures the session, which it does at the join regardless. The
+//  engine's `setAudioDevice` wins over it. See `DailyAudioRouteGate`.
 //
 //  Interruptions: Daily heals short network outages inside its SDK without changing
 //  the Pipecat transport state, so nothing in the client's callbacks reports them.
@@ -83,6 +87,7 @@ public final class PipecatDailyTransport: CallTransport {
     private let makePathMonitor: @MainActor () -> NetworkPathMonitoring
     private let makeCallControl: @MainActor (any Transport) -> DailyCallControlling?
     private let readOutputPort: @MainActor () -> AVAudioSession.Port?
+    private let readAvailableInputs: @MainActor () -> [AVAudioSession.Port]
     private var remoteAudio = DailyRemoteAudioGate()
     private var routes = DailyAudioRouteGate()
 
@@ -118,6 +123,9 @@ public final class PipecatDailyTransport: CallTransport {
         makeCallControl: @escaping @MainActor (any Transport) -> DailyCallControlling? = DailyCallClientControl.make(for:),
         readOutputPort: @escaping @MainActor () -> AVAudioSession.Port? = {
             AVAudioSession.sharedInstance().currentRoute.outputs.first?.portType
+        },
+        readAvailableInputs: @escaping @MainActor () -> [AVAudioSession.Port] = {
+            AVAudioSession.sharedInstance().availableInputs?.map(\.portType) ?? []
         }
     ) {
         let (stream, continuation) = AsyncStream.makeStream(of: TransportEvent.self)
@@ -127,6 +135,7 @@ public final class PipecatDailyTransport: CallTransport {
         self.makePathMonitor = makePathMonitor
         self.makeCallControl = makeCallControl
         self.readOutputPort = readOutputPort
+        self.readAvailableInputs = readAvailableInputs
         self.session = makeSession()
     }
 
@@ -203,6 +212,7 @@ public final class PipecatDailyTransport: CallTransport {
         // Before the join, so a held call that reconnects joins with the agent silent.
         await applyRemoteAudio().value
         // Before the join too, so Daily starts managing the session on the call's route.
+        routeJoinWillStart(session)
         await applyRoute().value
         let joinRoute = routes.wanted
         Log.info(.audio, "Daily join: preferred audio device \(Self.describe(joinRoute))")
@@ -341,6 +351,20 @@ public final class PipecatDailyTransport: CallTransport {
         session?.client.selectedMic.map { AudioDeviceInfo(id: $0.id.id, name: $0.name) }
     }
 
+    /// Reads, before the first attach, the provisional route a join is to start on.
+    private func routeJoinWillStart(_ session: Session) {
+        guard !routes.hasAttached, !routes.joinedBeforeFirstAttach else {
+            routes.joinWillStart(provisionalRoute: nil, devices: [])
+            return
+        }
+        let port = readOutputPort()
+        let inputs = readAvailableInputs()
+        let provisional = DailyAudioRoute.beforeActivation(outputPort: port, availableInputs: inputs)
+        let devices = Set(session.client.getAllMics().compactMap { DailyAudioRoute(deviceID: $0.id.id) })
+        routes.joinWillStart(provisionalRoute: provisional, devices: devices)
+        Log.info(.audio, "Daily route before activation: \(port?.rawValue ?? "no output"), inputs \(inputs.map(\.rawValue)) -> provisional \(Self.describe(provisional)); preferred audio device \(Self.describe(routes.wanted)) (\(routes.wantedReason))")
+    }
+
     /// Asks Daily to prefer the device, at once and for every later session of this
     /// transport, over the route the call started on.
     public func setAudioDevice(_ id: String) async {
@@ -442,9 +466,14 @@ public final class PipecatDailyTransport: CallTransport {
                 Log.info(.audio, "Daily preferred audio device not set to \(application.route): no Daily call client")
                 return
             }
-            Log.info(.audio, "Daily preferred audio device -> \(application.route) (\(routes.wantedReason))")
+            let form = application.isForTheJoin ? " before the join; the join's mic input names it" : ""
+            Log.info(.audio, "Daily preferred audio device -> \(application.route) (\(routes.wantedReason))\(form)")
             do {
-                try await callControl.setPreferredAudioRoute(application.route)
+                if application.isForTheJoin {
+                    try await callControl.setPreferredAudioRouteForTheJoin(application.route)
+                } else {
+                    try await callControl.setPreferredAudioRoute(application.route)
+                }
                 routes.applyDidSucceed(application)
                 Log.info(.audio, "Daily preferred audio device is \(application.route): \(callControl.audioRouteDescription)")
             } catch {

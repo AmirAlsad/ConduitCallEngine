@@ -29,6 +29,11 @@ protocol DailyCallControlling: AnyObject {
     /// Asks Daily to prefer `route` for the call's audio, from now on and across its
     /// input changes, returning once Daily has it.
     func setPreferredAudioRoute(_ route: DailyAudioRoute) async throws
+    /// Asks Daily to prefer `route` without changing its inputs, for a join that
+    /// starts before CallKit's activation and names `route` in its microphone input.
+    /// Daily keeps it, leaving the audio session alone, until its join starts
+    /// managing the session.
+    func setPreferredAudioRouteForTheJoin(_ route: DailyAudioRoute) async throws
     /// The route Daily reports as its preferred device; nil is Daily's own default.
     var preferredAudioRoute: DailyAudioRoute? { get }
     /// Daily's preferred and current audio device and its microphone input, for logs.
@@ -83,6 +88,13 @@ final class DailyCallClientControl: DailyCallControlling {
         guard let callClient = transport?.dailyCallClient else { throw NoCallClient() }
         try await callClient.setPreferredAudioDevice(route.dailyDevice)
         _ = try await callClient.updateInputs(.set(microphone: .set(settings: route.microphoneSettings)))
+    }
+
+    /// Daily's audio manager stores a preferred device and applies it only while it
+    /// manages the session, which starts at the join.
+    func setPreferredAudioRouteForTheJoin(_ route: DailyAudioRoute) async throws {
+        guard let callClient = transport?.dailyCallClient else { throw NoCallClient() }
+        try await callClient.setPreferredAudioDevice(route.dailyDevice)
     }
 
     var preferredAudioRoute: DailyAudioRoute? {

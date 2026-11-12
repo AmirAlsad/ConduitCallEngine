@@ -4,7 +4,8 @@
 //
 //  Stands in for the Daily call client behind a session's Pipecat transport. Each
 //  subscription change and preferred-device request is recorded in the fake Pipecat
-//  transport's call log ("agent audio <state>", "prefer <route>"), so tests see it
+//  transport's call log ("agent audio <state>", "prefer <route>", and "prefer <route>
+//  for the join" for a preferred device given without the inputs), so tests see it
 //  in order with the join and the leave.
 //
 
@@ -59,6 +60,13 @@ final class FakeDailyCallControl: DailyCallControlling {
         for _ in 0..<routeSuspensions { await Task.yield() }
         if refusesRoutes { throw Refused() }
         transport.record("prefer \(route)")
+        preferredAudioRoute = route
+    }
+
+    func setPreferredAudioRouteForTheJoin(_ route: DailyAudioRoute) async throws {
+        for _ in 0..<routeSuspensions { await Task.yield() }
+        if refusesRoutes { throw Refused() }
+        transport.record("prefer \(route) for the join")
         preferredAudioRoute = route
     }
 

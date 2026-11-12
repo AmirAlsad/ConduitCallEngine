@@ -73,6 +73,10 @@ final class DailyEngineRig {
     var ringPreparation: RingPreparation = .none
     /// The output port the session reports, as iOS's route; nil reports none.
     var outputPort: AVAudioSession.Port?
+    /// The session's available inputs, as iOS reports them.
+    var availableInputs: [AVAudioSession.Port] = []
+    /// When set, each Daily session drops its preferred device at the join.
+    var dailyDropsPreferenceAtJoin = false
     /// The audio devices each new Daily session lists.
     var mics: [String] = []
     /// While true, the target's credential fetch waits for `releaseCredentials()`.
@@ -132,11 +136,14 @@ final class DailyEngineRig {
                 return monitor
             },
             makeCallControl: { [unowned self] transport in
-                let control = FakeDailyCallControl(transport: transport as! FakePipecatTransport)
+                let fake = transport as! FakePipecatTransport
+                let control = FakeDailyCallControl(transport: fake)
+                if dailyDropsPreferenceAtJoin { fake.onJoin = { control.preferredAudioRoute = nil } }
                 controls.append(control)
                 return control
             },
-            readOutputPort: { [unowned self] in outputPort }
+            readOutputPort: { [unowned self] in outputPort },
+            readAvailableInputs: { [unowned self] in availableInputs }
         )
         transports.append(transport)
         return transport
