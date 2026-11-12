@@ -20,17 +20,23 @@ public final class FakeTransport: CallTransport {
     public nonisolated let events: AsyncStream<TransportEvent>
     private nonisolated let continuation: AsyncStream<TransportEvent>.Continuation
 
+    /// How many times the engine called `connect(_:)`.
     public private(set) var connectCount = 0
+    /// How many times the engine called `disconnect()`.
     public private(set) var disconnectCount = 0
+    /// What the last `connect(_:)` was given.
     public private(set) var lastConnection: CallConnection?
+    /// What the last `setMicEnabled(_:)` set.
     public private(set) var isMicEnabled = false
+    /// How many times the engine called `setMicEnabled(_:)`.
     public private(set) var setMicEnabledCallCount = 0
+    /// Whether the last of `attachAudioSession()` and `detachAudioSession()` was an attach.
     public private(set) var isAudioAttached = false
     /// How many `connect(_:)` calls found their task cancelled when they finished.
     /// An SDK whose join is cancellation-aware (LiveKit's `Room.connect`, for one)
     /// abandons the join then, so a test can check the engine never cancels one it
     /// still needs.
-    public private(set) var cancelledConnectCount = 0
+    public private(set) var canceledConnectCount = 0
 
     /// When set, the next `connect(_:)` throws this instead of succeeding.
     public var connectError: TransportError?
@@ -72,7 +78,7 @@ public final class FakeTransport: CallTransport {
                 if connectReleased { cont.resume() } else { connectContinuation = cont }
             }
         }
-        if Task.isCancelled { cancelledConnectCount += 1 }
+        if Task.isCancelled { canceledConnectCount += 1 }
         if let connectError { throw connectError }
         if let delay = reportsConnectedAfter {
             Task { [continuation] in
@@ -102,10 +108,12 @@ public final class FakeTransport: CallTransport {
         setMicEnabledCallCount += 1
     }
 
+    /// The routes `availableAudioDevices()` returns: a speaker and an earpiece by default.
     public var fakeAudioDevices: [AudioDeviceInfo] = [
         AudioDeviceInfo(id: "speaker", name: "Speaker"),
         AudioDeviceInfo(id: "receiver", name: "iPhone"),
     ]
+    /// The route `setAudioDevice(_:)` last selected; `"speaker"` at first.
     public private(set) var selectedAudioDeviceID = "speaker"
 
     /// How many times the engine read the routes (`availableAudioDevices()` or
@@ -130,9 +138,11 @@ public final class FakeTransport: CallTransport {
     /// When true, `attachAudioSession()` suspends until `releaseAttach()` — stands in
     /// for a transport whose attach does real async work.
     public var suspendAttach = false
+    /// How many attaches `suspendAttach` is holding.
     public private(set) var pendingAttachCount = 0
     private var attachContinuations: [CheckedContinuation<Void, Never>] = []
 
+    /// Let every held attach finish.
     public func releaseAttach() {
         let waiting = attachContinuations
         attachContinuations = []

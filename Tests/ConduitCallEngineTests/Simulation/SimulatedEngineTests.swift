@@ -250,12 +250,12 @@ struct SimulatedEngineTests {
             id: targetID,
             displayName: "Echo",
             handle: "echo@example.invalid",
+            ringPreparation: tier,
             makeTransport: { transport },
             connect: { _ in
                 for _ in 0..<300 { await Task.yield() }
                 return connection
-            },
-            ringPreparation: tier
+            }
         )
     }
 
@@ -303,9 +303,9 @@ struct SimulatedEngineTests {
             id: targetID,
             displayName: "Echo",
             handle: "echo@example.invalid",
+            ringPreparation: .media,
             makeTransport: { ringTransport },
-            connect: { _ in connection },
-            ringPreparation: .media
+            connect: { _ in connection }
         )
         let callID = UUID()
         system.deliverPush([
@@ -463,7 +463,7 @@ struct SimulatedEngineTests {
     @Test func holdingCanBeTurnedOff() async throws {
         let system = SimulatedCallSystem()
         let engine = CallEngine.simulated(
-            configuration: CallEngineConfiguration(ringTimeout: nil, supportsHolding: false, joinTimeout: nil),
+            configuration: CallEngineConfiguration(ringTimeout: nil, joinTimeout: nil, supportsHolding: false),
             system: system,
             sleep: { _ in }
         )

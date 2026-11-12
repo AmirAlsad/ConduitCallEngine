@@ -20,13 +20,29 @@
 
 import Foundation
 
+/// The engine's seam over a real-time media SDK: the bundled `PipecatDailyTransport`
+/// and `LiveKitTransport`, `FakeTransport`, or a host's own. The engine calls every
+/// requirement from the main actor; the requirements themselves are not isolated,
+/// so a main-actor class or an actor can conform. The Integration Guide, section
+/// 10, has the full contract.
 public protocol CallTransport: AnyObject {
-    /// The single channel by which transport state leaves the adapter. Synchronous
+    /// The single channel by which transport state leaves the adapter; the engine
+    /// reads it from the transport's creation until the call's teardown. Synchronous
     /// and nonisolated: a main-actor conformer declares it `nonisolated`.
     var events: AsyncStream<TransportEvent> { get }
 
+    /// Join `connection`. Called for a call's first connect (during the ring, for a
+    /// ring prepared at the `.media` tier) and once per engine reconnect attempt, on
+    /// the same instance, possibly while the SDK is still healing the previous
+    /// session. Throw `TransportError.authenticationFailed` only for credentials the
+    /// server rejected; report `.connected` through `events` once the agent can hear
+    /// the user, not when this returns.
     func connect(_ connection: CallConnection) async throws
+    /// Leave because the call is over, sending an end-call signal to the agent if the
+    /// protocol has one, and report `.disconnected(reason: .requestedByUser)`.
     func disconnect() async
+    /// Turn capture on or off. Can come before `connect(_:)` has joined, where it must
+    /// be harmless: the engine sets it again once the transport reports `.connected`.
     func setMicEnabled(_ enabled: Bool) async
 
     /// The audio routes the user can pick from (speaker, earpiece, Bluetooth, …).

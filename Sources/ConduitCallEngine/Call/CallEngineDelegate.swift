@@ -11,6 +11,9 @@
 
 import Foundation
 
+/// The host's side of a `CallEngine` (`CallEngine.delegate`, held weakly). Every
+/// method is called synchronously on the main actor, in the order the engine changes
+/// things, and has a default implementation, so a host implements only what it needs.
 @MainActor
 public protocol CallEngineDelegate: AnyObject {
     /// Once per ring push (not for a duplicate of the call in progress, a cancel
@@ -27,7 +30,9 @@ public protocol CallEngineDelegate: AnyObject {
     /// `ringPreparation` and the call's `requestedPreparation` decide how much of it
     /// is prepared before the answer (`RingPreparation`).
     func callEngine(_ engine: CallEngine, targetForIncomingCall call: IncomingCall) -> CallTarget?
-    /// Only on real assignments, after the engine's own field batch for that transition.
+    /// The state changed from `old` to `new`. Only on real changes, and after the
+    /// engine has set the transition's other fields (`activeCall` and the rest), so
+    /// they are consistent when read here.
     func callEngine(_ engine: CallEngine, didChangeStateFrom old: CallState, to new: CallState)
     /// A moment to mark with the host's own sound or speech; see `CallCue` for the
     /// guarantees. Called right after the `didChangeStateFrom:to:` of the change
@@ -52,7 +57,9 @@ public protocol CallEngineDelegate: AnyObject {
     /// unable to proceed). Not for a malformed push, a cancel push, or a ring whose
     /// cancel already arrived.
     func callEngine(_ engine: CallEngine, didFinish record: CallRecord)
-    /// Asked at send time, only when the push carried a `status_url`.
+    /// The bearer for the `Authorization` header of a ring-status receipt about to be
+    /// sent for target `id`, or nil for none. Asked at send time, only for a push
+    /// that carried a `status_url` and whose target the delegate resolved.
     func callEngine(_ engine: CallEngine, ringStatusBearerForTarget id: UUID) -> String?
     /// PushKit issued or rotated the VoIP token. Send it to the server that rings
     /// this device; `CallEngine.voipPushToken` is the same value.
@@ -63,6 +70,8 @@ public protocol CallEngineDelegate: AnyObject {
     func callEngineDidInvalidateVoIPPushToken(_ engine: CallEngine)
 }
 
+/// The defaults: no target for an incoming call (so every ring is ended as an
+/// unknown target), no bearer, and nothing for every other callback.
 extension CallEngineDelegate {
     public func callEngine(_ engine: CallEngine, targetForIncomingCall call: IncomingCall) -> CallTarget? { nil }
     public func callEngine(_ engine: CallEngine, didChangeStateFrom old: CallState, to new: CallState) {}

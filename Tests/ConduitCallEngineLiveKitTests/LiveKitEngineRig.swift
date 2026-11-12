@@ -79,6 +79,7 @@ final class LiveKitEngineRig {
             id: targetID,
             displayName: "Agent",
             handle: nil,
+            ringPreparation: ringPreparation,
             makeTransport: { [unowned self] in
                 LiveKitTransport(
                     makeRoom: { [unowned self] mapper in
@@ -94,8 +95,7 @@ final class LiveKitEngineRig {
             connect: { [unowned self] request in
                 requests.append(request)
                 return CallConnection(url: URL(string: "wss://example.livekit.cloud/room-\(requests.count)")!, token: "t")
-            },
-            ringPreparation: ringPreparation
+            }
         )
     }
 

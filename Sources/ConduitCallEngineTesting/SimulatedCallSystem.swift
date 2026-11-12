@@ -13,6 +13,10 @@
 import Foundation
 import ConduitCallEngine
 
+/// The system side of a simulated `CallEngine` (`CallEngine.simulated(system:)`):
+/// CallKit, PushKit, audio interruptions and ring-status receipts. A test or a
+/// simulator build drives it and reads what the engine reported. Main-actor
+/// isolated, like the engine it drives.
 @MainActor
 public final class SimulatedCallSystem {
     package let provider = FakeCallProvider()
@@ -22,6 +26,7 @@ public final class SimulatedCallSystem {
     /// The engine this system drives; set by `CallEngine.simulated(...)`.
     package weak var engine: CallEngine?
 
+    /// A system with no engine yet; `CallEngine.simulated(system:)` attaches one.
     public init() {}
 
     // MARK: - Incoming reports
@@ -40,6 +45,7 @@ public final class SimulatedCallSystem {
         case fails(String)
     }
 
+    /// How CallKit answers the next incoming reports. Default `.rings`.
     public var incomingReportResult: IncomingReportResult {
         get {
             switch provider.reportIncomingError {
@@ -83,8 +89,10 @@ public final class SimulatedCallSystem {
         set { provider.suspendStart = newValue }
     }
 
+    /// How many outgoing starts `suspendsOutgoingStarts` is holding.
     public var pendingOutgoingStartCount: Int { provider.pendingStartCount }
 
+    /// Let every held outgoing start finish.
     public func releaseOutgoingStarts() {
         provider.releaseStart()
     }
@@ -356,14 +364,17 @@ public final class SimulatedCallSystem {
     /// The CallKit ids of the outgoing calls the engine started, in order.
     public var startedCallIDs: [UUID] { provider.startedCalls }
 
+    /// The incoming calls the engine reported to CallKit, in order, as each push asked.
     public var reportedIncomingCalls: [ReportedCall] {
         provider.reportedIncoming.map { ReportedCall(id: $0.id, handle: $0.handle.value, displayName: $0.displayName) }
     }
 
+    /// The rings the engine corrected to its resolved target's name or handle, in order.
     public var updatedCalls: [ReportedCall] {
         provider.updatedCalls.map { ReportedCall(id: $0.id, handle: $0.handle.value, displayName: $0.displayName) }
     }
 
+    /// The ring-status receipts the engine sent, in order.
     public var ringReceipts: [RingReceipt] {
         ringStatusReporter.reports.map {
             RingReceipt(status: $0.status.rawValue, callID: $0.callID, endpoint: $0.endpoint, bearer: $0.apiKey)

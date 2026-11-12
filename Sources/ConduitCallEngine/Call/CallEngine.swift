@@ -31,15 +31,31 @@
 
 import Foundation
 
+/// Places, receives and runs calls: one at a time, through CallKit, PushKit and the
+/// call's `CallTransport`. Create one for the whole process (`init(configuration:)`
+/// on a device, `CallEngine.simulated(...)` from `ConduitCallEngineTesting`
+/// otherwise), set its `delegate`, and call `startPushRegistration()` at launch if
+/// you take incoming calls.
+///
+/// Main-actor isolated and `@Observable`: every property is observable state a
+/// SwiftUI view can read directly, and every change to it, and every delegate
+/// callback, happens on the main actor.
 @MainActor
 @Observable
 public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDelegate {
 
     // MARK: - Observed state (a host's in-call UI can be a pure projection of these)
 
+    /// Where the call is; see `CallState`. Terminal states stay until `reset()`, or
+    /// until the next call or ring.
     public private(set) var state: CallState = .idle
+    /// The call in progress or just finished: its target, name and direction. nil
+    /// when idle. Kept through a terminal state until `reset()`.
     public private(set) var activeCall: ActiveCall?
+    /// Whether the user muted the call, in the app or from the system UI. Cleared
+    /// when the engine returns to idle.
     public private(set) var isMuted = false
+    /// Whether the agent is speaking, as the transport reports it.
     public private(set) var isBotSpeaking = false
     package private(set) var remoteAudioLevel: Float = 0
     /// Whether CallKit has activated the audio session for the call in progress.
@@ -52,8 +68,10 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     /// or presses push-to-talk. If CallKit activated the session during the
     /// interruption, its end clears this either way.
     public var isInterrupted: Bool { interruption != .none }
-    /// Available audio routes and the active one, for the in-call route picker.
+    /// The audio routes the user can pick, for an in-call route picker. Empty until
+    /// CallKit has activated the call's session.
     public private(set) var audioDevices: [AudioDeviceInfo] = []
+    /// The `AudioDeviceInfo.id` of the route in use, when the transport reports one.
     public private(set) var selectedAudioDeviceID: String?
     /// True once the host ends the call through `markEndedByUser()` or `endCall()`;
     /// false for a remote hangup, a failure, or an end from the system UI. Lets a
@@ -79,6 +97,8 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
 
     // MARK: - Dependencies
 
+    /// Receives the engine's callbacks. Weak: keep the delegate alive yourself, and set
+    /// it before `startPushRegistration()`.
     @ObservationIgnored public weak var delegate: CallEngineDelegate?
 
     private let configuration: CallEngineConfiguration
@@ -292,6 +312,11 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
 
     // MARK: - Placing a call
 
+    /// Place an outgoing call to `target`: `.dialing` while CallKit starts it, then
+    /// `.connecting` while the target's `connect` and the transport's `connect(_:)`
+    /// run. Returns once that first connect attempt has run, not when the call
+    /// connects. Ignored unless the engine is idle or terminal (a terminal state is
+    /// reset first).
     public func placeCall(_ target: CallTarget) async {
         // A finished call the host has not reset yet gives way to the new one.
         if state.isTerminal { resetState() }
@@ -1872,6 +1897,10 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         endedByUser = true
     }
 
+    /// End the call in progress, as the user: sets `endedByUser`, moves to `.ended(_)`
+    /// at once, records the call, tears the transport down and asks CallKit to end
+    /// it. Ignored while ringing (the user declines from the system UI) and when no
+    /// call is in progress.
     public func endCall() async {
         guard state.isActive, !state.isTerminal else { return }
         // Mark this as a local user-end, so a host can skip its ended view, while

@@ -198,7 +198,7 @@ struct TransportSelfHealTests {
         h.transport.releaseConnect()
         await attempt.value
 
-        #expect(h.transport.cancelledConnectCount == 0)
+        #expect(h.transport.canceledConnectCount == 0)
         #expect(h.engine.state.isConnected)
         #expect(h.engine.reconnectTask == nil)
     }
@@ -242,7 +242,7 @@ struct TransportSelfHealTests {
         await attempt.value
         h.engine.handle(.connected) // the join the hold did not cancel succeeded
 
-        #expect(h.transport.cancelledConnectCount == 0)
+        #expect(h.transport.canceledConnectCount == 0)
         #expect(h.engine.state.isConnected)
         #expect(h.engine.isOnHold)
     }

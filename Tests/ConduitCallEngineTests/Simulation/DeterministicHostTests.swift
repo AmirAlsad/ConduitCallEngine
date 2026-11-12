@@ -58,14 +58,14 @@ struct DeterministicHostTests {
             id: targetID,
             displayName: "Agent",
             handle: nil,
+            ringPreparation: preparation,
             makeTransport: {
                 let transport = FakeTransport()
                 transport.canConnectWhileRinging = made.canConnectWhileRinging
                 made.transports.append(transport)
                 return transport
             },
-            connect: { _ in connection },
-            ringPreparation: preparation
+            connect: { _ in connection }
         )
     }
 

@@ -13,6 +13,7 @@
 import AVFoundation
 
 extension AudioRouteKind {
+    /// Classifies an `AVAudioSession` output port. Car audio counts as `.bluetooth`.
     public init(portType: AVAudioSession.Port) {
         switch portType {
         case .builtInSpeaker:
@@ -28,7 +29,8 @@ extension AudioRouteKind {
         }
     }
 
-    /// The kind of the current active output route.
+    /// The kind of the current active output route, read from the shared
+    /// `AVAudioSession`; `.other` when there is none.
     public static var active: AudioRouteKind {
         guard let port = AVAudioSession.sharedInstance().currentRoute.outputs.first else {
             return .other

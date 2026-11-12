@@ -89,12 +89,12 @@ final class DailyEngineRig {
             id: targetID,
             displayName: "Agent",
             handle: nil,
+            ringPreparation: ringPreparation,
             makeTransport: { [unowned self] in makeTransport() },
             connect: { [unowned self] request in
                 requests.append(request)
                 return Self.room(requests.count)
-            },
-            ringPreparation: ringPreparation
+            }
         )
     }
 

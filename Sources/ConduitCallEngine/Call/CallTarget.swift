@@ -20,7 +20,10 @@ import Foundation
 // property is a constant, and both closures are main-actor isolated, a function type
 // Swift 6 treats as Sendable (SE-0434).
 public struct CallTarget: @unchecked Sendable {
+    /// Identifies the target: an incoming push names it as `target_id`, and its
+    /// `CallRecord`s carry it. Stable for as long as your server may ring it.
     public let id: UUID
+    /// The name CallKit shows for the call, and `ActiveCall.displayName`.
     public let displayName: String
     /// The CallKit handle; nil falls back to `defaultHandle(for:)`. The engine
     /// reports it to CallKit as an email-address handle (`CXHandle.HandleType
@@ -48,10 +51,10 @@ public struct CallTarget: @unchecked Sendable {
     public init(
         id: UUID,
         displayName: String,
-        handle: String?,
+        handle: String? = nil,
+        ringPreparation: RingPreparation = .none,
         makeTransport: @escaping @MainActor () -> any CallTransport,
-        connect: @escaping @MainActor (ConnectRequest) async throws -> CallConnection,
-        ringPreparation: RingPreparation = .none
+        connect: @escaping @MainActor (ConnectRequest) async throws -> CallConnection
     ) {
         self.id = id
         self.displayName = displayName
@@ -67,9 +70,12 @@ public struct CallTarget: @unchecked Sendable {
     }
 }
 
-/// The live call, as a host's UI shows it.
+/// The call in progress, as a host's UI shows it (`CallEngine.activeCall`).
 public struct ActiveCall: Equatable, Sendable {
+    /// The target's id: `CallTarget.id`, or for a ring the push's `target_id`.
     public let targetID: UUID
+    /// The resolved target's name, or the name the ring was reported under when its
+    /// target is unknown.
     public let displayName: String
     public let direction: CallDirection
 
@@ -85,8 +91,13 @@ public struct IncomingCall: Equatable, Sendable {
     /// The ring's `call_id`. Where the engine writes a call id as text (the
     /// ring-status receipts), it uses the lowercase form, `uuidString.lowercased()`.
     public let callID: UUID
+    /// The push's `target_id` (or `agent_id`): the `CallTarget.id` to resolve.
     public let targetID: UUID
+    /// The name the ring was reported under: the push's `display_name`, or
+    /// `CallEngineConfiguration.unknownCallerName`.
     public let displayName: String
+    /// The handle the ring was reported under: the push's `handle`, or
+    /// `CallTarget.defaultHandle(for:)` of `targetID`.
     public let handle: String
     /// Inline room credentials from the push, when it carried both.
     public let connection: CallConnection?
@@ -100,7 +111,7 @@ public struct IncomingCall: Equatable, Sendable {
         targetID: UUID,
         displayName: String,
         handle: String,
-        connection: CallConnection?,
+        connection: CallConnection? = nil,
         requestedPreparation: RingPreparation = .none
     ) {
         self.callID = callID

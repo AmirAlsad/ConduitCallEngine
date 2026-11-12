@@ -32,6 +32,14 @@ import Foundation
 import ConduitCallEngine
 import LiveKit
 
+/// The LiveKit transport: a LiveKit room behind `CallTransport`, with LiveKit's
+/// audio engine kept off until CallKit activates the session. `CallConnection.url`
+/// is the LiveKit server URL (`wss://...`) and `token` an access token with a join
+/// grant; the call is `.connected` once the room is connected and a remote
+/// participant is present. Supports joining while ringing. Main-actor isolated;
+/// create one per call, on a device only (LiveKit's WebRTC audio aborts in the
+/// simulator). Turns off LiveKit's automatic `AVAudioSession` configuration for the
+/// whole process. The Integration Guide, section 11, has what the server side must do.
 @MainActor
 public final class LiveKitTransport: CallTransport {
     public nonisolated let events: AsyncStream<TransportEvent>
@@ -62,6 +70,7 @@ public final class LiveKitTransport: CallTransport {
     /// join to end, only the newer one joins.
     private var connectCount = 0
 
+    /// A transport over a new `Room`.
     public convenience init() {
         // Manual audio: CallKit owns the AVAudioSession; the engine starts only
         // inside the CallKit activation window (see attachAudioSession).

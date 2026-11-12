@@ -22,10 +22,10 @@ import Testing
 
 let hostConfiguration = CallEngineConfiguration(
     unknownCallerName: "Agent",
-    isPushToTalkEnabled: { false },
     ringTimeout: nil,
+    joinTimeout: nil,
     supportsHolding: true,
-    joinTimeout: nil
+    isPushToTalkEnabled: { false }
 )
 
 let roomConnection = CallConnection(url: URL(string: "https://example.invalid/room")!, token: "room-token")
@@ -49,8 +49,8 @@ enum HostTargets {
             CallTarget(id: UUID(), displayName: "Daily", handle: "daily@example.invalid",
                        makeTransport: { PipecatDailyTransport() }, connect: { _ in roomConnection }),
             CallTarget(id: UUID(), displayName: "LiveKit", handle: nil,
-                       makeTransport: { LiveKitTransport() }, connect: { _ in roomConnection },
-                       ringPreparation: .media),
+                       ringPreparation: .media,
+                       makeTransport: { LiveKitTransport() }, connect: { _ in roomConnection }),
         ]
     }
 }
@@ -366,7 +366,8 @@ struct Swift6HostTests {
         transport.canConnectWhileRinging = true
         host.targets[HostTargets.agentID] = CallTarget(
             id: HostTargets.agentID, displayName: "Agent", handle: nil,
-            makeTransport: { transport }, connect: { _ in roomConnection }, ringPreparation: .media
+            ringPreparation: .media,
+            makeTransport: { transport }, connect: { _ in roomConnection }
         )
         let callID = UUID()
         var completed = false

@@ -9,8 +9,12 @@
 
 import Foundation
 
+/// The room a transport joins: what `CallTarget.connect` returns and
+/// `CallTransport.connect(_:)` receives. Its meaning is the transport's: for Daily a
+/// room URL and meeting token, for LiveKit a server URL and access token.
 public struct CallConnection: Equatable, Sendable {
     public let url: URL
+    /// The credential for `url`; nil for a room that needs none.
     public let token: String?
 
     public init(url: URL, token: String?) {

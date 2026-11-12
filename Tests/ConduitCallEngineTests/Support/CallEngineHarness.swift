@@ -98,9 +98,9 @@ final class FakeTarget {
             id: id,
             displayName: displayName,
             handle: handle,
+            ringPreparation: ringPreparation,
             makeTransport: { [self] in transports.make() },
-            connect: { [self] request in try await connect(request) },
-            ringPreparation: ringPreparation
+            connect: { [self] request in try await connect(request) }
         )
     }
 
@@ -317,10 +317,10 @@ final class CallEngineHarness {
         engine = CallEngine(
             configuration: CallEngineConfiguration(
                 unknownCallerName: "Agent",
-                isPushToTalkEnabled: { pushToTalk },
                 ringTimeout: ringTimeout,
+                joinTimeout: joinTimeout,
                 supportsHolding: supportsHolding,
-                joinTimeout: joinTimeout
+                isPushToTalkEnabled: { pushToTalk }
             ),
             callProvider: provider,
             interruptionObserver: interruption,

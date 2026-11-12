@@ -9,13 +9,20 @@
 
 import Foundation
 
+/// A finished call, or a ring that ended without one, handed to
+/// `CallEngineDelegate.callEngine(_:didFinish:)` once per call.
 public struct CallRecord: Equatable, Sendable {
+    /// The target's id; for a ring whose target the host did not resolve, the
+    /// push's `target_id`, which may match nothing of the host's.
     public let targetID: UUID
     public let direction: CallDirection
+    /// When the call was placed or the ring arrived.
     public let startedAt: Date
     /// Connected duration in seconds; 0 for a call that never connected.
     public let duration: TimeInterval
+    /// How it finished; for a call that reached `.ended(_)`, the same outcome.
     public let outcome: CallOutcome
+    /// Why it failed; non-nil exactly when `outcome` is `.failed`.
     public let failureReason: CallFailureReason?
     /// Non-nil for an incoming ring nobody answered or declined: one that never
     /// reached the user (busy, Focus) or one that rang out or that the caller

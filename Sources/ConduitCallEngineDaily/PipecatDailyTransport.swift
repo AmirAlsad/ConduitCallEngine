@@ -46,6 +46,12 @@ import ConduitCallEngine
 import PipecatClientIOS
 import PipecatClientIOSDaily
 
+/// The Daily transport: the Pipecat iOS client in a Daily room, behind
+/// `CallTransport`. `CallConnection.url` is the Daily room URL and `token` its meeting
+/// token; the call is `.connected` once the Pipecat client is ready or the bot
+/// reports ready. Main-actor isolated; create one per call, on a device only (Daily's
+/// WebRTC audio aborts in the simulator). The Integration Guide, section 11, has
+/// what the server side must do.
 @MainActor
 public final class PipecatDailyTransport: CallTransport {
     public nonisolated let events: AsyncStream<TransportEvent>
@@ -69,6 +75,8 @@ public final class PipecatDailyTransport: CallTransport {
 
     private var session: Session?
 
+    /// A transport that joins with the mic off and builds its Pipecat client when
+    /// first connected.
     public convenience init() {
         self.init(makePipecatTransport: { PipecatClientIOSDaily.DailyTransport() })
     }
@@ -82,8 +90,9 @@ public final class PipecatDailyTransport: CallTransport {
         )
     }
 
-    /// Whether `connect` may run while the call is still ringing. False unless an
-    /// experimental ring-join strategy was chosen (see `DailyRingJoinStrategy`).
+    /// False: the Daily adapter joins only once the user has answered, because
+    /// whether a Daily join during a ring disturbs the ringtone or the audio session
+    /// is not yet verified on a device.
     public nonisolated var canConnectWhileRinging: Bool {
         ringJoinStrategy != .unsupported
     }
