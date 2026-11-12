@@ -19,6 +19,10 @@ import Foundation
 /// call, and sends the call's state again when a send did not leave the device;
 /// see `CallSignalDelivery`), so an agent must treat each one as a statement of the
 /// current state, not as a toggle. Agents must ignore names they do not know.
+///
+/// Open: later versions may add cases. End a `switch` over it with `@unknown default`,
+/// which keeps it compiling, with a warning that names the new case, when one is added. A transport sends
+/// `rawValue` and need not switch at all.
 public enum CallSignal: String, CaseIterable, Sendable {
     /// The user answered an incoming call whose push carried `preconnect`, CallKit
     /// has activated its audio, and the transport is connected: the agent may
@@ -42,6 +46,9 @@ public enum CallSignal: String, CaseIterable, Sendable {
 /// that `failed` is sent again, as the call's current state, until one is `sent` or
 /// the connection changes. Neither result says the agent acted on the signal; only
 /// whether it left the device.
+///
+/// Closed: the package adds no case to this enum within a major version, so a
+/// `switch` may list every case.
 public enum CallSignalDelivery: Equatable, Sendable {
     /// Handed to the connection to the agent (for the bundled adapters: published on
     /// LiveKit's reliable data channel, or accepted by Daily's app-message send). It

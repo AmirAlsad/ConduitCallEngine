@@ -575,7 +575,7 @@ struct PreconnectTests {
             h.target.error = nil
             h.target.release()
         case .networkDropped: h.engine.handle(.disconnected(reason: .networkDropped))
-        case .errorWhileJoining: h.engine.handle(.error(.timedOut))
+        case .errorWhileJoining: h.engine.handle(.error(.connectionFailed("timed out")))
         case .botLeftBeforeReady: h.engine.handle(.disconnected(reason: .botLeft))
         case .authFailed: h.engine.handle(.disconnected(reason: .authFailed))
         }
@@ -618,7 +618,7 @@ struct PreconnectTests {
         await ring(h)
         await h.engine.answer()
         h.target.suspend = true
-        h.engine.handle(.error(.timedOut)) // the prepared join failed
+        h.engine.handle(.error(.connectionFailed("timed out"))) // the prepared join failed
         await waitUntil { h.target.pendingCount == 1 }
 
         h.engine.handle(.disconnected(reason: .networkDropped))
@@ -755,7 +755,7 @@ struct PreconnectTests {
         case .networkDropped: h.engine.handle(.connected); h.engine.handle(.disconnected(reason: .networkDropped))
         case .unknownDrop: h.engine.handle(.connected); h.engine.handle(.disconnected(reason: .unknown))
         case .authFailed: h.engine.handle(.disconnected(reason: .authFailed))
-        case .errorWhileJoining: h.engine.handle(.error(.timedOut))
+        case .errorWhileJoining: h.engine.handle(.error(.connectionFailed("timed out")))
         case .botLeftWhileJoining: h.engine.handle(.disconnected(reason: .botLeft))
         default: break
         }
@@ -805,7 +805,7 @@ struct PreconnectTests {
         let h = harness()
         await readyRing(h)
 
-        h.engine.handle(.error(.timedOut))
+        h.engine.handle(.error(.connectionFailed("timed out")))
 
         #expect(h.engine.ringPreparationPhase == .ready)
         #expect(h.transport.disconnectCount == 0)

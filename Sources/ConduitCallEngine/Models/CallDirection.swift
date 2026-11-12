@@ -9,7 +9,13 @@
 
 import Foundation
 
+/// Which way a call was initiated.
+///
+/// Closed: the package adds no case to this enum within a major version, so a
+/// `switch` may list every case.
 public enum CallDirection: String, Codable, Sendable {
+    /// The host placed it with `CallEngine.placeCall(_:)`.
     case outgoing
+    /// The target's server rang the device with a VoIP push.
     case incoming
 }

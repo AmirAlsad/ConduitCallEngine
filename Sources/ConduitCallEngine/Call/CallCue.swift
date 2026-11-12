@@ -40,7 +40,12 @@ import Foundation
 ///   outage that begins during the hold and is still going at the resume is marked
 ///   then, with `.moment(.connectionLost)` before the loop; a call that first
 ///   connected during the hold gets its `.moment(.connected)` then. Hold and resume cues
-///   come when CallKit performs the hold action, not with a state change.
+///   come when CallKit performs the hold action, not with a state change. A call
+///   that ends while held gets no `.moment(.resumed)`: the hold ends with the call.
+///
+/// Closed: the package adds no case to this enum within a major version. Its payloads,
+/// `RepeatingCue` and `CallMoment`, are open, so a `switch` that matches them inside
+/// a cue (`case .moment(.connected):`) ends with `@unknown default`.
 public enum CallCue: Equatable, Sendable {
     /// Begin a looping cue (a ringback, a "retrying" sound) and keep it going
     /// until the matching `stop`.
@@ -52,6 +57,10 @@ public enum CallCue: Equatable, Sendable {
 }
 
 /// A cue a host plays on a loop until the engine says `stop`.
+///
+/// Open: later versions may add cases. End a `switch` over it with `@unknown default`,
+/// which keeps it compiling, with a warning that names the new case, when one is added. A loop a host does not know can
+/// be left silent: its `stop` still follows.
 public enum RepeatingCue: Equatable, Sendable {
     /// The call is connecting: placed and accepted by CallKit, or answered, and
     /// waiting for the agent. Starts on the transition to `.connecting`, which an
@@ -63,6 +72,9 @@ public enum RepeatingCue: Equatable, Sendable {
 }
 
 /// A one-shot moment of a call.
+///
+/// Open: later versions may add cases. End a `switch` over it with `@unknown default`,
+/// which keeps it compiling, with a warning that names the new case, when one is added.
 public enum CallMoment: Equatable, Sendable {
     /// The call connected for the first time (`.connecting` to `.connected`, or
     /// `.incomingRinging` to `.connected` for a pre-connected ring answered with its
@@ -76,7 +88,8 @@ public enum CallMoment: Equatable, Sendable {
     /// The connection dropped (`.connected` to `.reconnecting`, or at the resume
     /// for an outage that began on hold). Once per outage.
     case connectionLost
-    /// The call was put on hold (`CallEngine.isOnHold` became true).
+    /// The call was put on hold (`CallEngine.isOnHold` became true). A call that ends
+    /// while held gets no `.resumed`.
     case held
     /// A held call was resumed (`CallEngine.isOnHold` became false).
     case resumed

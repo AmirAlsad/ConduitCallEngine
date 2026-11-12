@@ -42,6 +42,9 @@ public struct CallRecord: Equatable, Sendable {
 }
 
 /// Why an incoming ring was missed. Raw values are stable, so a host can persist them.
+///
+/// Open: later versions may add cases. End a `switch` over it with `@unknown default`,
+/// which keeps it compiling, with a warning that names the new case, when one is added.
 public enum MissedCallReason: String, Sendable, Codable {
     /// Another call was live, so the ring was reported and ended at once.
     case busy

@@ -13,13 +13,11 @@ import Foundation
 public struct ConnectRequest: Equatable, Sendable {
     /// What the credentials are for.
     ///
-    /// Later versions may add cases, as 0.2 added `.ringing(joinsBeforeAnswer:)`;
-    /// each addition is listed in the changelog. A `switch` that lists every case
-    /// stops compiling when one is added. End it with `@unknown default`: today that
-    /// compiles without a warning, and when a case is added the switch still
-    /// compiles, with a warning that names the new case, which takes that branch
-    /// until you handle it. Treat it there as the first connect of an incoming call,
-    /// the safest assumption:
+    /// Open: later versions may add cases, as 0.2 added `.ringing(joinsBeforeAnswer:)`,
+    /// each listed in the changelog. End a `switch` over it with `@unknown default`,
+    /// which keeps it compiling, with a warning that names the new case, when one is
+    /// added; the new case takes that branch until you handle it. Treat it there as
+    /// the first connect of an incoming call, the safest assumption:
     ///
     /// ```swift
     /// switch request.purpose {

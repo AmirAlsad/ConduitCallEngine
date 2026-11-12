@@ -120,6 +120,15 @@ Every callback is synchronous and on the main actor, made in the order the engin
 | `callEngine(_:ringStatusBearerForTarget:)` | When a receipt is about to be sent, only for pushes that carried `status_url` and whose target your delegate resolved. Return the bearer for the `Authorization` header, or nil for none. | nil |
 | `callEngine(_:didUpdateVoIPPushToken:)` | When PushKit issues or rotates the VoIP token. | nothing |
 
+### Switching over the engine's enums
+
+Every public enum says in its documentation whether it is closed or open.
+
+- **Closed** enums gain no case within a major version, so a `switch` may list every case: `CallState`, `CallOutcome`, `CallDirection`, `CallCue`, `CallSignalDelivery`, `RingPreparation`, `AudioRouteKind`.
+- **Open** enums may gain cases in any release, each listed in the changelog: `CallFailureReason`, `MissedCallReason`, `CallMoment`, `RepeatingCue`, `CallSignal`, `RingPreparationPhase`, `ConnectRequest.Purpose`, `TransportEvent`, `TransportError`, `TransportDisconnectReason`. End a `switch` over one with `@unknown default`. It compiles without a warning today, and when a case is added the switch still compiles, with a warning that names the new case, which takes the `@unknown default` branch until you handle it. A `switch` over a `CallCue` that matches its `RepeatingCue` or `CallMoment` payloads (`case .moment(.connected):`) needs one too.
+
+Until 1.0, read "major version" as "minor version": 0.3 may add a case to a closed enum, listed as a breaking change, and no 0.2.x release does.
+
 ## 2. Choosing products
 
 | You use | Link |
@@ -386,6 +395,7 @@ func callEngine(_ engine: CallEngine, cue: CallCue) {
     case .moment(.connected), .moment(.reconnected): announcer.announce(.connected)
     case .moment(.connectionLost): announcer.announce(.disconnected)
     case .moment(.held), .moment(.resumed): break
+    @unknown default: break // a cue added later; its loop, if any, still gets its .stop
     }
 }
 ```
@@ -449,7 +459,7 @@ Rules that come from the device bugs this code survived:
 
 - `TransportError.authenticationFailed` thrown from your `connect`, or from the target's `connect` closure, becomes `failed(.badToken)`, on the first connection or on a reconnect attempt. Any other error on the first connection becomes `failed(.transportError)`.
 - During a reconnect attempt, any other error counts as a failed attempt and schedules the next one, until the budget is spent and the call fails with `.lostConnection`.
-- `.connectionFailed`, `.timedOut`, `.botUnavailable` and `.underlying` are only distinguished in logs.
+- `.connectionFailed` and `.underlying` are only distinguished in logs.
 
 **Audio device ids.** The hands-free default and `AudioRouteKind(deviceID:)` classify routes by keywords in `AudioDeviceInfo.id`: `speaker` (without `bluetooth`), `bluetooth`, `earpiece` or `receiver`, `wired` or `headphone`. Use ids containing these, or the engine cannot tell a speaker from a headset.
 

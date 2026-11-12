@@ -201,7 +201,6 @@ private extension CallEndReason {
         switch self {
         case .remoteEnded: return .remoteEnded
         case .failed: return .failed
-        case .declined: return .unanswered
         case .unanswered: return .unanswered
         }
     }

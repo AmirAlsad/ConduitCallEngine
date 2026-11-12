@@ -341,7 +341,7 @@ struct CallCredentialResolutionTests {
         h.engine.handle(.connected)
         h.engine.handle(.disconnected(reason: .networkDropped))
 
-        h.engine.handle(.error(.timedOut))
+        h.engine.handle(.error(.connectionFailed("timed out")))
 
         #expect(h.engine.state == .reconnecting(attempt: 1))
     }

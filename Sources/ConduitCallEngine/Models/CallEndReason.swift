@@ -11,6 +11,5 @@ import Foundation
 package enum CallEndReason: Equatable, Sendable {
     case remoteEnded
     case failed
-    case declined
     case unanswered
 }

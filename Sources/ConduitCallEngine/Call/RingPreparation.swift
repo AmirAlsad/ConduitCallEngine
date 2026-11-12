@@ -18,6 +18,10 @@ import Foundation
 /// transport can connect while ringing (`CallTransport.canConnectWhileRinging`;
 /// if not, `.media` becomes `.credentials`). Any of them at `.none` gives the
 /// ring exactly the behaviour it would have without pre-connect.
+///
+/// Closed: the package adds no case to this enum within a major version, so a
+/// `switch` may list every case. The tiers are ordered
+/// (`Comparable`) from least to most.
 public enum RingPreparation: Int, CaseIterable, Comparable, Sendable {
     /// Nothing before the answer: the engine fetches credentials and connects
     /// once the user answers.
@@ -38,6 +42,9 @@ public enum RingPreparation: Int, CaseIterable, Comparable, Sendable {
 /// Where the preparation of the ringing call stands, for diagnostics
 /// (`CallEngine.ringPreparationPhase`). The call's `state` stays
 /// `.incomingRinging` through every phase.
+///
+/// Open: later versions may add cases. End a `switch` over it with `@unknown default`,
+/// which keeps it compiling, with a warning that names the new case, when one is added.
 public enum RingPreparationPhase: Equatable, Sendable {
     /// Nothing is being prepared: no ring, a ring whose tier is `.none`, or a ring
     /// that has been answered or has ended.

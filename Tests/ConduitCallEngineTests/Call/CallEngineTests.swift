@@ -639,7 +639,7 @@ struct CallEngineTests {
         await h.placeCall()
         h.engine.handle(.connected)
 
-        h.engine.handle(.error(.timedOut))
+        h.engine.handle(.error(.connectionFailed("timed out")))
         #expect(h.engine.state.isConnected)
     }
 
