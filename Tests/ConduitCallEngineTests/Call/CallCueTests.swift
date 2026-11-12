@@ -277,6 +277,102 @@ struct CallCueTests {
         #expect(h.engine.repeatingCue == nil)
     }
 
+    // MARK: - Which call a cue is for
+
+    /// What a host reads at each cue to choose its sound: the call's direction, and
+    /// whether an answered call's agent was there at the answer.
+    private func callAtEachCue(_ h: CallEngineHarness) -> [String] {
+        zip(h.delegate.cues, h.delegate.activeCallAtEachCue).map { cue, call in
+            guard let call else { return "\(cue.label): no call" }
+            return "\(cue.label): \(call.direction.rawValue)\(call.wasReadyAtAnswer ? ", ready at the answer" : "")"
+        }
+    }
+
+    @Test func anOutgoingCallsCuesSayItIsOutgoing() async throws {
+        let h = CallEngineHarness()
+        await connectedCall(h)
+        await h.engine.endCall()
+
+        #expect(callAtEachCue(h) == ["start(connecting): outgoing", "stop: outgoing", "connected: outgoing"])
+    }
+
+    @Test func anAnsweredCallThatHadToConnectSaysItWasNotReady() async throws {
+        let h = CallEngineHarness()
+        h.ring()
+        await h.engine.answer()
+        await h.engine.activate(FakeAudioSession())
+        h.engine.handle(.connected)
+        h.engine.handle(.disconnected(reason: .networkDropped))
+        await h.engine.awaitPendingReconnect()
+        h.engine.handle(.connected)
+
+        #expect(callAtEachCue(h) == [
+            "start(connecting): incoming", "stop: incoming", "connected: incoming",
+            "connectionLost: incoming", "start(retrying): incoming", "stop: incoming", "reconnected: incoming",
+        ])
+        #expect(h.delegate.cueViolations.isEmpty)
+    }
+
+    /// Ready at the answer: `.moment(.connected)` comes at CallKit's activation, with
+    /// no state change, and still says so; so does every later cue of the call.
+    @Test func anAnsweredCallWhoseAgentWasThereSaysSoAtEveryCue() async throws {
+        let h = CallEngineHarness()
+        h.allowRingPreparation(.media)
+        h.transport.canConnectWhileRinging = true
+        h.ring(preconnect: "media")
+        await settle()
+        h.engine.handle(.connected)
+        #expect(h.engine.activeCall?.wasReadyAtAnswer == false) // not answered yet
+
+        await h.engine.answer()
+        #expect(h.engine.activeCall?.wasReadyAtAnswer == true)
+        #expect(h.delegate.cues.isEmpty)
+        await h.engine.activate(FakeAudioSession())
+        h.engine.handle(.disconnected(reason: .networkDropped))
+        await h.engine.awaitPendingReconnect()
+        h.engine.handle(.connected)
+        await h.engine.endCall()
+
+        #expect(callAtEachCue(h) == [
+            "connected: incoming, ready at the answer",
+            "connectionLost: incoming, ready at the answer",
+            "start(retrying): incoming, ready at the answer",
+            "stop: incoming, ready at the answer",
+            "reconnected: incoming, ready at the answer",
+        ])
+    }
+
+    @Test func aRingStillJoiningAtTheAnswerWasNotReady() async throws {
+        let h = CallEngineHarness()
+        h.allowRingPreparation(.media)
+        h.transport.canConnectWhileRinging = true
+        h.ring(preconnect: "media")
+        await settle()
+        #expect(h.engine.ringPreparationPhase == .connecting)
+
+        await h.engine.answer()
+        await h.engine.activate(FakeAudioSession())
+        h.engine.handle(.connected)
+
+        #expect(callAtEachCue(h) == ["start(connecting): incoming", "stop: incoming", "connected: incoming"])
+    }
+
+    @Test func theNextCallIsNotReadyAtTheAnswerBecauseTheLastOneWas() async throws {
+        let h = CallEngineHarness()
+        h.allowRingPreparation(.media)
+        h.transport.canConnectWhileRinging = true
+        h.ring(preconnect: "media")
+        await settle()
+        h.engine.handle(.connected)
+        await h.engine.answer()
+        await h.engine.endCall()
+
+        await h.placeCall()
+
+        #expect(h.engine.activeCall?.direction == .outgoing)
+        #expect(h.engine.activeCall?.wasReadyAtAnswer == false)
+    }
+
     // MARK: - Observed state
 
     @Test func repeatingCueIsReadableWithoutTheDelegate() async throws {

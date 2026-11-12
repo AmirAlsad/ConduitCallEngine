@@ -759,6 +759,9 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         case .ready(let transport):
             // The agent is already there: no `.connecting`, so no ringback.
             adopt(transport, isSubscribed: true)
+            activeCall = activeCall.map {
+                ActiveCall(targetID: $0.targetID, displayName: $0.displayName, direction: $0.direction, wasReadyAtAnswer: true)
+            }
             let start = now()
             firstConnectedAt = start
             transition(to: .connected(since: start))

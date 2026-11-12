@@ -77,12 +77,24 @@ public struct ActiveCall: Equatable, Sendable {
     /// The resolved target's name, or the name the ring was reported under when its
     /// target is unknown.
     public let displayName: String
+    /// Whether the call was placed by the user (`.outgoing`) or rang in (`.incoming`).
+    /// Set when the call starts, so it can be read at every cue and state change.
     public let direction: CallDirection
+    /// Whether the user answered an incoming call whose agent was already there:
+    /// a ring prepared at the `.media` tier with its agent ready at the answer, which
+    /// goes from `.incomingRinging` straight to `.connected`, with no `.connecting`
+    /// and no `.start(.connecting)`. It turns true at the answer, before that
+    /// transition, so the call's `.moment(.connected)` and every later cue read it.
+    /// False for an outgoing call, for a ring not yet answered, and for an answered
+    /// call that still had to connect (no preparation, a preparation still under way
+    /// or failed, an agent not yet there).
+    public let wasReadyAtAnswer: Bool
 
-    public init(targetID: UUID, displayName: String, direction: CallDirection) {
+    public init(targetID: UUID, displayName: String, direction: CallDirection, wasReadyAtAnswer: Bool = false) {
         self.targetID = targetID
         self.displayName = displayName
         self.direction = direction
+        self.wasReadyAtAnswer = wasReadyAtAnswer
     }
 }
 

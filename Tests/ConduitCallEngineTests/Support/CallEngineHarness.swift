@@ -154,6 +154,8 @@ final class RecordingCallEngineDelegate: CallEngineDelegate {
     func notePushCompleted() { phaseTrace.append("push-completed") }
     /// `engine.repeatingCue` as the delegate read it at each cue, in cue order.
     private(set) var repeatingCueAtEachCue: [RepeatingCue?] = []
+    /// `engine.activeCall` as the delegate read it at each cue, in cue order.
+    private(set) var activeCallAtEachCue: [ActiveCall?] = []
     var log: EventLog?
     /// Runs inside each `callEngine(_:cue:)`, after it is recorded, as a host's
     /// reaction to the cue would.
@@ -244,6 +246,7 @@ final class RecordingCallEngineDelegate: CallEngineDelegate {
     func callEngine(_ engine: CallEngine, cue: CallCue) {
         events.append(.cue(cue))
         repeatingCueAtEachCue.append(engine.repeatingCue)
+        activeCallAtEachCue.append(engine.activeCall)
         log?.append("cue(\(cue.label))")
         onCue?(engine, cue)
     }

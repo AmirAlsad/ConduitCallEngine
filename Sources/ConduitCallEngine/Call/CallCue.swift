@@ -43,6 +43,17 @@ import Foundation
 ///   come when CallKit performs the hold action, not with a state change. A call
 ///   that ends while held gets no `.moment(.resumed)`: the hold ends with the call.
 ///
+/// Which call a cue is for, and what to play, are the host's to decide: the engine
+/// reports the moment and plays nothing. `CallEngine.activeCall` is set whenever a
+/// cue is delivered. Its `direction` tells a call the user placed (`.outgoing`)
+/// from one that rang in (`.incoming`), and `wasReadyAtAnswer` tells an answered
+/// call whose pre-connected agent was already there (no `.start(.connecting)`; its
+/// `.moment(.connected)` comes at the answer or at CallKit's activation) from one
+/// that had to connect after the answer. A typical host plays a ringback on
+/// `.start(.connecting)` only for an outgoing call, and on `.moment(.connected)`
+/// may stay silent for a call ready at the answer, so the agent hears the user at
+/// once; see the Integration Guide's cue section.
+///
 /// Closed: the package adds no case to this enum within a major version. Its payloads,
 /// `RepeatingCue` and `CallMoment`, are open, so a `switch` that matches them inside
 /// a cue (`case .moment(.connected):`) ends with `@unknown default`.
