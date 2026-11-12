@@ -71,6 +71,19 @@ let package = Package(
             dependencies: ["ConduitCallEngineLiveKit", "ConduitCallEngineTesting"],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
+        // A host built in the Swift 6 language mode, with its complete concurrency
+        // checking: uses the public surface of every product, with a host-written
+        // transport and delegate, and must build without warnings or workarounds.
+        .testTarget(
+            name: "ConduitCallEngineSwift6Tests",
+            dependencies: [
+                "ConduitCallEngine",
+                "ConduitCallEngineDaily",
+                "ConduitCallEngineLiveKit",
+                "ConduitCallEngineTesting",
+            ],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
     ],
     swiftLanguageModes: [.v5]
 )

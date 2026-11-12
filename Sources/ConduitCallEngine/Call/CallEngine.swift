@@ -87,7 +87,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     private let ringStatusReporter: RingStatusReporting
     private let pushRegistry: VoIPPushRegistering
     private let policy: ReconnectionPolicy
-    private let now: () -> Date
+    private let now: @MainActor () -> Date
     private let sleep: (Duration) async throws -> Void
     private let isSimulated: Bool
     private var isPushRegistrationStarted = false
@@ -232,7 +232,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         ringStatusReporter: RingStatusReporting,
         pushRegistry: VoIPPushRegistering,
         policy: ReconnectionPolicy = .default,
-        now: @escaping () -> Date,
+        now: @escaping @MainActor () -> Date,
         sleep: @escaping (Duration) async throws -> Void,
         isSimulated: Bool = false
     ) {

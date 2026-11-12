@@ -17,7 +17,7 @@ extension CallEngine {
     public static func simulated(
         configuration: CallEngineConfiguration = .init(),
         system: SimulatedCallSystem? = nil,
-        now: @escaping () -> Date = { .now },
+        now: @escaping @MainActor () -> Date = { .now },
         sleep: @escaping (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     ) -> CallEngine {
         let system = system ?? SimulatedCallSystem()

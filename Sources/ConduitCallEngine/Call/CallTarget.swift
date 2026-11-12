@@ -12,7 +12,14 @@
 
 import Foundation
 
-public struct CallTarget {
+/// A call's identity and how to reach it: what the engine is handed instead of a
+/// host model, for `CallEngine.placeCall(_:)` and from
+/// `CallEngineDelegate.callEngine(_:targetForIncomingCall:)`. A value: Sendable, and
+/// its closures are called on the main actor.
+// Unchecked only because the package compiles in the Swift 5 mode: every stored
+// property is a constant, and both closures are main-actor isolated, a function type
+// Swift 6 treats as Sendable (SE-0434).
+public struct CallTarget: @unchecked Sendable {
     public let id: UUID
     public let displayName: String
     /// The CallKit handle; nil falls back to `defaultHandle(for:)`. The engine

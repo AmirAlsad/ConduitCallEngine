@@ -8,7 +8,11 @@
 
 import Foundation
 
-public struct CallEngineConfiguration {
+/// The host's settings for a `CallEngine`, fixed when the engine is created.
+// Unchecked only because the package compiles in the Swift 5 mode: every stored
+// property is a value, and `isPushToTalkEnabled` is main-actor isolated, a function
+// type Swift 6 treats as Sendable (SE-0434).
+public struct CallEngineConfiguration: @unchecked Sendable {
     /// The caller name a ring shows when the push carries none.
     public var unknownCallerName: String
     public var isPushToTalkEnabled: @MainActor () -> Bool

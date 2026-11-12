@@ -24,7 +24,7 @@ Link the core plus the adapter for the transport you use. Linking both adapters 
 ## Requirements
 
 - iOS 18 or later.
-- Xcode 26 or later. The sources use names from the iOS 26 SDK, so they do not compile with Xcode 16. The package manifest uses swift-tools-version 6.1 because the LiveKit SDK's manifest requires it, and the sources compile in the Swift 5 language mode.
+- Xcode 26 or later. The sources use names from the iOS 26 SDK, so they do not compile with Xcode 16. The package manifest uses swift-tools-version 6.1 because the LiveKit SDK's manifest requires it, and the sources compile in the Swift 5 language mode. Your app can use either mode: in the Swift 6 language mode, with complete concurrency checking, every public API (including `CallTransport` and `CallEngineDelegate` conformances and the Testing product) compiles without warnings, `@preconcurrency` or `nonisolated(unsafe)`. `CallTarget` and `CallEngineConfiguration` are `Sendable`, so a host can keep them in a `static let`.
 - A physical iPhone for real calls (see [Device-only reality](#device-only-reality)).
 - For incoming calls: a paid Apple Developer account, the Push Notifications capability, and an APNs key on your server.
 

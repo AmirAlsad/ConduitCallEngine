@@ -478,7 +478,7 @@ Rules that come from the device bugs this code survived:
 
 **Audio device ids.** The hands-free default and `AudioRouteKind(deviceID:)` classify routes by keywords in `AudioDeviceInfo.id`: `speaker` (without `bluetooth`), `bluetooth`, `earpiece` or `receiver`, `wired` or `headphone`. Use ids containing these, or the engine cannot tell a speaker from a headset.
 
-**Concurrency.** The protocol is not actor-isolated, but the engine calls it from the main actor and `CallTarget.makeTransport` runs on the main actor. Both adapters are `@MainActor` classes; that is the simplest shape. Its two synchronous requirements, `events` and `canConnectWhileRinging`, are nonisolated, so such a class declares them `nonisolated` (`nonisolated let events`, and `nonisolated var canConnectWhileRinging: Bool { true }` if you override the default); the async requirements can stay on the main actor:
+**Concurrency.** The protocol is not actor-isolated, but the engine calls it from the main actor and `CallTarget.makeTransport` runs on the main actor. Both adapters and `FakeTransport` are `@MainActor` classes; that is the simplest shape, and an `actor` works too. Its two synchronous requirements, `events` and `canConnectWhileRinging`, are nonisolated, so such a type declares them `nonisolated` (`nonisolated let events`, and `nonisolated var canConnectWhileRinging: Bool { true }` if you override the default); the async requirements can stay isolated. Both shapes compile without warnings in the Swift 6 language mode: the package's own `ConduitCallEngineSwift6Tests` target builds one of each, with a delegate, in that mode.
 
 ```swift
 import ConduitCallEngine

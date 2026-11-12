@@ -9,10 +9,16 @@
 
 import Foundation
 import ConduitCallEngine
+import Synchronization
 
-public final class FakeTransport: CallTransport, @unchecked Sendable {
-    public let events: AsyncStream<TransportEvent>
-    private let continuation: AsyncStream<TransportEvent>.Continuation
+/// A `CallTransport` that joins nothing: it records what the engine asks of it and
+/// emits the events a test gives it. Isolated to the main actor, where the engine
+/// drives it, so a test reads and configures it there; `emit(_:)`, `finish()` and
+/// `canConnectWhileRinging` work from anywhere.
+@MainActor
+public final class FakeTransport: CallTransport {
+    public nonisolated let events: AsyncStream<TransportEvent>
+    private nonisolated let continuation: AsyncStream<TransportEvent>.Continuation
 
     public private(set) var connectCount = 0
     public private(set) var disconnectCount = 0
@@ -32,7 +38,11 @@ public final class FakeTransport: CallTransport, @unchecked Sendable {
     /// What the transport declares to the engine; false (the protocol's default)
     /// unless a test sets it. Set it before the engine creates the transport for a
     /// ring: the engine reads it once, right after creating it.
-    public var canConnectWhileRinging = false
+    public nonisolated var canConnectWhileRinging: Bool {
+        get { connectsWhileRinging.withLock { $0 } }
+        set { connectsWhileRinging.withLock { $0 = newValue } }
+    }
+    private nonisolated let connectsWhileRinging = Mutex(false)
 
     /// When true, `connect(_:)` suspends until `releaseConnect()` — lets a test fail
     /// and reset the call before `connect` resolves, exercising late-resolution races.
@@ -40,7 +50,7 @@ public final class FakeTransport: CallTransport, @unchecked Sendable {
     private var connectContinuation: CheckedContinuation<Void, Never>?
     private var connectReleased = false
 
-    public init() {
+    public nonisolated init() {
         let (stream, continuation) = AsyncStream.makeStream(of: TransportEvent.self)
         self.events = stream
         self.continuation = continuation
@@ -139,13 +149,15 @@ public final class FakeTransport: CallTransport, @unchecked Sendable {
         return signalDeliveries.isEmpty ? .sent : signalDeliveries.removeFirst()
     }
 
-    /// Drive an event onto the stream from a test or a simulator build.
-    public func emit(_ event: TransportEvent) {
+    /// Drive an event onto the stream from a test or a simulator build. The engine
+    /// receives it asynchronously, on a later main-actor turn; use
+    /// `SimulatedCallSystem.deliverTransportEvent(_:)` to deliver one synchronously.
+    public nonisolated func emit(_ event: TransportEvent) {
         continuation.yield(event)
     }
 
     /// Close the event stream (mirrors a fully torn-down transport).
-    public func finish() {
+    public nonisolated func finish() {
         continuation.finish()
     }
 }
