@@ -315,7 +315,7 @@ public final class PipecatDailyTransport: CallTransport {
     /// after a detach (or, on a call joined with its audio held back, for the first
     /// time); the mic stays off until the engine enables it. Returns once Daily has the
     /// subscription, within `attachBound`, so what the engine sends after the attach
-    /// (`call-answered`, `call-resumed`) reaches an agent the user can hear.
+    /// (`call-connected`, `call-resumed`) reaches an agent the user can hear.
     public func attachAudioSession() async {
         remoteAudio.attach()
         Log.info(.audio, "Daily attach: agent audio wanted \(Self.describe(remoteAudio.wanted))")

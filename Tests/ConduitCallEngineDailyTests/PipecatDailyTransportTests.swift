@@ -334,7 +334,7 @@ struct PipecatDailyTransportTests {
         try await transport.connect(connection)
         let fake = try #require(clients.made.first)
 
-        await transport.send(.answered)
+        await transport.send(.connected)
 
         #expect(fake.calls == ["connect", "send client-message"])
     }
@@ -383,7 +383,7 @@ struct PipecatDailyTransportTests {
         let transport = makeTransport()
         try await transport.connect(connection)
 
-        #expect(await transport.send(.answered) == .failed)
+        #expect(await transport.send(.connected) == .failed)
     }
 
     @Test func aRepeatedSignalIsSentEachTime() async throws {
@@ -556,7 +556,7 @@ struct PipecatDailyTransportTests {
 
         // The engine's order: the attach CallKit's activation brings, then the answer.
         await transport.attachAudioSession()
-        await transport.send(.answered)
+        await transport.send(.connected)
         await drain()
         #expect(fake.calls == ["agent audio \(heldBack)", "connect", "agent audio subscribed", "send client-message"])
 
@@ -589,7 +589,7 @@ struct PipecatDailyTransportTests {
     }
 
     /// The attach that ends the hold-back returns once Daily has the subscription, so
-    /// the `call-answered` the engine sends next reaches an agent the user can hear.
+    /// the `call-connected` the engine sends next reaches an agent the user can hear.
     @Test(.timeLimit(.minutes(1)))
     func theAttachThatEndsARingJoinsHoldBackReturnsOnceSubscribed() async throws {
         let transport = makeTransport(ringJoinStrategy: .agentAudioUnsubscribedUntilAnswer)

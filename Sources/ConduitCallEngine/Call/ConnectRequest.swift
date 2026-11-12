@@ -37,7 +37,7 @@ public struct ConnectRequest: Equatable, Sendable {
         /// Pre-connect: credentials for an incoming call that is still ringing
         /// (`RingPreparation`). With `joinsBeforeAnswer` the transport joins the
         /// room during the ring (`.media`), so the agent must wait for
-        /// `CallSignal.answered` before it speaks; without it the transport joins
+        /// `CallSignal.connected` before it speaks; without it the transport joins
         /// once the user answers (`.credentials`). Credentials fetched for a ring
         /// are used for the call if it is answered; if the preparation fails (also
         /// after the answer, before the agent was there), the engine asks again with

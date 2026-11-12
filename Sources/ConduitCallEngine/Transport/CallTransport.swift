@@ -78,7 +78,7 @@ public protocol CallTransport: AnyObject {
     /// then joins without configuring or activating `AVAudioSession`, starting audio
     /// input or output, or making the remote party audible, until the engine calls
     /// `attachAudioSession()` after CallKit's activation, and `send(_:)` reaches the
-    /// remote agent, which waits for `CallSignal.answered` before it speaks. Read
+    /// remote agent, which waits for `CallSignal.connected` before it speaks. Read
     /// once per ring, right after `CallTarget.makeTransport` creates the transport.
     /// The default implementation returns false, which keeps the transport at the
     /// `.credentials` tier: it joins only once the user answers. Synchronous and

@@ -116,7 +116,7 @@ struct DeterministicHostTests {
         #expect(made.transports.count == 1)
         #expect(made.last.isAudioAttached)
         #expect(made.last.isMicEnabled)
-        #expect(made.last.sentSignals == (tier == .none ? [] : [.answered]))
+        #expect(made.last.sentSignals == (tier == .none ? [] : [.connected]))
         #expect(system.ringReceipts.map(\.status) == ["answered"])
     }
 

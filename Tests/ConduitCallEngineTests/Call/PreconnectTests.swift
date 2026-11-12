@@ -132,7 +132,7 @@ struct PreconnectTests {
 
         var traced = await trace(h, preconnect: preconnect, callID: callID)
 
-        #expect(traced.signals == [[.answered]])
+        #expect(traced.signals == [[.connected]])
         traced.signals = today.signals
         #expect(traced == today)
         #expect(h.delegate.resolved.first?.requestedPreparation == (preconnect == "media" ? .media : .credentials))
@@ -367,7 +367,7 @@ struct PreconnectTests {
         #expect(transport.isAudioAttached)
         #expect(transport.isMicEnabled)
         #expect(transport.audioDeviceSelections == ["speaker"]) // the hands-free default
-        #expect(transport.sentSignals == [.answered])
+        #expect(transport.sentSignals == [.connected])
         #expect(h.engine.audioDevices.isEmpty == false)
     }
 
@@ -392,7 +392,7 @@ struct PreconnectTests {
         #expect(h.engine.state.isConnected)
         #expect(transport.isAudioAttached)
         #expect(transport.isMicEnabled)
-        #expect(transport.sentSignals == [.answered])
+        #expect(transport.sentSignals == [.connected])
         #expect(transport.audioDeviceSelections == ["speaker"])
     }
 
@@ -410,7 +410,7 @@ struct PreconnectTests {
         h.engine.handle(.connected)
         await h.engine.awaitPendingSignals()
 
-        #expect(h.transport.sentSignals == [.answered, .answered, .answered])
+        #expect(h.transport.sentSignals == [.connected, .connected, .connected])
     }
 
     @Test func aHeldCallIsToldOfTheAnswerOnlyOnTheResume() async throws {
@@ -427,7 +427,7 @@ struct PreconnectTests {
         await h.engine.awaitPendingMediaWork()
         await h.engine.awaitPendingSignals()
 
-        #expect(h.transport.sentSignals == [.held, .resumed, .answered])
+        #expect(h.transport.sentSignals == [.held, .resumed, .connected])
         #expect(h.delegate.cueViolations.isEmpty)
     }
 
@@ -733,7 +733,7 @@ struct PreconnectTests {
         await activate(h)
 
         #expect(h.transport.audioDeviceSelections == ["speaker"])
-        #expect(h.transport.sentSignals == [.answered])
+        #expect(h.transport.sentSignals == [.connected])
     }
 
     // MARK: - A preparation that fails keeps the ring
@@ -1068,7 +1068,7 @@ struct PreconnectTests {
         if activated {
             #expect(h.transport.isAudioAttached, label)
             #expect(h.transport.isMicEnabled, label)
-            #expect(h.transport.sentSignals == [.answered], label)
+            #expect(h.transport.sentSignals == [.connected], label)
             #expect(h.transport.audioDeviceSelections == ["speaker"], label)
         } else {
             expectNoAudioWork(on: h.transport, label)

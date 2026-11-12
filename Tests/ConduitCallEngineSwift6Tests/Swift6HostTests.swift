@@ -274,7 +274,7 @@ func describe(_ phase: RingPreparationPhase, _ preparation: RingPreparation, _ s
     case .none, .credentials, .media: parts.append("\(preparation)")
     }
     switch signal {
-    case .answered, .held, .resumed: parts.append(signal.rawValue)
+    case .connected, .held, .resumed: parts.append(signal.rawValue)
     @unknown default: parts.append("other")
     }
     switch delivery {
@@ -385,7 +385,7 @@ struct Swift6HostTests {
         await system.activateAudioSession()
         await system.awaitPendingWork()
         #expect(engine.state.isConnected)
-        #expect(transport.sentSignals == [.answered])
+        #expect(transport.sentSignals == [.connected])
         #expect(engine.activeCall?.direction == .incoming)
         #expect(host.phases == [.fetchingCredentials, .connecting, .ready, .idle])
         system.endCallFromSystem(callID)

@@ -237,9 +237,9 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     /// is neither connected nor subscribed during the ring; the answer uses it.
     private var transportForAnswer: CallTransport?
     /// Whether the ring's push carried `preconnect`: its agent may be waiting for
-    /// `CallSignal.answered` before it speaks.
+    /// `CallSignal.connected` before it speaks.
     private var signalsAnswer = false
-    /// Whether `CallSignal.answered` has been sent on the current connection.
+    /// Whether `CallSignal.connected` has been sent on the current connection.
     private var isAnswerSignalSent = false
     /// The answered call's first connect is using what the ring prepared (its
     /// credentials, or its transport's join) and has not reached `.connected`. If
@@ -1814,13 +1814,13 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         else { return }
         isAnswerSignalSent = true
         let connection = connectionGeneration
-        send(.answered, after: mediaTask) { [weak self] delivery in
+        send(.connected, after: mediaTask) { [weak self] delivery in
             guard let self, connection == self.connectionGeneration, self.isAnswerSignalSent else { return }
             switch delivery {
             case .sent: self.signalRetryCount = 0
             case .unsupported: break
             case .failed:
-                Log.warning(.call, "Signal \(CallSignal.answered.rawValue) did not leave the device; sending it again")
+                Log.warning(.call, "Signal \(CallSignal.connected.rawValue) did not leave the device; sending it again")
                 self.isAnswerSignalSent = false
                 self.scheduleSignalRetry()
             }
@@ -2347,7 +2347,7 @@ extension CallEngine {
     /// `ring_timeout`), `"cancel"` (the server may send a cancel push,
     /// `{"action": "cancel", "call_id": ...}` with no `target_id`, to withdraw a
     /// ring) and `"preconnect"` (a ring push may carry `preconnect`, and the engine
-    /// sends `CallSignal.answered`; see `RingPreparation`). An engine that lacks a feature ignores its key, or, for a cancel,
+    /// sends `CallSignal.connected`; see `RingPreparation`). An engine that lacks a feature ignores its key, or, for a cancel,
     /// shows it as a brief incoming call that ends at once. Later versions add
     /// features to this set; servers must ignore names they do not know.
     nonisolated public static let supportedPushFeatures: Set<String> = ["cancel", "ring_timeout", "preconnect"]

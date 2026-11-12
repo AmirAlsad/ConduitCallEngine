@@ -30,7 +30,7 @@ public enum CallSignal: String, CaseIterable, Sendable {
     /// every reconnect of the call, and at the resume when they come to hold while
     /// the call is on hold. An agent that joined during the ring must stay silent
     /// until it arrives.
-    case answered = "call-answered"
+    case connected = "call-connected"
     /// The user's side put the call on hold (for example to take a phone call).
     /// The user cannot hear the agent and the mic is closed until `resumed`; the
     /// agent should stop speaking and wait, and keep the session longer than its

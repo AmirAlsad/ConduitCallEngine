@@ -128,13 +128,13 @@ struct SignalDeliveryTests {
         h.transport.signalDeliveries = [.failed]
         await h.engine.activate(FakeAudioSession())
         await h.engine.awaitPendingSignals()
-        #expect(h.transport.sentSignals == [.answered])
+        #expect(h.transport.sentSignals == [.connected])
 
         await waitUntil { sleeper.pendingCount == 1 }
         sleeper.wakeFirst()
         await waitUntil { h.transport.sentSignals.count == 2 }
 
-        #expect(h.transport.sentSignals == [.answered, .answered])
+        #expect(h.transport.sentSignals == [.connected, .connected])
     }
 
     @Test func aTransportWithoutSignalsIsNeverAskedAgain() async throws {

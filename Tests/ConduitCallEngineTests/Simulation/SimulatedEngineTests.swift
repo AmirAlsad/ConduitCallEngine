@@ -326,10 +326,10 @@ struct SimulatedEngineTests {
 
         await system.activateAudioSession()
         #expect(host.cues == [.moment(.connected)])
-        await settle { ringTransport.sentSignals == [.answered] }
+        await settle { ringTransport.sentSignals == [.connected] }
         #expect(ringTransport.isAudioAttached)
         #expect(ringTransport.isMicEnabled)
-        #expect(ringTransport.sentSignals == [.answered])
+        #expect(ringTransport.sentSignals == [.connected])
     }
 
     @Test func ringFilteredByFocusIsRecordedAsMissed() {

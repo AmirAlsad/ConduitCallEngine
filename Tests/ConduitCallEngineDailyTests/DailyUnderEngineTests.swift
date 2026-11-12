@@ -69,7 +69,7 @@ struct DailyUnderEngineTests {
 
     // MARK: - Experimental ring joins
 
-    /// The engine sends `call-answered` after the attach it issued on CallKit's
+    /// The engine sends `call-connected` after the attach it issued on CallKit's
     /// activation; with the agent's audio held back until that attach, the attach
     /// must not return before Daily has subscribed, or the agent starts its greeting
     /// before the user can hear it.
