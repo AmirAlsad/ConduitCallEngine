@@ -5,7 +5,8 @@
 //  The parsed contents of a VoIP push. `VoIPPushRequest` says what the push asks
 //  for (a ring, or withdrawing one); a ring's `IncomingCallPayload` carries which
 //  target is calling, the call's id, how to ring (optional caller name, handle and
-//  timeout), and OPTIONAL inline room credentials.
+//  timeout), what to prepare while it rings (`preconnect`), and OPTIONAL inline
+//  room credentials.
 //  When `room_url` and a non-empty `token` are both present they reach the host as
 //  `IncomingCall.connection`, for the target it returns to connect with; otherwise
 //  that target resolves credentials itself after the user answers, so they need

@@ -25,7 +25,7 @@ Contents:
 `CallEngine` is a `@MainActor`, `@Observable` class. You create one for the whole process, give it a delegate, and hand it a `CallTarget` for each call. It does:
 
 - **CallKit.** Reports outgoing and incoming calls, so they get the system call screen, the lock screen, Bluetooth and CarPlay routing, the system mute and end buttons, and entries in the Phone app's Recents. It handles CallKit's answer, end, mute, hold and reset actions, so iOS can put the call on hold while the user takes a phone call.
-- **PushKit.** Registers for VoIP pushes, reports every push as a call (iOS requires it), and passes you the VoIP token. Ends a ring nobody answers after a timeout, and honours a server's cancel push.
+- **PushKit.** Registers for VoIP pushes, reports every push as a call (iOS requires it), and passes you the VoIP token. Ends a ring nobody answers after a timeout, honours a server's cancel push, and, when the push and your target both ask for it, prepares the call while it rings ([pre-connect](#pre-connect)).
 - **The call state machine.** One call at a time, with the states below, and a `CallRecord` when each call finishes.
 - **Audio-session policy.** Configures the session for voice chat, lets CallKit activate it, attaches the transport only after activation, keeps the mic off until then, pauses the mic during interruptions (Siri, a phone call), stops media while the call is on hold, and routes to the loudspeaker by default when no headset or car is connected.
 - **Reconnection.** After a mid-call network drop it retries with exponential backoff (six attempts, waiting 1, 2, 4, 8, 16 and 30 seconds) while CallKit keeps showing the call, and fails with `.lostConnection` when the budget runs out. A transport that says it is healing itself is given 30 seconds before the engine treats it as dropped and starts those retries, and an attempt whose transport joins but does not report `.connected` within 30 seconds counts as failed. A call whose agent is not ready within 30 seconds of its first join fails as `.agentUnreachable`.
@@ -45,14 +45,15 @@ idle -> dialing -> connecting -> connected <-> reconnecting(attempt:)
                                      +-> ended(CallOutcome) | failed(CallFailureReason)
 
 idle -> incomingRinging -> connecting -> ...   (after the user answers)
+idle -> incomingRinging -> connected -> ...    (answered while a pre-connected agent was there)
 ```
 
 | State | Meaning | `isActive` | `isTerminal` |
 |---|---|---|---|
 | `.idle` | No call. | false | false |
-| `.incomingRinging` | A push is ringing. CallKit's system UI is the only surface; the app shows nothing until the user answers. | false | false |
+| `.incomingRinging` | A push is ringing. CallKit's system UI is the only surface; the app shows nothing until the user answers. A ring being prepared ([pre-connect](#pre-connect)) stays in this state; `ringPreparationPhase` says how far it got. | false | false |
 | `.dialing` | `placeCall` was called; CallKit is starting the call. | true | false |
-| `.connecting` | CallKit has the call; credentials are being fetched and the transport is joining. | true | false |
+| `.connecting` | CallKit has the call; credentials are being fetched and the transport is joining. An answer to a pre-connected ring whose agent is already there skips it. | true | false |
 | `.connected(since:)` | Transport and agent ready. `since` is the first connection time and is kept across reconnects. | true | false |
 | `.reconnecting(attempt:)` | Media dropped while CallKit still shows the call. `attempt` is the engine's retry count; `0` means the transport reported a short interruption it is healing itself (LiveKit's own reconnect, or a lost network path on Daily, see [section 11](#11-what-the-server-side-must-do)) and no retry has been spent; after 30 seconds without recovery the engine moves to `1` and reconnects itself. | true | false |
 | `.ended(CallOutcome)` | Finished. | true | true |
@@ -100,10 +101,11 @@ A call that reaches `.ended(outcome)` is recorded with the same outcome, so a ho
 | `reset()` | Return to idle from a terminal state. |
 | `state`, `activeCall`, `isMuted`, `isOnHold`, `isBotSpeaking`, `isAudioActivated`, `isInterrupted`, `audioDevices`, `selectedAudioDeviceID`, `endedByUser` | Observable state for your UI. `activeCall` carries the target id, display name and direction of the current call. |
 | `repeatingCue` | The looping cue that should be playing now (`.connecting`, `.retrying`, or nil), for a UI that attaches mid-call. See [Cues](#cues). |
+| `ringPreparationPhase` | How far the ringing call has been prepared (`.idle`, `.fetchingCredentials`, `.credentialsReady`, `.connecting`, `.ready`, `.failed`), for diagnostics. See [pre-connect](#pre-connect). |
 
 `CallEngineConfiguration` has five settings: `unknownCallerName` (default `"Unknown"`), the name a ring shows when the push carries none; `isPushToTalkEnabled`, a closure read at each mic decision, so a settings change mid-call takes effect on the next one; `ringTimeout` (default 60 seconds), how long an incoming call rings before the engine ends it as unanswered; `supportsHolding` (default true), whether calls are reported to CallKit as holdable; and `joinTimeout` (default 30 seconds), how long the engine waits for `.connected` after a transport's `connect(_:)` has returned: on a call's first connect it then fails the call as `.agentUnreachable`, and on a reconnect attempt it counts the attempt as failed (`nil` waits indefinitely, as 0.1 did). A push's `ring_timeout` can shorten the ring timeout (to no less than 10 seconds) but not lengthen it. `nil` sets no limit of the engine's own; a push's `ring_timeout` still applies then. With `supportsHolding` off, CallKit offers no hold for the call, and a phone call the user takes during it ends it.
 
-`CallEngine.supportedPushFeatures` (`["cancel", "ring_timeout"]`) is the set of optional push features this engine understands; send it to your server with the VoIP token ([section 7](#7-delivering-the-voip-token-to-your-server)).
+`CallEngine.supportedPushFeatures` (`["cancel", "ring_timeout", "preconnect"]`) is the set of optional push features this engine understands; send it to your server with the VoIP token ([section 7](#7-delivering-the-voip-token-to-your-server)).
 
 ### The delegate
 
@@ -111,7 +113,7 @@ Every callback is synchronous and on the main actor, made in the order the engin
 
 | Callback | When | Default |
 |---|---|---|
-| `callEngine(_:targetForIncomingCall:)` | Once per ring push (not for a duplicate of the call in progress, a cancel push, or a ring whose cancel already arrived), after the CallKit report is issued: inside the push handling for a ring, or once CallKit has answered the report for a push that arrives during another call. Return the `CallTarget`, or nil for an unknown target (the ring is then ended and recorded as failed, and the engine returns to idle). | nil, so every ring is ended. Implement it if you take incoming calls. |
+| `callEngine(_:targetForIncomingCall:)` | Once per ring push (not for a duplicate of the call in progress, a cancel push, or a ring whose cancel already arrived), after the CallKit report is issued: inside the push handling for a ring, or once CallKit has answered the report for a push that arrives during another call. Return the `CallTarget`, or nil for an unknown target (the ring is then ended and recorded as failed, and the engine returns to idle). The target's `ringPreparation` decides, with the push's `IncomingCall.requestedPreparation`, how much of the ring is prepared ([pre-connect](#pre-connect)). | nil, so every ring is ended. Implement it if you take incoming calls. |
 | `callEngine(_:didChangeStateFrom:to:)` | On every real state change, after the engine has set the transition's other fields, so `activeCall` and the rest are consistent when you read them. Not called when the state is set to the value it already has. | nothing |
 | `callEngine(_:cue:)` | A moment to mark with your own sound or speech, right after the state change that caused it. See [Cues](#cues). | nothing |
 | `callEngine(_:didFinish:)` | Once per call, when it reaches its end: ended, failed, busy ring, Focus-filtered ring, a ring that timed out or that the caller cancelled, a ring that could not proceed, a CallKit provider reset. Not for a malformed push, a cancel push, or a ring whose cancel already arrived. | nothing |
@@ -208,6 +210,8 @@ What CallKit does to the audio session around a hold is not documented by Apple.
 
 **Your own audio during a call.** Do not change the session category or call `setActive` while a call is up. If you play audio cues during a call, play them into the session as it is.
 
+**Pre-connected rings.** A ring prepared at the `.media` tier ([pre-connect](#pre-connect)) has a transport that joins while the phone rings. The engine keeps that transport apart from the call until the answer: it gets no `attachAudioSession()`, no `setMicEnabled(_:)`, no route reads or changes and no signals, mute and route requests do not reach it, and an activation during the ring, which can only be left over from an earlier call, is ignored. Once the user answers, the transport becomes the call's, and everything above applies; for a prepared call, the route list refresh and the hands-free default also wait for CallKit's activation, since such a call can be connected before it.
+
 What a custom transport must do is in [section 10](#10-writing-your-own-transport).
 
 ## 5. Launch-time PushKit registration
@@ -222,7 +226,7 @@ The engine guarantees the report on every path. It reports first, synchronously 
 
 | Push | What the engine does |
 |---|---|
-| Normal | Reports, asks your delegate for the target, rings. |
+| Normal | Reports, asks your delegate for the target, rings. With `preconnect` and a target that allows it, prepares the call once CallKit accepts the report ([pre-connect](#pre-connect)). |
 | Malformed (no valid `target_id` or `agent_id`) | Reports under a fresh id and the unknown-caller name, then ends it as failed. No state change, no delegate call, no record. |
 | During another call (ringing, dialing, connecting, connected, reconnecting) | Reports, then ends it at once as unanswered; the live call is untouched. Your delegate gets a `CallRecord` with `missedReason: .busy`, and a `busy` receipt is sent if requested and your delegate resolves the target. |
 | Carrying the `call_id` of the call in progress (a duplicate delivery) | Reports it and does nothing else: no end, no record, no receipt, no delegate call. |
@@ -253,9 +257,10 @@ The full contract for server authors is in [PushContract.md](PushContract.md). I
 - `room_url` and `token` together are inline credentials. Your delegate receives them as `IncomingCall.connection`; whether to use them is your choice. The usual pattern is a target whose `connect` closure returns the inline connection when there is one and fetches credentials otherwise, as in the README.
 - `status_url` asks for ring-status receipts; the bearer comes from `ringStatusBearerForTarget`. Receipts are sent only for targets your delegate resolves, so a push for a target you do not know never makes the engine contact the URL it carries.
 - `ring_timeout` shortens how long this ring may ring, within `CallEngineConfiguration.ringTimeout`.
+- `preconnect` (`"credentials"` or `"media"`) asks the engine to prepare the call while it rings. Your delegate receives it as `IncomingCall.requestedPreparation`, and the ring gets it only as far as your target's `ringPreparation` allows ([pre-connect](#pre-connect)).
 - `"action": "cancel"` with a `call_id` (and no `target_id`) withdraws a ring. Your delegate is not asked about a cancel; if it ends the ringing call, you get the missed-call record.
 
-`IncomingCall` carries `callID`, `targetID`, the `displayName` and `handle` the ring was reported under (after fallbacks), and `connection`.
+`IncomingCall` carries `callID`, `targetID`, the `displayName` and `handle` the ring was reported under (after fallbacks), `connection`, and `requestedPreparation`.
 
 ## 7. Delivering the VoIP token to your server
 
@@ -269,7 +274,7 @@ The engine receives the token; sending it to the server that will ring the devic
 - the bundle id, from which the server derives the APNs topic (`<bundle id>.voip`);
 - the APNs environment the build uses (sandbox for development-signed builds, production for TestFlight and the App Store), typically decided per build configuration;
 - the target ids this device accepts rings for, and for each, the display name and handle your app uses, so the push can carry them and ring under the right name from the first frame;
-- `CallEngine.supportedPushFeatures`, so the server sends `ring_timeout` and cancel pushes only to devices that understand them. Send it again after an app update, since a newer engine may support more.
+- `CallEngine.supportedPushFeatures`, so the server sends `ring_timeout`, `preconnect` and cancel pushes only to devices that understand them. Send it again after an app update, since a newer engine may support more.
 
 The token belongs to the install, not to a target: every target gets the same token.
 
@@ -315,20 +320,44 @@ Here `agents` and `callTarget(inline:)` are your own: the latter builds a `CallT
 
 **Credentials per call.** `connect` runs for the first connection and again before every reconnect attempt, so it can mint fresh, short-lived credentials each time. Its `ConnectRequest` says which: `purpose` is `.outgoing` or `.answered` for a call's first connect and `.reconnect(attempt:)` for an engine retry, and `callID` is the ring's `call_id` on every request for an incoming call (nil for an outgoing one), so your backend can tell a reconnect from a new call and match it to the ring it sent. Throw `TransportError.authenticationFailed` when your backend rejects the user's credentials (a 401 or 403) so the call fails as `.badToken`, which your UI can explain differently from a network failure.
 
+<a id="pre-connect"></a>**Pre-connect.** An incoming call can be prepared while it rings, so the agent is ready the moment the user answers. Three parties decide, and the ring gets the lowest of what they allow (`RingPreparation`):
+
+1. **The server**, with the push's `preconnect` key (`"credentials"` or `"media"`; anything else is none), which reaches your delegate as `IncomingCall.requestedPreparation`. Only the server knows whether its agent waits for the answer before speaking; `"media"` is its promise that it does ([PushContract.md](PushContract.md#pre-connect)).
+2. **You**, with `CallTarget.ringPreparation` on the target you return for the ring (default `.none`). You can decide per ring from `requestedPreparation`, for example only on Wi-Fi, or never when a credential request costs money (a backend that starts an agent for every request starts one for every ring).
+3. **The transport**, for `.media`: its `canConnectWhileRinging` ([section 10](#10-writing-your-own-transport)). A transport that cannot join while ringing gets `.credentials`.
+
+With any of them at none, the ring is exactly what it is without pre-connect: nothing is fetched or created before the answer. (The agent is still sent `call-answered` if the push carried `preconnect`, below.)
+
+| Tier | During the ring | When the user answers |
+|---|---|---|
+| `.credentials` | Your `connect` runs with `ConnectRequest.Purpose.ringing(joinsBeforeAnswer: false)` and the result is kept. | The transport is created (unless one was made for the ring) and joins with those credentials: `incomingRinging -> connecting -> connected`, as usual, minus the credential fetch. |
+| `.media` | `makeTransport` runs and the transport's `canConnectWhileRinging` is read, then your `connect` runs with `.ringing(joinsBeforeAnswer: true)` and the transport joins, with no audio attached, the mic closed and the route untouched. | If the agent is there (`ringPreparationPhase == .ready`), the call goes straight to `connected(since:)` at the answer, with `.moment(.connected)` and no ringback. Otherwise it is `connecting` until the agent is, with the usual ringback, and a fetch or join still under way continues; no second fetch is made. |
+
+What else to know:
+
+- **Preparation starts once CallKit accepts the ring's report**, not when the push arrives, so a ring Focus filters, or CallKit refuses, fetches nothing. A ring answered before CallKit accepted it connects as without pre-connect.
+- **`state` stays `.incomingRinging` for the whole ring**, and `isActive` false. `ringPreparationPhase` (`.idle`, `.fetchingCredentials`, `.credentialsReady`, `.connecting`, `.ready`, `.failed`) shows how far it got, for diagnostics; it changes no state and calls no delegate method. It is `.idle` again once the ring is answered or ends.
+- **A failed preparation never disturbs the ring.** Credentials that fail (rejected ones included), a join that throws, or a drop, a rejected token or an error while joining during the ring set the phase to `.failed` and drop the ring's transport; the phone keeps ringing, and an answer then connects as without pre-connect: a new transport from `makeTransport`, and `connect` with `.answered`. So **`makeTransport` must return a new transport on every call**, as it is asked again after a failed preparation. An error once the agent is there is only logged, as during a call.
+- **The agent leaving a ready ring is the caller cancelling it**: once the ring's transport reported the agent there, `.disconnected(reason: .botLeft)` before CallKit delivered an answer ends the ring as remote-ended, with a `CallRecord` (`outcome: .noAnswer`, `missedReason: .canceledByCaller`), a `canceled` receipt, and no cues. Between CallKit delivering the answer action and the engine handling it, the same event is a lost preparation, and the answer connects afresh; once the answer has been handled it is an agent hangup of the call. Before the agent was there, it is a failed preparation.
+- **A ring that ends unanswered** (declined, timed out, cancelled, reset) cancels a credential fetch in flight and disconnects the ring's transport, which sends the end-call signal if it is connected. Records, receipts and cues are as for any ring. A second push during the ring (busy or a duplicate) leaves the preparation alone.
+- **Credentials fetched for a ring are used for the call**, so they must stay valid for the ring and its call (the ring is bounded by `ringTimeout`, 60 seconds by default); reconnects ask again with `.reconnect(attempt:)`.
+- **`CallSignal.answered`.** For every incoming call whose push carried `preconnect`, the engine sends the agent `answered` once the user has answered, CallKit has activated the audio and the transport is connected, whichever comes last (and after the attach and mic commands that activation issued), again after every reconnect, and, while held, at the resume. It is sent even when you allowed no preparation: the server may have started its agent for the ring anyway.
+- **Outgoing calls are not prepared.** There is no "prepare this target" API: credentials for a call the user may never place would start agents nobody talks to.
+
 **History.** Write history from `callEngine(_:didFinish:)`. A `CallRecord` has `targetID`, `direction`, `startedAt`, `duration` (connected seconds, 0 if it never connected), `outcome`, `failureReason` and `missedReason`. Check `targetID` against your targets: a ring for an unknown target is recorded against the pushed id, which may match nothing of yours. `missedReason` has stable string raw values and is `Codable`, like `CallOutcome`. Record only from `didFinish`, not also from state transitions, or you will write two rows per call.
 
 **In-call UI.** Present your call screen while `engine.state.isActive` is true. That excludes `.incomingRinging`, where CallKit's ring is the interface, and includes terminal states, so a failed call can stay on screen with its reason until the user closes it; call `reset()` on dismiss. When the user taps End, call `markEndedByUser()` and dismiss in the same transaction, then `await engine.endCall()`; `endedByUser` lets you tell a call your user ended in-app (dismiss at once) from a remote end or failure (show a result). It is set only by `markEndedByUser()` and `endCall()`: a call ended from the system UI, such as the lock screen, leaves it false. A ring that ends before the user takes it, including one for an unknown target, never makes the state active. Name the call from `activeCall?.displayName`.
 
-**Transitions.** `didChangeStateFrom:to:` is synchronous and ordered, so it is the place for anything that must match the state exactly. A typical outgoing call delivers `idle -> dialing`, `dialing -> connecting`, `connecting -> connected`, then `connected -> ended(.completed)`. A drop delivers `connected -> reconnecting(attempt: 1)` and, on recovery, `reconnecting -> connected`. `reconnecting(attempt: 0)` means the transport is healing itself and the engine has spent no retry: a short interruption delivers `connected -> reconnecting(attempt: 0)` and then `reconnecting -> connected`, or, if the transport gives up or has not recovered within 30 seconds, `reconnecting(attempt: 0) -> reconnecting(attempt: 1)` and the engine's own retries. Both adapters report short interruptions this way. A ring that arrives while a finished call is still terminal delivers `ended -> idle -> incomingRinging`. For sounds, use cues instead of deriving them from these sequences.
+**Transitions.** `didChangeStateFrom:to:` is synchronous and ordered, so it is the place for anything that must match the state exactly. A typical outgoing call delivers `idle -> dialing`, `dialing -> connecting`, `connecting -> connected`, then `connected -> ended(.completed)`. A drop delivers `connected -> reconnecting(attempt: 1)` and, on recovery, `reconnecting -> connected`. `reconnecting(attempt: 0)` means the transport is healing itself and the engine has spent no retry: a short interruption delivers `connected -> reconnecting(attempt: 0)` and then `reconnecting -> connected`, or, if the transport gives up or has not recovered within 30 seconds, `reconnecting(attempt: 0) -> reconnecting(attempt: 1)` and the engine's own retries. Both adapters report short interruptions this way. A ring that arrives while a finished call is still terminal delivers `ended -> idle -> incomingRinging`. An answered ring delivers `incomingRinging -> connecting`, or, for a pre-connected ring whose agent was already there, `incomingRinging -> connected` directly. For sounds, use cues instead of deriving them from these sequences.
 
 <a id="cues"></a>**Cues.** The engine plays no sound. It tells you the moments at which you would play your own, through `callEngine(_:cue:)`:
 
 | `CallCue` | When |
 |---|---|
-| `.start(.connecting)` | The call moved to `.connecting` (placed and accepted by CallKit, or answered). Loop a ringback until `.stop`. |
+| `.start(.connecting)` | The call moved to `.connecting` (placed and accepted by CallKit, or answered). Loop a ringback until `.stop`. Not delivered for a pre-connected ring answered with its agent there, which goes straight to connected. |
 | `.start(.retrying)` | The connection dropped (`.connected` to `.reconnecting`). Loop a "retrying" sound until `.stop`. |
 | `.stop` | End the loop that is running. |
-| `.moment(.connected)` | The call connected for the first time. |
+| `.moment(.connected)` | The call connected for the first time, including at the answer of a pre-connected ring whose agent was there. |
 | `.moment(.reconnected)` | The call came back after an outage. |
 | `.moment(.connectionLost)` | The connection dropped. Once per outage, followed by `.start(.retrying)`. |
 | `.moment(.held)` | The call was put on hold. A running loop is stopped first; no other cue comes until `.moment(.resumed)`. |
@@ -338,7 +367,8 @@ What the engine guarantees, so you need no bookkeeping of your own:
 
 - At most one loop runs at a time. Every `.start` is followed by exactly one `.stop` before the next `.start`, before `.moment(.connected)` or `.moment(.reconnected)`, and no later than the transition that ends the call, whatever ends it (a hangup, a failure, an exhausted retry budget, a CallKit provider reset).
 - `.moment(.connectionLost)` comes once per outage, also when a transport's own healing escalates to the engine's retries (`reconnecting(attempt: 0) -> reconnecting(attempt: 1)` is not a second outage).
-- A ring that is never answered (declined, timed out, cancelled, filtered by Focus, busy, or ended before it could proceed) produces no cues; CallKit's ringtone is the only sound.
+- A ring that is never answered (declined, timed out, cancelled, filtered by Focus, busy, or ended before it could proceed) produces no cues; CallKit's ringtone is the only sound. Preparing a ring produces none either.
+- An answer to a pre-connected ring whose agent is there delivers `.moment(.connected)` with no `.start(.connecting)` before it.
 - While the call is on hold, nothing plays: `.moment(.held)` comes with no loop running, and the next cue is `.moment(.resumed)`. A connection that drops and comes back during the hold is not marked; one still down at the resume is marked then, once. Hold and resume cues come when CallKit performs the hold action, not with a state change.
 - Cues arrive synchronously on the main actor, right after the `didChangeStateFrom:to:` of the same change and after that change's ring-status receipt (so `answered` is sent before the ringback starts). `engine.repeatingCue` is already updated when a cue arrives.
 
@@ -368,18 +398,20 @@ A transport carries audio between the device and the agent. Conform to `CallTran
 | Requirement | Contract |
 |---|---|
 | `events: AsyncStream<TransportEvent>` | The only way state leaves the transport. The engine reads it once per call, from creation until teardown. |
-| `connect(_:) async throws` | Join `connection.url` with `connection.token`. Called once per attempt: first connect, then once per engine reconnect attempt, on the same instance, which can be while your SDK is still healing the previous session (see the rules below). Throw `TransportError.authenticationFailed` only for credentials the server rejected; it ends the call at once, even mid-reconnect. |
+| `connect(_:) async throws` | Join `connection.url` with `connection.token`. Called once per attempt: first connect (during the ring, for a pre-connected one), then once per engine reconnect attempt, on the same instance, which can be while your SDK is still healing the previous session (see the rules below). Throw `TransportError.authenticationFailed` only for credentials the server rejected; it ends the call at once, even mid-reconnect. |
 | `disconnect() async` | Leave because the call is over. If your protocol has an explicit "end call" signal, send it here (see [section 11](#11-what-the-server-side-must-do)). |
 | `setMicEnabled(_:) async` | Capture on or off. Can arrive before `connect` finishes; it must be harmless then, because the engine sets it again after `.connected`. Also used to pause the mic during interruptions. |
 | `availableAudioDevices() async`, `selectedAudioDevice() async`, `setAudioDevice(_:) async` | The routes the user can pick, and switching between them, through your SDK so it does not revert the choice. |
 | `attachAudioSession() async` | CallKit has activated the session and the call is not on hold: start audio I/O on it. Never activate the session or change its category yourself. Can be called before `connect`, again after an interruption, and on resuming from hold; make it idempotent. |
 | `detachAudioSession() async` | CallKit deactivated the session, the call was put on hold, or the call is ending: stop audio I/O, playout included. Can be called mid-call, and twice in a row (a hold followed by CallKit's deactivation). |
-| `send(_:) async` | Deliver a `CallSignal` (`held`, `resumed`) to the agent. Optional: the default implementation drops it. Best effort: the engine never waits on a delivery for anything else, does not retry, and sends only once the transport has reported `.connected`. Must not throw, must return promptly when the connection is gone, and may get the same signal again (`held` is repeated after every reconnect of a held call). |
+| `send(_:) async` | Deliver a `CallSignal` (`answered`, `held`, `resumed`) to the agent. Optional: the default implementation drops it. Best effort: the engine never waits on a delivery for anything else, does not retry, and sends only once the transport has reported `.connected`. Must not throw, must return promptly when the connection is gone, and may get the same signal again (`held` is repeated after every reconnect of a held call, `answered` after every reconnect). |
+| `canConnectWhileRinging: Bool` | Whether `connect(_:)` may run while an incoming call still rings ([pre-connect](#pre-connect)'s `.media` tier). Optional: the default is `false`, which keeps the transport at `.credentials`. Return `true` only if, until `attachAudioSession()`, your `connect(_:)` and everything it starts leave `AVAudioSession` alone (no category, mode, option or route change, no activation), start no audio input or output, and make nothing from the remote party audible, and your `send(_:)` reaches the agent, which waits for `call-answered`. Read once per ring, right after `makeTransport`. |
 
 Rules that come from the device bugs this code survived:
 
 - **`connect` must not undo an attach.** If attach can come before or during connect, track whether you are attached and have `connect` apply the current state, rather than resetting audio to "off" unconditionally. An unconditional reset after a slow credential fetch is what produced a dead mic on the first call after launch.
 - **Being held is detach plus the mic.** The engine calls, in this order on hold: `setMicEnabled(false)`, `detachAudioSession()`, and, if connected, `send(.held)`. CallKit may then deactivate the session, which brings another `setMicEnabled(false)` and `detachAudioSession()`. On resume: `attachAudioSession()` (only if the session is still or again activated; otherwise at CallKit's next activation), `setMicEnabled(_:)` with the rule's answer, and, if connected, `send(.resumed)`. Mic and attach commands reach the transport one after another in the order the engine issued them; signals go in their own ordered queue, so a slow `send` never delays the mic. Your `detachAudioSession()` must stop playout as well as capture, or the user hears the agent while on another call, and your `attachAudioSession()` must restart both. Keep the connection up while held.
+- **Joining during a ring.** With `canConnectWhileRinging` true, the engine calls, during a `.media` ring: `connect(_:)` once, and nothing else: no `attachAudioSession()`, `setMicEnabled(_:)`, `send(_:)`, route reads (`availableAudioDevices()`, `selectedAudioDevice()`) or `setAudioDevice(_:)`. It reads your events then, but only to follow the preparation. If the ring ends unanswered, it calls `disconnect()` (no `detachAudioSession()`, since nothing was attached), possibly while your `connect(_:)` is still under way. When the user answers with the agent there, the transport becomes the call's at once: `setMicEnabled(false)` (CallKit has not activated yet), then, after CallKit's activation, `attachAudioSession()`, `setMicEnabled(_:)` with the rule's answer, `send(.answered)`, and the route work (`availableAudioDevices()`, `selectedAudioDevice()`, and `setAudioDevice(_:)` for the hands-free default). When the user answers before the agent is there, the transport is the call's as well, and your `.connected` drives the usual sequence, with the route work waiting for activation. Your `connect(_:)` therefore runs long before `attachAudioSession()`, and must apply the attach state current when media starts, as the first rule says.
 - **Emit `.connected` once the agent can hear the user**, not when the network connection opens. It drives the call timer, the user's "connected" cue, and the engine's mic re-apply.
 - **Follow `.reconnecting` with `.connected` or `.disconnected`.** The engine shows reconnecting while your SDK heals itself and waits up to 30 seconds for one of the two. After that it treats the transport as dropped: it does not call `disconnect()`, but runs its own reconnect, calling the target's `connect` for fresh credentials and then your `connect(_:)` on the same instance, possibly while your SDK is still trying to heal. If `.connected` arrives during the engine's attempt, the call recovers as usual: an attempt still waiting out its backoff or fetching credentials is cancelled, but a `connect(_:)` already under way is left to finish (it is not cancelled, so an SDK join that honours task cancellation is not abandoned), and its outcome is ignored. A hold during the attempt does the same.
 - **`connect(_:)` must handle a session that is still up.** When it is called while your SDK is still healing the previous session (or has just healed it), it must leave the transport able to report how the call goes on. It is required to do one of these:
@@ -493,7 +525,7 @@ The engine joins whatever room `connect` returns. Your server must put an agent 
 
 ### Call-control signals
 
-The engine tells the agent when the user's side holds and resumes the call, through `CallTransport.send(_:)`. A transport carries each `CallSignal` as an RTVI client message, the same envelope as the end-call signal, with the signal's raw value as `t`:
+The engine tells the agent when the user's side answers a pre-connected ring and when it holds and resumes the call, through `CallTransport.send(_:)`. A transport carries each `CallSignal` as an RTVI client message, the same envelope as the end-call signal, with the signal's raw value as `t`:
 
 ```json
 {"id": "<8 characters>", "label": "rtvi-ai", "type": "client-message", "data": {"t": "call-held"}}
@@ -503,16 +535,17 @@ The engine tells the agent when the user's side holds and resumes the call, thro
 |---|---|---|
 | `call-held` | The user's side put the call on hold. The user cannot hear the agent and their mic is closed. | Stop speaking (interrupt any response in progress), take no turns, and keep the session. If the user's media disappears while held, wait much longer than the usual drop grace window (the hold can last as long as the user's phone call) before giving up. |
 | `call-resumed` | The call is back. | Resume normally. |
-| `call-answered` | Reserved; not sent by this version. | Ignore it until you use pre-connect. |
+| `call-answered` | The user answered a ring whose push carried `preconnect`, CallKit has activated the call's audio, and the connection is up. | Start speaking (greet). An agent that joined during the ring must stay silent until this arrives; see [PushContract.md](PushContract.md#pre-connect) for the full obligations. |
 
-Signals are best effort and can repeat: `call-held` is sent again after every reconnect of a held call, and `call-resumed` after a reconnect that follows a resume the agent missed. Treat each as the current state, not a toggle, and ignore names you do not know. A transport that does not implement `send(_:)` delivers nothing; the call works the same, and the agent simply hears silence while the call is held.
+Signals are best effort and can repeat: `call-answered` is sent again after every reconnect, `call-held` after every reconnect of a held call, and `call-resumed` after a reconnect that follows a resume the agent missed. Treat each as the current state, not a toggle, and ignore names you do not know. A transport that does not implement `send(_:)` delivers nothing; the call works the same, and the agent simply hears silence while the call is held.
 
 ### For any transport
 
 - **Honor the end-call signal.** A dropped connection and a hangup look the same from the server unless the client says which it is. Because the engine reconnects after drops, your agent should hold the room for a grace window when the user's media disappears. When the end-call signal arrives, tear down immediately instead. If you ignore it, every hangup keeps your agent in the room (and billing) for the full grace window, and nothing on the device will tell you.
 - **Size the grace window to the engine's backoff.** The engine waits 1, 2, 4, 8, 16 and 30 seconds before its six attempts, a little over a minute in total plus connection time. When the transport first reports that it is healing itself, the engine waits up to 30 seconds for it before that backoff starts, so the device can still be trying for about a minute and a half after its media stopped. A shorter window cuts off drops the device would have recovered from. A held call does not reconnect until it is resumed, so after `call-held` (see [Call-control signals](#call-control-signals)) use a much longer window.
 - **Reconnects call your credential code again.** Each attempt re-runs the target's `connect`. Your endpoint may return the same room (the agent is still waiting there) or a fresh room with a newly dispatched agent; either works, as long as an agent is present when the device arrives. Inline credentials from a push are reused if your `connect` closure keeps returning them, so they must stay valid for the length of the call.
-- **The signal is best-effort.** The engine's teardown calls `disconnect()` for every ending (user hangup, agent hangup, failure), and the adapters send the signal only while the connection is up. A connection that died never sends it, which is exactly when the grace window should apply.
+- **The signal is best-effort.** The engine's teardown calls `disconnect()` for every ending (user hangup, agent hangup, failure, and a pre-connected ring that ends unanswered), and the adapters send the signal only while the connection is up. A connection that died never sends it, which is exactly when the grace window should apply.
+- **Pre-connect.** If your server sends `preconnect`, its agent may see the device join while the phone rings and must wait for `call-answered` before speaking; leaving the room before the answer withdraws the ring. The obligations are in [PushContract.md](PushContract.md#pre-connect).
 
 ## 12. Simulator and unit testing
 
@@ -560,7 +593,9 @@ and in `makeTransport`, return a `FakeTransport()` in the simulator. `FakeTransp
 | `reportedSupportsHolding(_:) -> Bool?` | Whether the engine last reported a call as holdable (`CallEngineConfiguration.supportsHolding`); nil for a call it never reported. |
 | `presentConnectedCall(_:secondsElapsed:botSpeaking:) -> Bool` | Puts a connected call on the engine's observed state without CallKit, a transport or any delegate callback, for screenshots of your in-call UI. Works only on the engine `CallEngine.simulated` made for this system; returns false otherwise. |
 
-`FakeTransport` records `connectCount`, `disconnectCount`, `lastConnection`, `isMicEnabled`, `isAudioAttached` and `sentSignals`; `connectError` makes the next connect throw; `suspendConnect` with `releaseConnect()` holds a connect open; `emit(_:)` sends an event through the stream (asynchronously, unlike `deliverTransportEvent`).
+`FakeTransport` records `connectCount`, `disconnectCount`, `lastConnection`, `isMicEnabled`, `isAudioAttached`, `sentSignals`, `audioDeviceReadCount` and `audioDeviceSelections` (the route reads and choices the engine made), and `cancelledConnectCount` (connects that finished with their task cancelled); `connectError` makes the next connect throw; `suspendConnect` with `releaseConnect()` holds a connect open; `canConnectWhileRinging` (default false) is what it declares for pre-connect; `emit(_:)` sends an event through the stream (asynchronously, unlike `deliverTransportEvent`).
+
+To test pre-connect, return a target with `ringPreparation: .media` and a `FakeTransport` whose `canConnectWhileRinging` is true, and deliver a push with `"preconnect": "media"`. The engine joins the transport while it rings (`connectCount` 1, `ringPreparationPhase == .connecting`); `deliverTransportEvent(_:)` during the ring goes to that transport, so `.connected` makes the phase `.ready`; `answerIncomingCall()` then connects the call at once, and after `activateAudioSession()` the transport is attached and has been sent `.answered`. Activate the session only after `answerIncomingCall()`: an activation during an unanswered ring is ignored, as one left over from an earlier call.
 
 A test of incoming-call handling with Swift Testing:
 
@@ -669,7 +704,18 @@ Incoming:
 - [ ] Ring, then send a cancel push for it while it rings: it stops, a `.canceledByCaller` record, a `canceled` receipt, the app keeps running. Send the cancel again: a brief flash that ends at once, and later pushes still arrive.
 - [ ] Ring with an unknown `target_id`, and with no `target_id` at all: a brief ring that ends, and the app keeps running.
 - [ ] Inline credentials and app-fetched credentials both connect.
+- [ ] If you use pre-connect, see the pre-connect checks below.
 - [ ] A TestFlight build ringed through the production APNs endpoint.
+
+Pre-connect, for each transport whose `canConnectWhileRinging` you rely on, with an agent that plays audio as soon as the device joins (so anything audible during the ring is heard), and again with the app killed and the phone locked:
+
+- [ ] Ring with `"preconnect": "media"`: during the ring nothing from the app is audible, the ringtone and vibration are unaffected, no orange microphone indicator shows, and Console shows no audio-session activation by the app before CallKit's `didActivate`. The agent logs the device joining.
+- [ ] Answer: CallKit activates, two-way audio within a second, the agent receives `call-answered` after the activation, the route is right (AirPods when connected, speaker otherwise), and the in-app route picker works.
+- [ ] Decline, let it time out, and send a cancel push: the agent gets `end-call` or sees the participant leave within a second; no audio or microphone indicator remains.
+- [ ] End the agent during the ring: the ring stops, a `.canceledByCaller` record, a `canceled` receipt.
+- [ ] Ring for a minute, locked: the device stays in the room the whole time (no drop in the agent's log), then answer.
+- [ ] Turn on airplane mode during the ring: it keeps ringing, and answering (with the network back) connects as without pre-connect.
+- [ ] Compare the time from answer to the agent's first audio with and without pre-connect.
 
 Build:
 
@@ -746,6 +792,7 @@ Fix: record only from `didFinish`; the engine already makes the end of a call id
 ## Known limitations
 
 - **One call at a time.** A second call during a live one is reported and ended as busy.
+- **Pre-connect is verified in unit tests only.** That a transport's join during a locked, ringing phone leaves the audio session alone, plays nothing, and survives a long ring has not been confirmed on a device for either bundled adapter; whether a bundled adapter joins during the ring at all is its `canConnectWhileRinging`. Outgoing calls are never prepared.
 - **Call hold is verified in unit tests only.** How iOS sequences the hold action with audio-session deactivation, activation and interruptions, whether it resumes the engine call by itself when the phone call ends, and whether a hold is offered with the provider's one-call-group configuration have not been confirmed on a device; the engine is written to handle any order. Hold is not configurable beyond on or off, and calls cannot be grouped or swapped beyond what holding allows.
 - **The bundled adapters do not deliver call-control signals yet.** `PipecatDailyTransport` and `LiveKitTransport` use the default `send(_:)`, which drops the signal, so their agents are not told about a hold. `PipecatDailyTransport`'s `detachAudioSession()` does nothing, so on Daily a held call may still play the agent's audio unless CallKit's deactivation silences it.
 - **A cancel push for a ring the device no longer has flashes.** iOS requires every VoIP push to be reported as a call, so a cancel for an unknown or finished ring shows a brief incoming call that ends at once. Whether iOS counts a cancel CallKit refuses as a duplicate as properly reported (and keeps delivering pushes) is assumed from the PushKit rules and has not yet been confirmed on a device.

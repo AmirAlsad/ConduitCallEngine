@@ -1,6 +1,6 @@
 # Push contract
 
-For whoever builds the server that rings the app. It covers the APNs request, the payload the engine parses, what the user sees, how to withdraw a ring, and the ring-status receipts the engine sends back.
+For whoever builds the server that rings the app. It covers the APNs request, the payload the engine parses, what the user sees, how to withdraw a ring, how to have the device connect while it rings, and the ring-status receipts the engine sends back.
 
 The flow: your server sends an APNs VoIP push to a device token the app gave you. The engine reports an incoming call to CallKit straight from the payload, so the phone rings on the lock screen, in the car, or wherever the user is. When the user answers, the engine joins a room, either from credentials in the push or from credentials the app fetches itself. If the push asked for receipts, the engine POSTs the ring's outcome back to you.
 
@@ -14,8 +14,9 @@ Some payload features are optional and newer than others. An app sends its serve
 |---|---|
 | `ring_timeout` | Put `ring_timeout` in a ring push to shorten how long it rings. |
 | `cancel` | Send a cancel push to withdraw a ring ([Cancelling a ring](#cancelling-a-ring)). |
+| `preconnect` | Put `preconnect` in a ring push so the device prepares the call while it rings, and expect the `call-answered` signal ([Pre-connect](#pre-connect)). |
 
-Ignore feature names you do not know; later engines add more. Treat a device whose app sent no list as supporting none of them: an engine from before the list existed (0.1) ignores `ring_timeout`, and shows a cancel push as a brief incoming call that ends at once.
+Ignore feature names you do not know; later engines add more. Treat a device whose app sent no list as supporting none of them: an engine from before the list existed (0.1) ignores `ring_timeout` and `preconnect`, never sends `call-answered`, and shows a cancel push as a brief incoming call that ends at once.
 
 ## The APNs request
 
@@ -60,6 +61,7 @@ All keys are at the top level of the JSON body, beside or instead of `aps`; the 
 | `token` | Optional, with `room_url` | Join token for `room_url`. | Inline credentials need both keys and a non-empty token. With only one of the two, both are ignored. |
 | `status_url` | Optional | Where the engine POSTs the ring's outcome. See [Ring-status receipts](#ring-status-receipts). | No receipts are sent. |
 | `ring_timeout` | Optional | How long the phone may ring, in whole seconds, as a string of digits (`"30"`). It can only shorten the ring: the engine uses the smaller of this and the app's own timeout (60 seconds unless the app configures another), and raises a value below 10 to 10. When the ring times out, the engine ends it and sends `unanswered`. | The app's own timeout applies. Zero, negative, fractional or non-numeric values are treated as absent. |
+| `preconnect` | Optional | `"credentials"` or `"media"`: how much of the call the device may prepare while it rings; see [Pre-connect](#pre-connect). `"media"` is your promise that the agent stays silent until it receives `call-answered`. | Nothing is prepared; the device fetches credentials and joins after the answer. Any other value (including another case, such as `"Media"`) is treated as absent. |
 | `action` | Optional | `"ring"` for a ring. A cancel push uses `"cancel"`; see [Cancelling a ring](#cancelling-a-ring). | A ring. Any other value makes the push malformed. |
 
 A complete example:
@@ -87,7 +89,8 @@ Only `target_id` is required, but the smallest useful ring is `{"target_id": "..
 5. If the device is already in a call (ringing, dialing, connecting, connected or reconnecting), the new ring is reported and ended at once as unanswered. The live call is not touched, the engine reports a missed call to the app, and a `busy` receipt is sent. A push whose `call_id` is the call already in progress (a second delivery of the same ring) is not a new ring: it is reported, because iOS requires it, and otherwise ignored, with no missed call and no receipt.
 6. If Focus or Do Not Disturb filters the ring, the phone never rings. The engine reports a missed call to the app and a `suppressed_by_focus` receipt is sent.
 7. If nobody answers or declines within the ring timeout (the app's, 60 seconds by default, or your shorter `ring_timeout`), the engine ends the ring as unanswered, reports a missed call to the app and sends `unanswered`. An answer the user gave before the timeout always wins, even if the call has not connected yet.
-8. When the user answers, the engine joins the room: `room_url` and `token` from the push if both were present, otherwise whatever the app's own credential code returns. The call then behaves like an outgoing call, including reconnection.
+8. If the push carried `preconnect` and the app allows it for this target, the engine starts preparing the call once CallKit has accepted the report: it runs the app's credential code, and for `"media"` also joins the room, while the phone rings ([Pre-connect](#pre-connect)).
+9. When the user answers, the engine joins the room (unless it already did during the ring): `room_url` and `token` from the push if both were present, otherwise whatever the app's own credential code returns. The call then behaves like an outgoing call, including reconnection.
 
 ### What the user sees when name or handle are omitted
 
@@ -127,6 +130,49 @@ The engine remembers each cancelled `call_id` for 10 minutes (the most recent 32
 
 A cancel that arrives after the user answered never ends the call; end a call in progress through your agent instead (Integration Guide, [section 11](IntegrationGuide.md#11-what-the-server-side-must-do)). Apple's guidance is not to cancel through pushes at all but over a connection the app already has; when your ring has not reached the device yet or you are unsure, prefer letting `ring_timeout` end it.
 
+## Pre-connect
+
+A ring push can ask the device to prepare the call while the phone rings, so the agent is ready when the user answers instead of being reached only then. Send `preconnect` only to devices that list `preconnect` among their capabilities.
+
+| `preconnect` | During the ring | At the answer |
+|---|---|---|
+| `"credentials"` | The app's credential code runs (the app's request is marked as being for a ringing call), and the device keeps the result. Nothing joins the room. | The device joins with those credentials, without a second request. |
+| `"media"` | As for `"credentials"`, then the device joins the room. Its audio stays off: nothing plays, the microphone is closed, and the audio route is not touched until iOS activates the call's audio after the answer. | If the agent is already in the room, the call is connected at once. Otherwise the device waits for it, as for any connect. |
+
+The device prepares only what three parties agree on, the lowest of: your `preconnect`, what the app allows for the target (the app may allow less, or nothing, per ring), and, for `"media"`, whether the app's transport can join a room while the phone rings. A transport that cannot (and any transport the app wrote without saying it can) joins only at the answer, as if you had sent `"credentials"`. Ask for no more than your agent is ready for.
+
+Preparation starts once iOS has accepted the ring, not when the push arrives: a ring that Focus filters, or that the device is busy for, prepares nothing. A preparation that fails (credentials rejected, the room unreachable, the connection dropping) never ends or changes the ring: it keeps ringing, and if the user answers, the device fetches credentials again and joins as it would without pre-connect.
+
+When the ring ends without an answer (declined, timed out, cancelled, or the phone's CallKit reset), the device leaves the room it joined. If its connection was up, it sends the `end-call` signal first (the same RTVI client message as a hangup), so your agent can end at once. The receipt is the ring's usual one.
+
+### The `call-answered` signal
+
+For every ring whose push carried `preconnect` (either value), the engine tells the agent when it may speak, with an RTVI client message in the same envelope as `end-call`:
+
+```json
+{"id": "<8 characters>", "label": "rtvi-ai", "type": "client-message", "data": {"t": "call-answered"}}
+```
+
+It is sent when all three hold, whichever comes last: the user answered, iOS activated the call's audio, and the connection to the agent is up. It is sent again after every reconnect of the call, since a new connection may reach a new agent session. While the call is on hold it waits for the resume. It is sent even when the device prepared nothing (the app allowed no pre-connect), because your agent may have been started for the ring anyway. The app's transport carries it (see [Integration Guide, section 11](IntegrationGuide.md#call-control-signals)); a transport that does not deliver signals sends nothing.
+
+### What the agent must do for `"media"`
+
+With `"media"` the device can be in the room, and your agent can hear its participant join, while the phone is still ringing. The agent must:
+
+1. **Produce no audio until `call-answered` arrives.** Do not greet when the device joins, or on the client-ready event: the user has not answered yet. Start the greeting when the message arrives.
+2. **Treat `end-call` as for any call:** end at once. Declining, a ring timeout and a cancel all send it while the device's connection is up.
+3. **End by itself if nothing comes.** If no `call-answered` arrives within the ring timeout plus 15 seconds of the agent's start, end the session: the ring is over and the device may have no connection left to tell you.
+4. **Use the receipts as a fallback** (inline rings need `status_url` for this): `answered` means the user answered, so the agent may release its greeting if `call-answered` has not arrived; `declined`, `unanswered`, `canceled`, `busy` and `suppressed_by_focus` mean end the agent.
+5. **Treat the user's first audio as a hint only.** The device never opens its microphone before the answer, so audio from the user's side also means the user answered, but it can be absent for a while (a muted user, push-to-talk).
+
+How the agent receives the signal depends on the transport: on Daily, as an RTVI client message (a Pipecat bot's RTVI processor sees it as it sees `end-call`); on LiveKit, as a data packet on the room's data channel, which a Pipecat bot must parse from the transport's raw data-received event, as for `end-call`.
+
+With `"credentials"` the device joins only after the answer, so an agent that greets when the device joins behaves as it does without pre-connect. It still receives `call-answered`.
+
+### Withdrawing a pre-connected ring
+
+When the device is in the room with your agent during a `"media"` ring, **the agent leaving the room is the cancel**: the engine ends the ring as the caller hanging up, reports a missed call (`canceledByCaller`) to the app and sends `canceled` to the ring's `status_url`. This needs no cancel push, so the user never sees the flash a cancel push can cause; prefer it whenever the device is connected. It applies only once the device saw the agent in the room and before the user answered. An agent that leaves before the device saw it there does not end the ring: the preparation is dropped, the phone keeps ringing, and an answer connects afresh. Once the user has answered, the agent leaving ends the call, as any agent hangup does.
+
 ## Ring-status receipts
 
 When the push carries `status_url`, the engine reports the ring's terminal status there, once per ring:
@@ -146,7 +192,7 @@ Authorization: Bearer <bearer>          (omitted when the app supplies none)
 | `busy` | The push arrived while another call was in progress, so it was reported and ended at once. |
 | `suppressed_by_focus` | Focus or Do Not Disturb filtered the ring; the phone never rang. |
 | `unanswered` | The ring timed out: nobody answered or declined it within the ring timeout. |
-| `canceled` | A cancel push withdrew the ring while it was ringing. |
+| `canceled` | A cancel push withdrew the ring while it was ringing, or the agent left a pre-connected ring ([Withdrawing a pre-connected ring](#withdrawing-a-pre-connected-ring)). |
 
 Every status is sent only for a target the app knows; see "No receipt" below. **Accept statuses you do not know** (return 2xx and treat them as "ended, not answered"): later engines add statuses, and engines before 0.2 send only the first four.
 
@@ -163,6 +209,7 @@ Details:
 
 - **Mint a fresh `call_id` for every ring** and keep it unique. It is the CallKit call id and the key in every receipt. A push that repeats the id of the call still ringing or in progress is treated as a second delivery of that ring and ignored, so it cannot be used to ring again.
 - **Do not ring again until the previous ring has resolved** (a receipt arrived, or enough time passed that it has clearly ended). A second ring while the first is still ringing is reported and ended immediately as busy, and the user may see it flash.
+- **With pre-connect, withdraw a ring by ending the agent**, when the device is in the room with it ([Withdrawing a pre-connected ring](#withdrawing-a-pre-connected-ring)), rather than with a cancel push.
 - **Bound the ring rather than cancel it.** A ring ends by itself after the app's ring timeout (60 seconds by default); send a shorter `ring_timeout` when the reason for the call expires sooner. To withdraw a ring that is still showing, send a cancel push, only to devices that list `cancel`, without `target_id`, and expect the flash described in [Cancelling a ring](#cancelling-a-ring) when the ring has already ended on the device. Do not send a cancel after an `answered` receipt.
 - **Always include `display_name`** when you have it, so the ring shows the right name from the first frame.
 - **Expect the token to change.** Reinstalling the app gives the device a new VoIP token, and APNs answers pushes to the old one with `410 Unregistered`. Drop tokens that return 410.

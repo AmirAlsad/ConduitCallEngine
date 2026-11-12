@@ -23,7 +23,9 @@ public protocol CallEngineDelegate: AnyObject {
     /// does nothing); a ring Focus filtered is still recorded as missed. A
     /// push during a live call is ended as unanswered either way; nil leaves its
     /// caller name and handle uncorrected. No ring-status receipt is ever sent for
-    /// a ring whose target resolves to nil.
+    /// a ring whose target resolves to nil. For a ring, the target's
+    /// `ringPreparation` and the call's `requestedPreparation` decide how much of it
+    /// is prepared before the answer (`RingPreparation`).
     func callEngine(_ engine: CallEngine, targetForIncomingCall call: IncomingCall) -> CallTarget?
     /// Only on real assignments, after the engine's own field batch for that transition.
     func callEngine(_ engine: CallEngine, didChangeStateFrom old: CallState, to new: CallState)
