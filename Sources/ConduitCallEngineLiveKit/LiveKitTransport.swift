@@ -101,6 +101,9 @@ public final class LiveKitTransport: CallTransport {
         let disconnects = disconnectCount
         if let previous = join {
             Log.info(.transport, "LiveKit connect: superseding the join still in flight")
+            // The cancelled join's cleanup reports its room's participants leaving; that
+            // attempt is over, so it must not report it as the agent's hangup.
+            roomEvents.gate.userRequestedDisconnect = true
             previous.task.cancel()
             _ = await previous.task.result
             guard disconnectCount == disconnects else {
@@ -290,6 +293,7 @@ final class RoomEventMapper: NSObject, RoomDelegate {
     // MARK: - Main-actor intake
 
     func roomDidStartConnecting() {
+        gate.roomDidStartConnecting()
         continuation.yield(.connecting)
     }
 
@@ -333,7 +337,9 @@ final class RoomEventMapper: NSObject, RoomDelegate {
     nonisolated func room(_ room: Room, didUpdateConnectionState state: ConnectionState, from oldState: ConnectionState) {
         switch state {
         case .connecting:
-            continuation.yield(.connecting)
+            // Hopped too, so a departure the connect's own cleanup reports first is
+            // judged before the gate knows this attempt's room is connecting.
+            Task { @MainActor in self.roomDidStartConnecting() }
         case .connected:
             let hasRemote = !room.remoteParticipants.isEmpty
             Task { @MainActor in self.roomDidConnect(hasRemote: hasRemote) }

@@ -466,19 +466,163 @@ struct PreconnectTests {
         #expect(h.target.requests.count == 1)
     }
 
-    @Test func aJoinedRingAnsweredStartsTheJoinBoundAtTheAnswer() async throws {
+    // MARK: - A pre-connection never makes the answered call worse
+
+    /// The ring's transport joined, and the agent never came. Without a bound the
+    /// preparation would wait for the whole ring and hand the answer a room with no
+    /// agent in it.
+    @Test func aRingWhoseAgentNeverArrivesDropsItsPreparationAfterTheJoinBound() async throws {
+        let sleeper = ManualSleeper()
+        let h = harness(joinTimeout: .seconds(30), sleep: { await sleeper.sleep($0) })
+        let callID = UUID()
+        await ring(h, callID: callID)
+        let ringTransport = h.transport
+        await waitUntil { sleeper.pendingCount == 1 }
+        #expect(sleeper.requested == [.seconds(30)]) // bounded from the join's return, during the ring
+
+        sleeper.wakeAll()
+        await settle()
+
+        #expect(h.engine.ringPreparationPhase == .failed)
+        #expect(h.engine.state == .incomingRinging)
+        #expect(ringTransport.disconnectCount == 1)
+        #expect(h.delegate.cues.isEmpty)
+
+        await h.engine.answer()
+        #expect(h.target.requests.last == ConnectRequest(purpose: .answered, callID: callID))
+        #expect(h.transports.made.count == 2)
+    }
+
+    @Test func aRingWhoseAgentArrivesInTimeIsNotBounded() async throws {
         let sleeper = ManualSleeper()
         let h = harness(joinTimeout: .seconds(30), sleep: { await sleeper.sleep($0) })
         await ring(h)
-        #expect(sleeper.requested.isEmpty) // no bound while ringing
+        await waitUntil { sleeper.pendingCount == 1 }
+
+        h.engine.handle(.connected)
+        sleeper.wakeAll()
+        await settle()
+
+        #expect(h.engine.ringPreparationPhase == .ready)
+    }
+
+    /// Answered while the joined transport still waits for its agent: the bound keeps
+    /// counting from the join, and when it runs out the call connects as it would have
+    /// without pre-connect (fresh credentials, `.answered`), on the same transport, so
+    /// the agent of the abandoned join is not sent the end-call signal (the fresh
+    /// credentials may name the same room).
+    @Test func anAnsweredRingWhoseAgentNeverArrivesConnectsAfresh() async throws {
+        let sleeper = ManualSleeper()
+        let h = harness(joinTimeout: .seconds(30), sleep: { await sleeper.sleep($0) })
+        let callID = UUID()
+        await ring(h, callID: callID)
+        await waitUntil { sleeper.pendingCount == 1 }
 
         await h.engine.answer()
-        await waitUntil { sleeper.pendingCount == 1 }
-        #expect(sleeper.requested == [.seconds(30)])
-
+        #expect(sleeper.requested == [.seconds(30)]) // not restarted at the answer
         sleeper.wakeAll()
+        await waitUntil { h.transport.connectCount == 2 }
+
+        #expect(h.engine.state == .connecting)
+        #expect(h.delegate.records.isEmpty)
+        #expect(h.target.requests.map(\.purpose) == [.ringing(joinsBeforeAnswer: true), .answered])
+        #expect(h.target.requests.last?.callID == callID)
+        #expect(h.transports.made.count == 1)
+        #expect(h.transport.disconnectCount == 0)
+
+        h.engine.handle(.connected)
+        #expect(h.engine.state.isConnected)
+        #expect(h.delegate.cues == [.start(.connecting), .stop, .moment(.connected)])
+        #expect(h.delegate.cueViolations.isEmpty)
+    }
+
+    enum PreparedFailure: String, CaseIterable, Sendable {
+        case joinThrows, credentialsFail, rejectedCredentials, networkDropped, errorWhileJoining, botLeftBeforeReady, authFailed
+    }
+
+    /// Whatever the ring prepared failing after the answer, before the agent was
+    /// there, sends the call down the path it would have taken without pre-connect.
+    @Test(arguments: PreparedFailure.allCases)
+    func aPreparationThatFailsAfterTheAnswerConnectsAfresh(failure: PreparedFailure) async throws {
+        let h = harness(allows: failure == .credentialsFail || failure == .rejectedCredentials ? .credentials : .media)
+        let callID = UUID()
+        switch failure {
+        case .joinThrows: h.transport.suspendConnect = true
+        case .credentialsFail, .rejectedCredentials: h.target.suspend = true
+        default: break
+        }
+        await ring(h, callID: callID)
+        let answer = Task { await h.engine.answer() }
+        await settle()
+        #expect(h.engine.state == .connecting)
+
+        switch failure {
+        case .joinThrows:
+            h.transport.connectError = .connectionFailed("refused")
+            h.transport.releaseConnect()
+            await waitUntil { h.transport.connectCount == 2 } // the fresh connect, held too
+            h.transport.connectError = nil
+            h.transport.releaseConnect()
+        case .credentialsFail, .rejectedCredentials:
+            h.target.error = failure == .rejectedCredentials ? TransportError.authenticationFailed : TransportError.connectionFailed("down")
+            h.target.release()
+            await waitUntil { h.target.pendingCount == 1 } // the fresh fetch, held too
+            h.target.error = nil
+            h.target.release()
+        case .networkDropped: h.engine.handle(.disconnected(reason: .networkDropped))
+        case .errorWhileJoining: h.engine.handle(.error(.timedOut))
+        case .botLeftBeforeReady: h.engine.handle(.disconnected(reason: .botLeft))
+        case .authFailed: h.engine.handle(.disconnected(reason: .authFailed))
+        }
+        await answer.value
+        await waitUntil { h.target.requests.last?.purpose == .answered && h.transport.connectCount >= 1 }
+        await settle()
+
+        #expect(h.engine.state == .connecting)
+        #expect(h.delegate.records.isEmpty)
+        #expect(h.target.requests.last == ConnectRequest(purpose: .answered, callID: callID))
+        #expect(h.transports.made.count == 1)
+        h.engine.handle(.connected)
+        #expect(h.engine.state.isConnected)
+        #expect(h.delegate.cueViolations.isEmpty)
+    }
+
+    /// Only once: the fresh connect is an ordinary first connect, whose failure fails
+    /// the call as it would without pre-connect.
+    @Test func aFreshConnectThatFailsTooFailsTheCall() async throws {
+        let h = harness()
+        h.transport.suspendConnect = true
+        await ring(h)
+        await h.engine.answer()
+        h.transport.connectError = .connectionFailed("refused")
+        h.transport.releaseConnect()
+        await waitUntil { h.transport.connectCount == 2 }
+        h.transport.releaseConnect()
         await waitUntil { h.engine.state.isTerminal }
-        #expect(h.engine.state == .failed(.agentUnreachable))
+
+        #expect(h.engine.state == .failed(.transportError))
+        #expect(h.delegate.records.map(\.failureReason) == [.transportError])
+        #expect(h.target.requests.map(\.purpose) == [.ringing(joinsBeforeAnswer: true), .answered])
+        #expect(h.transport.connectCount == 2)
+    }
+
+    /// A drop of the abandoned join while the fresh credentials are being fetched does
+    /// not fail the call: the fresh connect decides.
+    @Test func aDropWhileConnectingAfreshIsLeftToTheFreshConnect() async throws {
+        let h = harness()
+        await ring(h)
+        await h.engine.answer()
+        h.target.suspend = true
+        h.engine.handle(.error(.timedOut)) // the prepared join failed
+        await waitUntil { h.target.pendingCount == 1 }
+
+        h.engine.handle(.disconnected(reason: .networkDropped))
+        h.target.release()
+        await waitUntil { h.transport.connectCount == 2 }
+
+        #expect(h.engine.state == .connecting)
+        h.engine.handle(.connected)
+        #expect(h.engine.state.isConnected)
     }
 
     @Test(arguments: [false, true])
@@ -493,11 +637,17 @@ struct PreconnectTests {
         #expect(h.engine.state == .connecting)
         if fails { h.transport.connectError = .connectionFailed("refused") }
         h.transport.releaseConnect()
+        if fails {
+            await waitUntil { h.transport.connectCount == 2 }
+            h.transport.releaseConnect()
+        }
         await settle()
 
         if fails {
+            // Connected afresh; that connect failed the same way.
             #expect(h.engine.state == .failed(.transportError))
             #expect(h.delegate.records.map(\.failureReason) == [.transportError])
+            #expect(h.target.requests.last?.purpose == .answered)
         } else {
             #expect(h.engine.state == .connecting)
             #expect(sleeper.requested == [.seconds(30)]) // the join bound, from the join's return
@@ -529,7 +679,9 @@ struct PreconnectTests {
         #expect(h.engine.state.isConnected)
     }
 
-    @Test func credentialsThatFailAfterTheAnswerFailTheCall() async throws {
+    /// The ring's credentials failing after the answer send the call to an `.answered`
+    /// fetch; rejected there too, the call fails as it would without pre-connect.
+    @Test func credentialsThatFailAfterTheAnswerAndAgainFailTheCall() async throws {
         let h = harness(allows: .credentials)
         h.target.suspend = true
         await ring(h)
@@ -539,9 +691,12 @@ struct PreconnectTests {
         h.target.error = TransportError.authenticationFailed
         h.target.release()
         await answer.value
+        await waitUntil { h.target.pendingCount == 1 }
+        h.target.release()
+        await waitUntil { h.engine.state.isTerminal }
 
         #expect(h.engine.state == .failed(.badToken))
-        #expect(h.target.connectCount == 1)
+        #expect(h.target.requests.map(\.purpose) == [.ringing(joinsBeforeAnswer: false), .answered])
     }
 
     @Test(arguments: [false, true])

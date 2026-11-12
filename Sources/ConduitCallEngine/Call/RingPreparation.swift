@@ -46,7 +46,9 @@ public enum RingPreparationPhase: Equatable, Sendable {
     case fetchingCredentials
     /// The credentials arrived and are kept for the answer (`.credentials`).
     case credentialsReady
-    /// The transport is joining the room during the ring (`.media`).
+    /// The transport is joining the room during the ring (`.media`). Once its
+    /// `connect(_:)` has returned, the agent has `CallEngineConfiguration.joinTimeout`
+    /// to be there, or the preparation fails.
     case connecting
     /// The transport reported `.connected` during the ring: the agent is there.
     case ready

@@ -61,6 +61,35 @@ struct LiveKitUnderEngineTests {
         #expect(rig.engine.state == .ended(.canceled))
     }
 
+    // MARK: - An agent that leaves a ring before the device saw it ready
+
+    /// The push contract: an agent that leaves before the device saw it there does
+    /// not end the ring; the preparation is dropped and an answer connects afresh.
+    @Test(.timeLimit(.minutes(1)))
+    func anAgentLeavingARingBeforeTheRoomConnectedDropsThePreparation() async throws {
+        let rig = LiveKitEngineRig()
+        rig.ringPreparation = .media
+        rig.refreshTarget()
+        rig.prepareRoom = { $0.holdsJoin = true }
+        let id = rig.ring()
+        await waitUntil { rig.room?.isHoldingJoin == true }
+        let room = try #require(rig.room)
+        #expect(room.hasRemoteParticipants) // arrived with the join response
+
+        room.agentLeaves()
+        await waitUntil { rig.engine.ringPreparationPhase == .failed }
+
+        #expect(rig.engine.ringPreparationPhase == .failed)
+        #expect(rig.engine.state == .incomingRinging)
+        #expect(rig.host.records.isEmpty)
+
+        rig.prepareRoom = { _ in }
+        await rig.system.answerIncomingCall()
+        #expect(rig.requests.map(\.purpose) == [.ringing(joinsBeforeAnswer: true), .answered])
+        #expect(rig.requests.last?.callID == id)
+        #expect(rig.rooms.count == 2)
+    }
+
     // MARK: - A hold and resume during a reconnect attempt's join
 
     /// A connected call whose room dropped: the engine's first attempt is joining a

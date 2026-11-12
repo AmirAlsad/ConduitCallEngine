@@ -13,6 +13,8 @@
 //    turn, so two connects on one room tear each other down.
 //  - A connect is cancellation-aware: cancelled, it cleans up and throws.
 //  - Cleaning up a room with remote participants reports each of them leaving.
+//  - Participants already in the room arrive with the join response, while the
+//    room is still `.connecting`, without a participant-joined callback.
 //
 
 import Foundation
@@ -66,6 +68,7 @@ final class FakeLiveKitRoom: LiveKitRoomControlling {
         let mine = generation
         phase = .connecting
         events?.roomDidStartConnecting()
+        if agentWaitsInRoom { remotes = 1 } // the join response
         if holdsJoin {
             await withTaskCancellationHandler {
                 await withCheckedContinuation { joinWaiter = $0 }
@@ -80,7 +83,6 @@ final class FakeLiveKitRoom: LiveKitRoomControlling {
             await cleanUp()
             throw error
         }
-        if agentWaitsInRoom { remotes = 1 }
         phase = .connected
         events?.roomDidConnect(hasRemote: remotes > 0)
     }

@@ -21,7 +21,11 @@
 //  signal path reaches it, and its events steer only the ring's preparation,
 //  never the ring, except that the agent leaving a ready ring is the caller
 //  cancelling it. The answer adopts it; a prepared call's route work then waits
-//  for CallKit's activation too (`routeWaitsForActivation`).
+//  for CallKit's activation too (`routeWaitsForActivation`). A preparation never
+//  makes the answered call worse than none: a ring's join is bounded by the join
+//  deadline, and whatever the ring prepared failing after the answer, before the
+//  agent was there, sends the call down the unprepared path once
+//  (`fallBackFromPreparation`).
 //
 
 import Foundation
@@ -180,6 +184,13 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     private var signalsAnswer = false
     /// Whether `CallSignal.answered` has been sent on the current connection.
     private var isAnswerSignalSent = false
+    /// The answered call's first connect is using what the ring prepared (its
+    /// credentials, or its transport's join) and has not reached `.connected`. If
+    /// that fails, the call connects as it would have without pre-connect, once.
+    private var isPreparedConnect = false
+    /// Identifies the unprepared connect a failed preparation started, while its
+    /// credential fetch or its transport's connect is under way.
+    private var freshConnectID: UUID?
     /// A call answered with a prepared ring refreshes routes and applies the
     /// hands-free default only once CallKit has activated the session: it can be
     /// connected (and its transport report route changes) before that.
@@ -670,16 +681,20 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
 
         case .joining(let transport, let hasJoined):
             // Its connect may still be under way; `ringTransportConnectReturned`
-            // treats what it returns as the call's first connect.
+            // treats what it returns as the call's first connect. A joined one's
+            // deadline has been running since the join and keeps running.
             adopt(transport, isSubscribed: true)
+            isPreparedConnect = true
             transition(to: .connecting)
-            if hasJoined { awaitAgent(on: transport) }
+            if hasJoined { isAwaitingAgent = true }
 
         case .fetching(let fetch, let transport, let isSubscribed):
+            isPreparedConnect = true
             transition(to: .connecting)
             await connectTransport(for: target, using: transport, isSubscribed: isSubscribed) { try await fetch.value }
 
         case .credentials(let connection, let transport):
+            isPreparedConnect = true
             transition(to: .connecting)
             await connectTransport(for: target, using: transport) { connection }
         }
@@ -768,11 +783,12 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
                 ringPreparationFailed()
             } else {
                 isRingTransportJoined = true
+                if ringPreparationPhase == .connecting { startRingJoinDeadline(for: transport) }
             }
         } else if transport === self.transport {
             if let error {
                 Log.error(.transport, "connect failed: \(error)")
-                fail((error as? TransportError) == .authenticationFailed ? .badToken : .transportError)
+                failFirstConnect(error)
             } else if state == .connecting {
                 awaitAgent(on: transport)
             }
@@ -786,10 +802,17 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     private func handleRingEvent(_ event: TransportEvent) {
         switch event {
         case .connected:
-            if ringPreparationPhase == .connecting { ringPreparationPhase = .ready }
+            if ringPreparationPhase == .connecting {
+                ringPreparationPhase = .ready
+                cancelJoinDeadline()
+            }
         case .reconnecting:
-            // Healing itself: the agent is there again once it reports `.connected`.
-            if ringPreparationPhase == .ready { ringPreparationPhase = .connecting }
+            // Healing itself: the agent is there again once it reports `.connected`,
+            // within the same bound as a join.
+            if ringPreparationPhase == .ready {
+                ringPreparationPhase = .connecting
+                if let ringTransport { startRingJoinDeadline(for: ringTransport) }
+            }
         case .disconnected(reason: .botLeft) where ringPreparationPhase == .ready && !isAnswerRequested:
             Log.info(.call, "The agent left the prepared ring; the caller cancelled it")
             endMissedRing(.canceledByCaller, callKitReason: .remoteEnded, receipt: .canceled)
@@ -814,6 +837,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     /// Give up the preparation but not the ring, which an answer then connects as
     /// it would without one.
     private func ringPreparationFailed() {
+        cancelJoinDeadline()
         preparationID = nil
         preparationFetch?.cancel()
         preparationFetch = nil
@@ -824,6 +848,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
 
     /// Undo a ring's preparation: the ring ended, or the call is torn down.
     private func cancelRingPreparation() {
+        if ringTransport != nil { cancelJoinDeadline() }
         preparationID = nil
         preparationFetch?.cancel()
         preparationFetch = nil
@@ -930,8 +955,69 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
             // re-enter `.failed` and replace the newer state. Ignore unless this is
             // still the live transport.
             guard self.transport === transport else { return }
+            failFirstConnect(error)
+        }
+    }
+
+    /// The call's first connect threw: the call fails, unless it was connecting with
+    /// what the ring prepared, which then gives way to an unprepared connect.
+    private func failFirstConnect(_ error: any Error) {
+        if canFallBackFromPreparation {
+            fallBackFromPreparation("its connect failed: \(error)")
+        } else {
             fail((error as? TransportError) == .authenticationFailed ? .badToken : .transportError)
         }
+    }
+
+    /// The answered call is still connecting with what its ring prepared.
+    private var canFallBackFromPreparation: Bool {
+        guard isPreparedConnect, case .connecting = state else { return false }
+        return true
+    }
+
+    /// The unprepared connect a failed preparation started is under way; the
+    /// abandoned preparation's failures no longer decide anything.
+    private var isConnectingAfresh: Bool {
+        guard freshConnectID != nil, case .connecting = state else { return false }
+        return true
+    }
+
+    /// What the ring prepared failed after the answer, before the agent was there:
+    /// connect as the answer would have without pre-connect, with fresh `.answered`
+    /// credentials, on the same transport. Not a new one, and no `disconnect()` of
+    /// this one: that would send the end-call signal, and the fresh credentials may
+    /// name the same room. The transport's `connect(_:)` takes its session over, as
+    /// on a reconnect attempt. Only once; that connect's own failure fails the call.
+    private func fallBackFromPreparation(_ reason: String) {
+        guard canFallBackFromPreparation, let transport, let target = currentTarget else { return }
+        Log.warning(.call, "The ring's preparation failed after the answer (\(reason)); connecting as without pre-connect")
+        isPreparedConnect = false
+        isAwaitingAgent = false
+        cancelJoinDeadline()
+        let id = UUID()
+        freshConnectID = id
+        Task { [weak self] in await self?.connectAfresh(on: transport, target: target, id: id) }
+    }
+
+    private func connectAfresh(on transport: CallTransport, target: CallTarget, id: UUID) async {
+        do {
+            let connection = try await target.connect(connectRequest(.answered))
+            guard isCurrentFreshConnect(id, on: transport) else { return }
+            try await transport.connect(connection)
+            guard isCurrentFreshConnect(id, on: transport) else { return }
+            freshConnectID = nil
+            awaitAgent(on: transport)
+        } catch {
+            Log.error(.transport, "connect failed: \(error)")
+            guard isCurrentFreshConnect(id, on: transport) else { return }
+            freshConnectID = nil
+            fail((error as? TransportError) == .authenticationFailed ? .badToken : .transportError)
+        }
+    }
+
+    private func isCurrentFreshConnect(_ id: UUID, on transport: CallTransport) -> Bool {
+        guard freshConnectID == id, self.transport === transport, case .connecting = state else { return false }
+        return true
     }
 
     /// Make `transport` the call's: media commands and signals from here on go to
@@ -1007,6 +1093,8 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         switch state {
         case .connecting:
             isAwaitingAgent = false
+            isPreparedConnect = false
+            freshConnectID = nil
             cancelJoinDeadline()
             let start = now()
             firstConnectedAt = start
@@ -1048,17 +1136,37 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
             break // our own teardown drives the terminal state
 
         case .authFailed:
-            fail(.badToken)
+            if canFallBackFromPreparation {
+                fallBackFromPreparation("the prepared credentials were rejected")
+            } else if isConnectingAfresh {
+                Log.warning(.call, "The abandoned preparation reported rejected credentials; ignored")
+            } else {
+                fail(.badToken)
+            }
 
         case .botLeft:
-            endRemote()
+            // An agent the device never saw ready leaving a prepared join is a lost
+            // preparation, as during the ring.
+            if canFallBackFromPreparation {
+                fallBackFromPreparation("the agent left before it was ready")
+            } else if isConnectingAfresh {
+                Log.info(.call, "The abandoned preparation's agent left; ignored")
+            } else {
+                endRemote()
+            }
 
         case .networkDropped, .unknown:
             guard state.isActive, !state.isTerminal else { return }
             // A call that never connected has nothing to reconnect to; fail rather
             // than loop. Reconnection is for mid-call drops (the driving case).
             if firstConnectedAt == nil {
-                fail(.transportError)
+                if canFallBackFromPreparation {
+                    fallBackFromPreparation("its connection dropped")
+                } else if isConnectingAfresh {
+                    Log.info(.call, "The abandoned preparation's connection dropped; ignored")
+                } else {
+                    fail(.transportError)
+                }
             } else {
                 scheduleReconnect()
             }
@@ -1067,6 +1175,10 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
 
     private func handleError(_ error: TransportError) {
         switch state {
+        case .connecting where canFallBackFromPreparation:
+            fallBackFromPreparation("a transport error: \(error)")
+        case .connecting where isConnectingAfresh:
+            Log.warning(.transport, "Transport error from the abandoned preparation: \(error)")
         case .connecting:
             fail(error == .authenticationFailed ? .badToken : .transportError)
         case .reconnecting where error == .authenticationFailed:
@@ -1225,6 +1337,28 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         }
     }
 
+    /// Bound a ring's joined transport's wait for its agent, as `startJoinDeadline`
+    /// bounds a call's. During the ring, running out is a failed preparation; once
+    /// the answer adopted the transport, the same bound keeps counting, and running
+    /// out sends the call down the unprepared path (`joinTimedOut`).
+    private func startRingJoinDeadline(for transport: CallTransport) {
+        cancelJoinDeadline()
+        guard let timeout = configuration.joinTimeout else { return }
+        let sleep = self.sleep
+        joinDeadlineTask = Task { [weak self] in
+            try? await sleep(timeout)
+            guard let self, !Task.isCancelled else { return }
+            self.joinDeadlineTask = nil
+            if transport === self.ringTransport {
+                guard self.state == .incomingRinging, self.ringPreparationPhase == .connecting else { return }
+                Log.warning(.call, "Ring preparation: the agent was not there within \(timeout) of the join")
+                self.ringPreparationFailed()
+            } else if transport === self.transport, case .connecting = self.state {
+                self.joinTimedOut(after: timeout)
+            }
+        }
+    }
+
     private func cancelJoinDeadline() {
         joinDeadlineTask?.cancel()
         joinDeadlineTask = nil
@@ -1234,6 +1368,8 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     /// ready. A reconnect attempt counts as failed.
     private func joinTimedOut(after timeout: Duration) {
         switch state {
+        case .connecting where canFallBackFromPreparation:
+            fallBackFromPreparation("the agent was not ready within \(timeout) of the join")
         case .connecting:
             Log.warning(.call, "Transport joined but the agent was not ready within \(timeout)")
             fail(.agentUnreachable)
@@ -1763,6 +1899,8 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         isReconnectionPaused = false
         isAnswerSignalSent = false
         isAwaitingAgent = false
+        isPreparedConnect = false
+        freshConnectID = nil
         routeWaitsForActivation = false
         cancelRingPreparation()
         activeCallID = nil
@@ -1793,6 +1931,8 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         isAgentToldHeld = false
         isReconnectionPaused = false
         isAwaitingAgent = false
+        isPreparedConnect = false
+        freshConnectID = nil
         isOutageMarked = false
         isConnectionMarked = false
         audioDevices = []

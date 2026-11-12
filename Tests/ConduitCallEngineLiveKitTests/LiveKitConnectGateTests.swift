@@ -47,10 +47,30 @@ struct LiveKitConnectGateTests {
         #expect(gate.remoteDidLeave(remotesRemain: true) == nil)
     }
 
-    @Test func remoteLeavingBeforeConnectedIsSilent() {
+    /// Before this attempt's room is even connecting, a departure belongs to the
+    /// cleanup of an earlier session (`Room.connect` cleans up first).
+    @Test func remoteLeavingBeforeThisAttemptsRoomConnectsIsSilent() {
         var gate = LiveKitConnectGate()
-        _ = gate.remoteDidJoin()                        // joined but room not up → not connected
+        _ = gate.remoteDidJoin()
         #expect(gate.remoteDidLeave(remotesRemain: false) == nil)
+    }
+
+    /// The agent arrived with the join response and left before the room connected:
+    /// the device never saw it ready. Reported, so a prepared ring drops its
+    /// preparation (the push contract) and a call is not left waiting for nobody.
+    @Test func theLastRemoteLeavingWhileThisAttemptsRoomConnectsIsBotLeft() {
+        var gate = LiveKitConnectGate()
+        gate.roomDidStartConnecting()
+
+        #expect(gate.remoteDidLeave(remotesRemain: false) == .disconnected(reason: .botLeft))
+        #expect(gate.roomDidConnect() == nil)
+        #expect(gate.remoteDidJoin() == nil)
+    }
+
+    @Test func aRemoteLeavingWhileOthersRemainBeforeReadyIsSilent() {
+        var gate = LiveKitConnectGate()
+        gate.roomDidStartConnecting()
+        #expect(gate.remoteDidLeave(remotesRemain: true) == nil)
     }
 
     @Test func disconnectReasonReflectsWhoEndedIt() {

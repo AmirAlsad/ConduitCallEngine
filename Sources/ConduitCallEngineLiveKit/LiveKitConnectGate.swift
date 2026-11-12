@@ -39,6 +39,13 @@
 //  reconnect to report how it ends, which LiveKit bounds by its own attempt count.
 //  A room that has already healed is reported `.connected` again.
 //
+//  The last remote leaving before this attempt reported `.connected` is `.botLeft`
+//  too, once this attempt's room has started connecting: the agent arrived with the
+//  join response and left before the device saw it ready. A prepared ring then drops
+//  its preparation (the push contract), and a call is not left waiting for nobody.
+//  A departure before this attempt's room started connecting belongs to the cleanup
+//  of an earlier session, which `Room.connect` runs first.
+//
 //  An attempt is over once it has reported a disconnect (a drop, an abandoned
 //  reconnect, or the agent leaving) or the host has asked to disconnect. From then
 //  on the gate reports nothing that would steer the engine (no `.connected`,
@@ -61,6 +68,8 @@ struct LiveKitConnectGate {
     }
 
     private(set) var roomConnected = false
+    /// This attempt's room reported `.connecting`.
+    private(set) var roomStartedConnecting = false
     private(set) var hasRemote = false
     private(set) var reportedConnected = false
     private(set) var hasReportedDisconnect = false
@@ -69,6 +78,10 @@ struct LiveKitConnectGate {
     /// Set when the engine initiates the disconnect, so a teardown isn't mistaken for a
     /// network drop (which would trigger the engine's reconnect loop).
     var userRequestedDisconnect = false
+
+    mutating func roomDidStartConnecting() {
+        roomStartedConnecting = true
+    }
 
     mutating func roomDidConnect() -> TransportEvent? {
         roomConnected = true
@@ -81,10 +94,11 @@ struct LiveKitConnectGate {
     }
 
     /// A remote left. `remotesRemain` is whether any remote is still in the room.
-    /// Only the last remote leaving an established call is a `.botLeft` disconnect.
+    /// Only the last remote leaving is a `.botLeft` disconnect: from an established
+    /// call, or from this attempt's room before the agent was reported ready.
     mutating func remoteDidLeave(remotesRemain: Bool) -> TransportEvent? {
         hasRemote = remotesRemain
-        guard reportedConnected, !remotesRemain, !isAttemptOver else { return nil }
+        guard reportedConnected || roomStartedConnecting || roomConnected, !remotesRemain, !isAttemptOver else { return nil }
         hasReportedDisconnect = true
         return .disconnected(reason: .botLeft)
     }
