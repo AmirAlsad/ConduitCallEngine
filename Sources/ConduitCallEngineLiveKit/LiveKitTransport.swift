@@ -155,17 +155,28 @@ public final class LiveKitTransport: CallTransport {
         LiveKitAudioRouter.select(id)
     }
 
+    /// CallKit activated the session (or a hold ended): let LiveKit's audio engine run,
+    /// which resumes the playout and capture it was asked for while unavailable.
     public func attachAudioSession() async {
-        // CallKit activated the session — let LiveKit's engine run now.
         isSessionAttached = true
-        do { try AudioManager.shared.setEngineAvailability(.default) }
-        catch { Log.error(.audio, "LiveKit setEngineAvailability(.default) error: \(error)") }
+        do {
+            try AudioManager.shared.setEngineAvailability(.default)
+            Log.info(.audio, "LiveKit attach: audio engine available (playout restored); running=\(AudioManager.shared.isEngineRunning)")
+        } catch {
+            Log.error(.audio, "LiveKit setEngineAvailability(.default) error: \(error)")
+        }
     }
 
+    /// A hold, CallKit's deactivation or teardown: stop LiveKit's audio engine, so
+    /// neither playout nor capture runs, while the room stays connected.
     public func detachAudioSession() async {
         isSessionAttached = false
-        do { try AudioManager.shared.setEngineAvailability(.none) }
-        catch { Log.error(.audio, "LiveKit setEngineAvailability(.none) error: \(error)") }
+        do {
+            try AudioManager.shared.setEngineAvailability(.none)
+            Log.info(.audio, "LiveKit detach: audio engine unavailable (playout and capture stopped); running=\(AudioManager.shared.isEngineRunning)")
+        } catch {
+            Log.error(.audio, "LiveKit setEngineAvailability(.none) error: \(error)")
+        }
     }
 
     private func mapConnectError(_ error: Error) -> TransportError {

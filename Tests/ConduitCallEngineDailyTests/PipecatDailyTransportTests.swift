@@ -19,7 +19,9 @@ import ConduitCallEngine
 struct PipecatDailyTransportTests {
     private final class Clients {
         var made: [FakePipecatTransport] = []
+        var controls: [FakeDailyCallControl] = []
         var joinOnConnect = true
+        var refusesBeforeJoin = false
         var pathMonitors: [FakePathMonitor] = []
     }
 
@@ -43,6 +45,12 @@ struct PipecatDailyTransportTests {
                 let monitor = FakePathMonitor()
                 clients.pathMonitors.append(monitor)
                 return monitor
+            },
+            makeCallControl: { [clients] transport in
+                let control = FakeDailyCallControl(transport: transport as! FakePipecatTransport)
+                control.refusesBeforeJoin = clients.refusesBeforeJoin
+                clients.controls.append(control)
+                return control
             }
         )
     }
@@ -328,5 +336,111 @@ struct PipecatDailyTransportTests {
         await transport.send(.held)
 
         #expect(fake.calls == ["connect", "send client-message", "send client-message"])
+    }
+
+    // MARK: - Being held
+
+    /// A connected call, attached as after CallKit's activation.
+    private func attachedCall(_ transport: PipecatDailyTransport) async throws -> FakePipecatTransport {
+        try await transport.connect(connection)
+        let fake = try #require(clients.made.first)
+        fake.becomeReady()
+        await transport.attachAudioSession()
+        await drain()
+        return fake
+    }
+
+    @Test func aCallThatIsNeverDetachedKeepsDailysSubscription() async throws {
+        let transport = makeTransport()
+        await transport.attachAudioSession()
+
+        let fake = try await attachedCall(transport)
+
+        #expect(fake.calls == ["connect"])
+    }
+
+    @Test func aHoldUnsubscribesTheAgentAudioAndAResumeSubscribesIt() async throws {
+        let transport = makeTransport()
+        let fake = try await attachedCall(transport)
+
+        await transport.setMicEnabled(false)
+        await transport.detachAudioSession()
+        await drain()
+        #expect(fake.calls == ["connect", "agent audio unsubscribed"])
+
+        await transport.attachAudioSession()
+        await drain()
+        #expect(fake.calls == ["connect", "agent audio unsubscribed", "agent audio subscribed"])
+    }
+
+    /// A hold followed by CallKit's deactivation detaches twice.
+    @Test func aSecondDetachChangesNothing() async throws {
+        let transport = makeTransport()
+        let fake = try await attachedCall(transport)
+
+        await transport.detachAudioSession()
+        await drain()
+        await transport.detachAudioSession()
+        await drain()
+
+        #expect(fake.calls == ["connect", "agent audio unsubscribed"])
+    }
+
+    @Test func aQuickHoldAndResumeEndsWithTheAgentAudible() async throws {
+        let transport = makeTransport()
+        let fake = try await attachedCall(transport)
+        let control = try #require(clients.controls.first)
+        control.suspensions = 5
+
+        await transport.detachAudioSession()
+        await Task.yield()
+        await transport.attachAudioSession()
+        await drain()
+
+        #expect(fake.calls.last == "agent audio subscribed")
+    }
+
+    /// A held call that drops reconnects on the same client; the agent stays silent
+    /// from the join on, not just once a later attach or detach arrives.
+    @Test(.timeLimit(.minutes(1)))
+    func aReconnectWhileHeldJoinsWithTheAgentAudioOff() async throws {
+        let transport = makeTransport()
+        let fake = try await attachedCall(transport)
+        await transport.detachAudioSession()
+        await drain()
+        fake.setState(state: .disconnected)
+        await drain()
+
+        try await transport.connect(connection)
+
+        #expect(fake.calls == ["connect", "agent audio unsubscribed", "agent audio unsubscribed", "connect"])
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func aChangeDailyRefusesBeforeTheJoinIsAppliedOnceJoined() async throws {
+        clients.refusesBeforeJoin = true
+        let transport = makeTransport()
+        let fake = try await attachedCall(transport)
+        await transport.detachAudioSession()
+        await drain()
+        fake.setState(state: .disconnected)
+        await drain()
+
+        try await transport.connect(connection)
+
+        #expect(fake.calls == ["connect", "agent audio unsubscribed", "connect", "agent audio unsubscribed"])
+    }
+
+    /// The engine's teardown detaches, then disconnects at once: the leave is not
+    /// held up by a subscription change, which the released session no longer gets.
+    @Test func aTeardownDetachDoesNotHoldUpTheLeave() async throws {
+        let transport = makeTransport()
+        let fake = try await attachedCall(transport)
+
+        await transport.detachAudioSession()
+        await transport.disconnect()
+        await drain()
+
+        #expect(fake.calls == ["connect", "send client-message", "disconnect", "release"])
     }
 }

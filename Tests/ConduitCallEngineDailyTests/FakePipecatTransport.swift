@@ -34,6 +34,12 @@ final class FakePipecatTransport: Transport {
         setState(state: .ready)
     }
 
+    /// Adds a call made on this session's Daily call client, so tests see it in order
+    /// with what the Pipecat client asked of the transport.
+    func record(_ call: String) {
+        calls.append(call)
+    }
+
     func initialize(options: PipecatClientOptions) {}
     func initDevices() async throws {}
 
