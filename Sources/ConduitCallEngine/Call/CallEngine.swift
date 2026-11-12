@@ -1883,9 +1883,11 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         if isAudioActivated { enqueueMedia { await $0.attachAudioSession() } }
         applyMic()
         syncHoldSignal()
-        sendConnectedSignalIfDue()
         delegate?.callEngine(self, cue: .moment(.resumed))
         markConnectedIfDue()
+        // After the connected cue, so a host that withholds the mic inside it for
+        // its own sound holds `call-connected` back too.
+        sendConnectedSignalIfDue()
         if case .reconnecting = state, !isOutageMarked {
             isOutageMarked = true
             delegate?.callEngine(self, cue: .moment(.connectionLost))

@@ -264,6 +264,101 @@ struct ConnectedSignalTests {
         #expect(failures.isEmpty, "\(failures.count) of \(orders.count) orders failed; first: \(failures.prefix(3))")
     }
 
+    /// The host withholds the mic from inside the `.moment(.connected)` cue, as
+    /// Conduit and the guide's sample do, wherever that cue comes from: the
+    /// connection, CallKit's activation or the resume. In every order of the
+    /// connection, the activation, a hold and its resume, on a call placed or
+    /// answered, the agent is told only after the host's release, and once.
+    @Test(arguments: [CallDirection.outgoing, .incoming])
+    func aWithholdMadeInTheConnectedCueHoldsTheSignalInEveryOrder(_ direction: CallDirection) async throws {
+        let events: [ConnectedSignalEvent] = [.connect, .activate, .hold, .unhold]
+        let orders = ConnectedSignalEvent.permutations(of: events).filter { order in
+            order.firstIndex(of: .hold)! < order.firstIndex(of: .unhold)!
+        }
+        try #require(orders.count == 12)
+        var failures: [String] = []
+        for order in orders {
+            if let failure = await runWithholdingInTheCue(order, direction) { failures.append(failure) }
+        }
+        #expect(failures.isEmpty, "\(failures.count) of \(orders.count) orders failed; first: \(failures.prefix(3))")
+    }
+
+    private func runWithholdingInTheCue(_ order: [ConnectedSignalEvent], _ direction: CallDirection) async -> String? {
+        let h = patientHarness()
+        var cueCount = 0
+        h.delegate.onCue = { engine, cue in
+            guard cue == .moment(.connected) else { return }
+            cueCount += 1
+            engine.setMicWithheld(true)
+        }
+        switch direction {
+        case .outgoing:
+            await h.placeCall()
+        case .incoming:
+            h.ring(callID: h.callID)
+            await h.engine.answer()
+        }
+        for (step, event) in order.enumerated() {
+            switch event {
+            case .connect: h.engine.handle(.connected)
+            case .activate:
+                h.provider.simulateActivate(FakeAudioSession())
+                await h.engine.awaitPendingActivation()
+            case .hold: h.provider.simulateSetHeld(h.callID, onHold: true)
+            case .unhold: h.provider.simulateSetHeld(h.callID, onHold: false)
+            default: break
+            }
+            await h.engine.awaitPendingMediaWork()
+            await h.engine.awaitPendingSignals()
+            if h.transport.sentSignals.contains(.connected) {
+                await h.engine.endCall()
+                return "\(direction) \(order) step \(step) (\(event)): told before the host's release"
+            }
+            if h.transport.micEnabledHistory.contains(true) {
+                await h.engine.endCall()
+                return "\(direction) \(order) step \(step) (\(event)): the mic opened during the host's sound"
+            }
+        }
+        guard cueCount == 1, h.engine.isMicWithheld else {
+            await h.engine.endCall()
+            return "\(direction) \(order): connected cue \(cueCount) times, withheld \(h.engine.isMicWithheld)"
+        }
+        h.engine.setMicWithheld(false)
+        await h.engine.awaitPendingMediaWork()
+        await h.engine.awaitPendingSignals()
+        let told = h.transport.sentSignals.filter { $0 == .connected }.count
+        await h.engine.endCall()
+        return told == 1 ? nil : "\(direction) \(order): told \(told) times after the release"
+    }
+
+    /// The reviewer's case: an answered ring still connecting is held, its agent
+    /// gets ready during the hold, and CallKit's session is active at the resume.
+    /// The connected cue comes at the resume; the agent must not be told before
+    /// the host's "Connected" is done.
+    @Test func anAnsweredCallThatConnectsDuringAHoldIsToldOnlyAfterTheConnectedSound() async throws {
+        let h = patientHarness()
+        h.delegate.onCue = { engine, cue in
+            if cue == .moment(.connected) { engine.setMicWithheld(true) }
+        }
+        h.ring(callID: h.callID)
+        await h.engine.answer()
+        await activate(h)
+        await setHeld(h, true)
+        h.engine.handle(.connected)
+        await h.engine.awaitPendingSignals()
+        #expect(h.transport.sentSignals == [.held])
+
+        await setHeld(h, false)
+        #expect(Array(h.delegate.cues.suffix(2)) == [.moment(.resumed), .moment(.connected)])
+        #expect(h.engine.isMicWithheld)
+        #expect(h.transport.sentSignals == [.held, .resumed])
+        #expect(!h.transport.micEnabledHistory.contains(true))
+
+        await withhold(h, false)
+        #expect(h.transport.sentSignals == [.held, .resumed, .connected])
+        #expect(h.transport.isMicEnabled)
+    }
+
     private func run(_ order: [ConnectedSignalEvent]) async -> String? {
         let h = CallEngineHarness(sleep: { _ in try await Task.sleep(for: .seconds(24 * 60 * 60)) })
         await h.placeCall()
