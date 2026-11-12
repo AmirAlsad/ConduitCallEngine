@@ -23,6 +23,11 @@
 //  (`DailyInterruptionReporter`): losing it emits `.reconnecting`, getting it back
 //  emits `.connected`. This reflects the path, not Daily's media state.
 //
+//  Teardown: `disconnect()` sends the end-call signal, leaves, then releases the
+//  Pipecat client, whose Daily transport and call client otherwise outlive the call.
+//  A released client cannot connect again, so a `connect` after `disconnect()`
+//  builds a new client; the old one's late callbacks no longer reach the transport.
+//
 
 import Foundation
 import ConduitCallEngine
@@ -32,48 +37,72 @@ import PipecatClientIOSDaily
 @MainActor
 public final class PipecatDailyTransport: CallTransport {
     public nonisolated let events: AsyncStream<TransportEvent>
+    private nonisolated let continuation: AsyncStream<TransportEvent>.Continuation
+    private let makePipecatTransport: @MainActor () -> Transport
 
-    private let client: PipecatClient
-    // `PipecatClient.delegate` is weak, so this strong reference keeps the mapper alive
-    // as long as the client. The mapper holds neither the client nor the transport.
-    private let clientEvents: PipecatEventMapper
+    /// A Pipecat client and the mapper that is its delegate. `disconnect()` takes the
+    /// session away and releases its client, so a later `connect` builds a new one.
+    private struct Session {
+        let client: PipecatClient
+        // `PipecatClient.delegate` is weak, so the session keeps the mapper alive as
+        // long as the client is in use. The mapper holds neither the client nor the transport.
+        let events: PipecatEventMapper
+    }
 
-    public init() {
+    private var session: Session?
+
+    public convenience init() {
+        self.init(makePipecatTransport: { PipecatClientIOSDaily.DailyTransport() })
+    }
+
+    init(makePipecatTransport: @escaping @MainActor () -> Transport) {
         let (stream, continuation) = AsyncStream.makeStream(of: TransportEvent.self)
         self.events = stream
-        self.clientEvents = PipecatEventMapper(continuation: continuation)
+        self.continuation = continuation
+        self.makePipecatTransport = makePipecatTransport
+        self.session = makeSession()
+    }
+
+    private func makeSession() -> Session {
         // Join with the mic disabled; capture is enabled only on CallKit activation
         // (via setMicEnabled), preserving the audio-session-ownership invariant.
-        self.client = PipecatClient(
+        let client = PipecatClient(
             options: PipecatClientOptions(
-                transport: PipecatClientIOSDaily.DailyTransport(),
+                transport: makePipecatTransport(),
                 enableMic: false,
                 enableCam: false
             )
         )
-        self.client.delegate = clientEvents
+        let events = PipecatEventMapper(continuation: continuation)
+        client.delegate = events
+        return Session(client: client, events: events)
     }
 
     // MARK: - CallTransport
 
     public func connect(_ connection: CallConnection) async throws {
-        clientEvents.gate.connectDidStart()
-        clientEvents.interruptions.connectDidStart()
+        let session = self.session ?? makeSession()
+        self.session = session
+        session.events.gate.connectDidStart()
+        session.events.interruptions.connectDidStart()
         do {
             let params = DailyTransportConnectionParams(
                 roomUrl: connection.url.absoluteString, token: connection.token
             )
-            try await client.connect(transportParams: params)
+            try await session.client.connect(transportParams: params)
         } catch {
-            clientEvents.gate.connectDidFail()
+            session.events.gate.connectDidFail()
             Log.error(.transport, "Daily connect failed: \(error)")
             throw TransportError.connectionFailed(String(describing: error))
         }
     }
 
     public func disconnect() async {
-        clientEvents.gate.userDidRequestDisconnect()
-        clientEvents.interruptions.userDidRequestDisconnect()
+        guard let session else { return }
+        self.session = nil
+        session.events.gate.userDidRequestDisconnect()
+        session.events.interruptions.userDidRequestDisconnect()
+        let client = session.client
         // Deliberate hangup: an explicit end-call message lets the remote side end
         // at once instead of waiting out the grace period it may give a dropped
         // participant. Throws when the bot was never ready — exactly when there's
@@ -83,9 +112,15 @@ public final class PipecatDailyTransport: CallTransport {
         }
         do { try await client.disconnect() }
         catch { Log.error(.transport, "Daily disconnect error: \(error)") }
+        // Pipecat's Daily transport and its Daily call client stay alive (a reference
+        // cycle through the client options) until release(), even after the leave.
+        // Released after the leave so the end-call signal and the leave go out first.
+        client.release()
+        client.delegate = nil
     }
 
     public func setMicEnabled(_ enabled: Bool) async {
+        guard let client = session?.client else { return }
         do { try await client.enableMic(enable: enabled) }
         catch { Log.error(.transport, "Daily enableMic(\(enabled)) error: \(error)") }
     }
@@ -94,14 +129,15 @@ public final class PipecatDailyTransport: CallTransport {
     // its "mic" devices and honors `updateMic` — unlike a manual AVAudioSession
     // override, which Daily's own session management would re-assert.
     public func availableAudioDevices() async -> [AudioDeviceInfo] {
-        client.getAllMics().map { AudioDeviceInfo(id: $0.id.id, name: $0.name) }
+        session?.client.getAllMics().map { AudioDeviceInfo(id: $0.id.id, name: $0.name) } ?? []
     }
 
     public func selectedAudioDevice() async -> AudioDeviceInfo? {
-        client.selectedMic.map { AudioDeviceInfo(id: $0.id.id, name: $0.name) }
+        session?.client.selectedMic.map { AudioDeviceInfo(id: $0.id.id, name: $0.name) }
     }
 
     public func setAudioDevice(_ id: String) async {
+        guard let client = session?.client else { return }
         do { try await client.updateMic(micId: MediaDeviceId(id: id)) }
         catch { Log.error(.audio, "Daily setAudioDevice(\(id)) error: \(error)") }
     }
