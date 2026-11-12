@@ -234,7 +234,45 @@ struct SimulatedEngineTests {
     }
 
     @Test func theEngineAdvertisesItsPushFeatures() {
-        #expect(CallEngine.supportedPushFeatures.isSuperset(of: ["cancel", "ring_timeout"]))
+        #expect(CallEngine.supportedPushFeatures.isSuperset(of: ["cancel", "ring_timeout", "preconnect"]))
+    }
+
+    /// A host drives a media-tier ring through the simulated system: the push asks
+    /// for it, the target allows it and the fake transport can join while ringing.
+    @Test func aPreconnectedRingIsAnsweredStraightIntoTheCall() async throws {
+        let ringTransport = FakeTransport()
+        ringTransport.canConnectWhileRinging = true
+        let connection = connection
+        host.targets[targetID] = CallTarget(
+            id: targetID,
+            displayName: "Echo",
+            handle: "echo@example.invalid",
+            makeTransport: { ringTransport },
+            connect: { _ in connection },
+            ringPreparation: .media
+        )
+        let callID = UUID()
+        system.deliverPush([
+            "target_id": targetID.uuidString,
+            "call_id": callID.uuidString,
+            "preconnect": "media",
+        ]) {}
+        await settle { ringTransport.connectCount == 1 }
+        #expect(engine.ringPreparationPhase == .connecting)
+        #expect(system.deliverTransportEvent(.connected))
+        #expect(engine.ringPreparationPhase == .ready)
+        #expect(engine.state == .incomingRinging)
+
+        await system.answerIncomingCall()
+        #expect(engine.state == .connected(since: now))
+        #expect(host.cues == [.moment(.connected)])
+        #expect(!ringTransport.isAudioAttached)
+
+        await system.activateAudioSession()
+        await settle { ringTransport.sentSignals == [.answered] }
+        #expect(ringTransport.isAudioAttached)
+        #expect(ringTransport.isMicEnabled)
+        #expect(ringTransport.sentSignals == [.answered])
     }
 
     @Test func ringFilteredByFocusIsRecordedAsMissed() {

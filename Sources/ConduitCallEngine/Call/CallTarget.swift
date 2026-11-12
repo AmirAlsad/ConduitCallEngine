@@ -25,19 +25,26 @@ public struct CallTarget {
     /// `TransportError.authenticationFailed` for credentials the backend rejected,
     /// so the call fails as `.badToken`.
     public let connect: @MainActor (ConnectRequest) async throws -> CallConnection
+    /// How much of an incoming call to this target the host lets the engine prepare
+    /// while it rings, at most; see `RingPreparation`. The push must ask for it too
+    /// (`IncomingCall.requestedPreparation`), so a host can set it per ring from
+    /// what the push asked for. Ignored for outgoing calls. Default `.none`.
+    public let ringPreparation: RingPreparation
 
     public init(
         id: UUID,
         displayName: String,
         handle: String?,
         makeTransport: @escaping @MainActor () -> any CallTransport,
-        connect: @escaping @MainActor (ConnectRequest) async throws -> CallConnection
+        connect: @escaping @MainActor (ConnectRequest) async throws -> CallConnection,
+        ringPreparation: RingPreparation = .none
     ) {
         self.id = id
         self.displayName = displayName
         self.handle = handle
         self.makeTransport = makeTransport
         self.connect = connect
+        self.ringPreparation = ringPreparation
     }
 
     /// An email-shaped handle unique to `id`, under the reserved `.invalid` domain.
@@ -67,12 +74,24 @@ public struct IncomingCall: Equatable, Sendable {
     public let handle: String
     /// Inline room credentials from the push, when it carried both.
     public let connection: CallConnection?
+    /// What the push's `preconnect` key asked the engine to prepare while the call
+    /// rings; `.none` when it carried none or a value the engine does not know.
+    /// The ring gets it only if the target allows it (`CallTarget.ringPreparation`).
+    public let requestedPreparation: RingPreparation
 
-    public init(callID: UUID, targetID: UUID, displayName: String, handle: String, connection: CallConnection?) {
+    public init(
+        callID: UUID,
+        targetID: UUID,
+        displayName: String,
+        handle: String,
+        connection: CallConnection?,
+        requestedPreparation: RingPreparation = .none
+    ) {
         self.callID = callID
         self.targetID = targetID
         self.displayName = displayName
         self.handle = handle
         self.connection = connection
+        self.requestedPreparation = requestedPreparation
     }
 }

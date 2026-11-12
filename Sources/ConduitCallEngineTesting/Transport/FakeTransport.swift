@@ -29,6 +29,11 @@ public final class FakeTransport: CallTransport, @unchecked Sendable {
     /// When set, the next `connect(_:)` throws this instead of succeeding.
     public var connectError: TransportError?
 
+    /// What the transport declares to the engine; false (the protocol's default)
+    /// unless a test sets it. Set it before the engine creates the transport for a
+    /// ring: the engine reads it once, right after creating it.
+    public var canConnectWhileRinging = false
+
     /// When true, `connect(_:)` suspends until `releaseConnect()` — lets a test fail
     /// and reset the call before `connect` resolves, exercising late-resolution races.
     public var suspendConnect = false
@@ -79,11 +84,24 @@ public final class FakeTransport: CallTransport, @unchecked Sendable {
     ]
     public private(set) var selectedAudioDeviceID = "speaker"
 
-    public func availableAudioDevices() async -> [AudioDeviceInfo] { fakeAudioDevices }
-    public func selectedAudioDevice() async -> AudioDeviceInfo? {
-        fakeAudioDevices.first { $0.id == selectedAudioDeviceID }
+    /// How many times the engine read the routes (`availableAudioDevices()` or
+    /// `selectedAudioDevice()`).
+    public private(set) var audioDeviceReadCount = 0
+    /// Every route the engine selected with `setAudioDevice(_:)`, in order.
+    public private(set) var audioDeviceSelections: [String] = []
+
+    public func availableAudioDevices() async -> [AudioDeviceInfo] {
+        audioDeviceReadCount += 1
+        return fakeAudioDevices
     }
-    public func setAudioDevice(_ id: String) async { selectedAudioDeviceID = id }
+    public func selectedAudioDevice() async -> AudioDeviceInfo? {
+        audioDeviceReadCount += 1
+        return fakeAudioDevices.first { $0.id == selectedAudioDeviceID }
+    }
+    public func setAudioDevice(_ id: String) async {
+        audioDeviceSelections.append(id)
+        selectedAudioDeviceID = id
+    }
 
     /// When true, `attachAudioSession()` suspends until `releaseAttach()` — stands in
     /// for a transport whose attach does real async work.

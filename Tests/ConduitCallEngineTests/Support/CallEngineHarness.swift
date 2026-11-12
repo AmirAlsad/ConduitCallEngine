@@ -77,6 +77,9 @@ final class FakeTarget {
     var connection = CallConnection(url: URL(string: "https://example.daily.co/room")!, token: "valid-token")
     var error: (any Error)?
     var suspend = false
+    /// What the target lets the engine prepare during a ring; see
+    /// `CallEngineHarness.allowRingPreparation(_:)`.
+    var ringPreparation: RingPreparation = .none
 
     /// Every request `connect` was called with, in order.
     private(set) var requests: [ConnectRequest] = []
@@ -96,7 +99,8 @@ final class FakeTarget {
             displayName: displayName,
             handle: handle,
             makeTransport: { [self] in transports.make() },
-            connect: { [self] request in try await connect(request) }
+            connect: { [self] request in try await connect(request) },
+            ringPreparation: ringPreparation
         )
     }
 
@@ -108,6 +112,8 @@ final class FakeTarget {
         if let error { throw error }
         return connection
     }
+
+    var pendingCount: Int { pending.count }
 
     /// Resume every suspended `connect`; each then returns (or throws) as scripted.
     func release() {
@@ -305,6 +311,12 @@ final class CallEngineHarness {
     /// The live call's transport (or the next call's, before it is placed).
     var transport: FakeTransport { transports.current }
 
+    /// Let the host's target prepare rings up to `tier` (pre-connect).
+    func allowRingPreparation(_ tier: RingPreparation) {
+        target.ringPreparation = tier
+        delegate.targets[target.id] = target.callTarget
+    }
+
     func placeCall() async {
         await engine.placeCall(target.callTarget)
     }
@@ -319,7 +331,8 @@ final class CallEngineHarness {
         roomURL: URL? = nil,
         token: String? = nil,
         statusURL: URL? = nil,
-        ringTimeout: String? = nil
+        ringTimeout: String? = nil,
+        preconnect: String? = nil
     ) {
         var push: [AnyHashable: Any] = [
             "target_id": (targetID ?? target.id).uuidString,
@@ -331,6 +344,7 @@ final class CallEngineHarness {
         push["token"] = token
         push["status_url"] = statusURL?.absoluteString
         push["ring_timeout"] = ringTimeout
+        push["preconnect"] = preconnect
         deliverPush(push)
     }
 

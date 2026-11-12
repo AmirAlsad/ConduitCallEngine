@@ -57,6 +57,25 @@ struct IncomingCallPayloadTests {
         #expect(payload.inlineConnection == nil) // call id minted; no inline creds
     }
 
+    @Test(arguments: [
+        ("credentials", RingPreparation.credentials),
+        ("media", .media),
+        ("none", .none), ("", .none), ("Media", .none), ("connect", .none),
+    ])
+    func parsesPreconnect(value: String, expected: RingPreparation) throws {
+        let payload = try #require(IncomingCallPayload(dictionary: [
+            "target_id": UUID().uuidString, "preconnect": value,
+        ]))
+        #expect(payload.preparation == expected)
+    }
+
+    @Test func absentOrNonStringPreconnectIsNone() throws {
+        let absent = try #require(IncomingCallPayload(dictionary: ["target_id": UUID().uuidString]))
+        #expect(absent.preparation == RingPreparation.none)
+        let number = try #require(IncomingCallPayload(dictionary: ["target_id": UUID().uuidString, "preconnect": 2]))
+        #expect(number.preparation == RingPreparation.none)
+    }
+
     @Test func rejectsMissingAgentID() {
         #expect(IncomingCallPayload(dictionary: ["call_id": UUID().uuidString]) == nil)
     }

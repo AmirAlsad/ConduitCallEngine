@@ -333,7 +333,7 @@ struct CancelPushTests {
 
     // MARK: - Capabilities
 
-    @Test func theEngineAdvertisesCancelAndRingTimeout() {
-        #expect(CallEngine.supportedPushFeatures == ["cancel", "ring_timeout"])
+    @Test func theEngineAdvertisesCancelRingTimeoutAndPreconnect() {
+        #expect(CallEngine.supportedPushFeatures == ["cancel", "ring_timeout", "preconnect"])
     }
 }

@@ -16,6 +16,13 @@
 //  and the mic is never enabled before activation (see `micShouldBeOn`).
 //  CallKit owns the session; the transport attaches to it.
 //
+//  PRE-CONNECT: a ring may join its transport before the answer (`ringTransport`).
+//  That transport is kept apart from `transport`, so no attach, mic, route or
+//  signal path reaches it, and its events steer only the ring's preparation,
+//  never the ring, except that the agent leaving a ready ring is the caller
+//  cancelling it. The answer adopts it; a prepared call's route work then waits
+//  for CallKit's activation too (`routeWaitsForActivation`).
+//
 
 import Foundation
 
@@ -58,6 +65,11 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     /// agent has been sent `CallSignal.held`, no cues are delivered, and a dropped
     /// connection waits for the resume before reconnecting. Cleared when the call ends.
     public private(set) var isOnHold = false
+    /// Where the preparation of the ringing call stands (pre-connect; see
+    /// `RingPreparation`), for diagnostics. `.idle` whenever no ring is being
+    /// prepared, including once a ring is answered or ends. Changing it never
+    /// changes `state` or calls the delegate.
+    public private(set) var ringPreparationPhase: RingPreparationPhase = .idle
 
     // MARK: - Dependencies
 
@@ -139,6 +151,34 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     /// Identifies the outgoing call a suspended `placeCall` belongs to, so its
     /// continuation can tell it has been superseded (reset, or a newer call).
     private var dialToken = UUID()
+
+    // MARK: - Ring preparation (pre-connect)
+
+    /// Identifies the ring's preparation; work an older one started changes nothing.
+    private var preparationID: UUID?
+    /// The ring's credential fetch. An answer while it runs awaits it rather than
+    /// fetching again.
+    private var preparationFetch: Task<CallConnection, any Error>?
+    /// The credentials a `.credentials` ring keeps for the answer.
+    private var preparedConnection: CallConnection?
+    /// The transport a `.media` ring joins before the answer. Not `transport`, so
+    /// nothing that attaches audio, sets the mic, routes or sends a signal reaches
+    /// it until the answer adopts it.
+    private var ringTransport: CallTransport?
+    /// Whether `ringTransport`'s connect has returned without throwing.
+    private var isRingTransportJoined = false
+    /// A transport made for a `.media` ring that cannot connect while ringing. It
+    /// is neither connected nor subscribed during the ring; the answer uses it.
+    private var transportForAnswer: CallTransport?
+    /// Whether the ring's push carried `preconnect`: its agent may be waiting for
+    /// `CallSignal.answered` before it speaks.
+    private var signalsAnswer = false
+    /// Whether `CallSignal.answered` has been sent on the current connection.
+    private var isAnswerSignalSent = false
+    /// A call answered with a prepared ring refreshes routes and applies the
+    /// hands-free default only once CallKit has activated the session: it can be
+    /// connected (and its transport report route changes) before that.
+    private var routeWaitsForActivation = false
 
     /// The real engine: CallKit, the system audio-interruption observer, PushKit,
     /// and HTTP ring-status receipts. Device-only (CallKit doesn't run in the simulator).
@@ -248,7 +288,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         callProvider.reportOutgoingCallConnecting(id)
         transition(to: .connecting)
 
-        await connectTransport(for: target, request: connectRequest(.outgoing))
+        await connectTransport(for: target) { [self] in try await target.connect(connectRequest(.outgoing)) }
     }
 
     private func isStillDialing(_ token: UUID) -> Bool {
@@ -327,7 +367,8 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
             targetID: payload.targetID,
             displayName: payload.displayName ?? unknownCallerName,
             handle: payload.handle ?? CallTarget.defaultHandle(for: payload.targetID),
-            connection: payload.inlineConnection
+            connection: payload.inlineConnection,
+            requestedPreparation: payload.preparation
         )
         // One call at a time: a push during a live (or ringing) call is reported,
         // then ended at once, without touching that call.
@@ -451,6 +492,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         // Receipts go only to a server ringing a target the host knows: for any
         // other, the push-supplied URL is untrusted and has no bearer.
         ringStatusURL = target == nil ? nil : payload.statusURL
+        signalsAnswer = payload.preparation != .none
         transition(to: .incomingRinging)
         interruptionObserver.startObserving()
         if let timeout = ringTimeout(requestedSeconds: payload.ringTimeoutSeconds) {
@@ -547,6 +589,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
                 return
             }
             correctRingIfNeeded(incoming, to: target)
+            startRingPreparation(incoming, target: target)
         }
     }
 
@@ -601,14 +644,248 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
             reportRingStatus(.answered, callID: id, endpoint: url, targetID: target.id)
             ringStatusURL = nil
         }
-        transition(to: .connecting)
-        await connectTransport(for: target, request: connectRequest(.answered))
+        let preparation = takeRingPreparation()
+        if preparation.isPrepared { routeWaitsForActivation = !isAudioActivated }
+        switch preparation {
+        case .none:
+            transition(to: .connecting)
+            await connectTransport(for: target) { [self] in try await target.connect(connectRequest(.answered)) }
+
+        case .ready(let transport):
+            // The agent is already there: no `.connecting`, so no ringback.
+            adopt(transport, isSubscribed: true)
+            let start = now()
+            firstConnectedAt = start
+            transition(to: .connected(since: start))
+            applyMic()
+            sendAnswerSignalIfDue()
+            syncHoldSignal()
+            if !routeWaitsForActivation { scheduleAudioDeviceUpdate() }
+            Log.info(.call, "Connected (prepared during the ring)")
+
+        case .joining(let transport, let hasJoined):
+            // Its connect may still be under way; `ringTransportConnectReturned`
+            // treats what it returns as the call's first connect.
+            adopt(transport, isSubscribed: true)
+            transition(to: .connecting)
+            if hasJoined { startJoinDeadline(for: transport) }
+
+        case .fetching(let fetch, let transport, let isSubscribed):
+            transition(to: .connecting)
+            await connectTransport(for: target, using: transport, isSubscribed: isSubscribed) { try await fetch.value }
+
+        case .credentials(let connection, let transport):
+            transition(to: .connecting)
+            await connectTransport(for: target, using: transport) { connection }
+        }
     }
 
     /// For an incoming call every request carries the ring's id; an outgoing call's
     /// CallKit id is the engine's own, which no server knows.
     private func connectRequest(_ purpose: ConnectRequest.Purpose) -> ConnectRequest {
         ConnectRequest(purpose: purpose, callID: callDirection == .incoming ? activeCallID : nil)
+    }
+
+    // MARK: - Ring preparation (pre-connect)
+
+    /// Start preparing a ring CallKit accepted, at the lowest tier of the push's
+    /// request, the target's allowance and, for `.media`, the transport's ability
+    /// to join while ringing. Only once CallKit accepted the report, so a ring it
+    /// filtered or refused never fetches credentials.
+    private func startRingPreparation(_ incoming: IncomingCall, target: CallTarget) {
+        guard state == .incomingRinging, !isAnswerRequested, activeCallID == incoming.callID,
+              preparationID == nil
+        else { return }
+        var tier = min(incoming.requestedPreparation, target.ringPreparation)
+        guard tier != .none else { return }
+        let id = UUID()
+        preparationID = id
+        if tier == .media {
+            // Made before the fetch, as for any call, so the request can say
+            // whether the transport will join before the answer.
+            let transport = target.makeTransport()
+            if transport.canConnectWhileRinging {
+                ringTransport = transport
+                subscribe(to: transport)
+            } else {
+                Log.info(.call, "Ring preparation: the transport cannot connect while ringing; credentials only")
+                transportForAnswer = transport
+                tier = .credentials
+            }
+        }
+        Log.info(.call, "Ring preparation: \(tier)")
+        let request = ConnectRequest(purpose: .ringing(joinsBeforeAnswer: tier == .media), callID: incoming.callID)
+        ringPreparationPhase = .fetchingCredentials
+        let fetch = Task { try await target.connect(request) }
+        preparationFetch = fetch
+        Task { [weak self] in
+            let result = await fetch.result
+            self?.ringCredentialsArrived(result, preparation: id)
+        }
+    }
+
+    private func ringCredentialsArrived(_ result: Result<CallConnection, any Error>, preparation id: UUID) {
+        // An answer awaits the fetch itself, and an ended ring has no preparation.
+        guard preparationID == id, state == .incomingRinging else { return }
+        preparationFetch = nil
+        let connection: CallConnection
+        switch result {
+        case .success(let fetched):
+            connection = fetched
+        case .failure(let error):
+            Log.warning(.call, "Ring preparation: credentials failed: \(error)")
+            ringPreparationFailed()
+            return
+        }
+        guard let transport = ringTransport else {
+            preparedConnection = connection
+            ringPreparationPhase = .credentialsReady
+            return
+        }
+        ringPreparationPhase = .connecting
+        Task { [weak self] in
+            do {
+                try await transport.connect(connection)
+                self?.ringTransportConnectReturned(transport, error: nil)
+            } catch {
+                self?.ringTransportConnectReturned(transport, error: error)
+            }
+        }
+    }
+
+    /// The ring transport's connect returned. While it still rings that is the
+    /// preparation's; once the answer adopted the transport, it is the call's first
+    /// connect, handled as `connectTransport` handles one.
+    private func ringTransportConnectReturned(_ transport: CallTransport, error: (any Error)?) {
+        if transport === ringTransport {
+            if let error {
+                Log.warning(.call, "Ring preparation: connect failed: \(error)")
+                ringPreparationFailed()
+            } else {
+                isRingTransportJoined = true
+            }
+        } else if transport === self.transport {
+            if let error {
+                Log.error(.transport, "connect failed: \(error)")
+                fail((error as? TransportError) == .authenticationFailed ? .badToken : .transportError)
+            } else if state == .connecting {
+                startJoinDeadline(for: transport)
+            }
+        }
+    }
+
+    /// The ring transport's events steer only the preparation. The one exception is
+    /// the agent leaving once it was there, before CallKit delivered an answer: the
+    /// caller withdrew the ring. A mid-ring `.error` is as for a live call: it
+    /// fails a join, and is only logged once the agent is there.
+    private func handleRingEvent(_ event: TransportEvent) {
+        switch event {
+        case .connected:
+            if ringPreparationPhase == .connecting { ringPreparationPhase = .ready }
+        case .reconnecting:
+            // Healing itself: the agent is there again once it reports `.connected`.
+            if ringPreparationPhase == .ready { ringPreparationPhase = .connecting }
+        case .disconnected(reason: .botLeft) where ringPreparationPhase == .ready && !isAnswerRequested:
+            Log.info(.call, "The agent left the prepared ring; the caller cancelled it")
+            endMissedRing(.canceledByCaller, callKitReason: .remoteEnded, receipt: .canceled)
+        case .disconnected(reason: .requestedByUser):
+            break
+        case .disconnected:
+            Log.warning(.call, "Ring preparation: transport \(event)")
+            ringPreparationFailed()
+        case .error(let error):
+            if ringPreparationPhase == .connecting {
+                Log.warning(.call, "Ring preparation: transport error \(error)")
+                ringPreparationFailed()
+            } else {
+                Log.error(.transport, "Transport error during a prepared ring: \(error)")
+            }
+        case .connecting, .botStartedSpeaking, .botStoppedSpeaking, .userStartedSpeaking,
+             .userStoppedSpeaking, .remoteAudioLevel, .audioDevicesChanged:
+            break
+        }
+    }
+
+    /// Give up the preparation but not the ring, which an answer then connects as
+    /// it would without one.
+    private func ringPreparationFailed() {
+        preparationID = nil
+        preparationFetch?.cancel()
+        preparationFetch = nil
+        preparedConnection = nil
+        discardRingTransports()
+        ringPreparationPhase = .failed
+    }
+
+    /// Undo a ring's preparation: the ring ended, or the call is torn down.
+    private func cancelRingPreparation() {
+        preparationID = nil
+        preparationFetch?.cancel()
+        preparationFetch = nil
+        preparedConnection = nil
+        discardRingTransports()
+        if ringPreparationPhase != .idle { ringPreparationPhase = .idle }
+    }
+
+    /// Disconnect the ring's transports (a joined one sends the end-call signal)
+    /// and stop consuming the ring transport's events.
+    private func discardRingTransports() {
+        if ringTransport != nil {
+            eventTask?.cancel()
+            eventTask = nil
+        }
+        let transports = [ringTransport, transportForAnswer].compactMap { $0 }
+        ringTransport = nil
+        transportForAnswer = nil
+        isRingTransportJoined = false
+        guard !transports.isEmpty else { return }
+        Task {
+            for transport in transports { await transport.disconnect() }
+        }
+    }
+
+    /// What a ring's preparation leaves for its answer.
+    private enum AnsweredPreparation {
+        /// Nothing (none was made, or it failed): connect as without pre-connect.
+        case none
+        /// The ring transport, with the agent there.
+        case ready(CallTransport)
+        /// The ring transport, joining or joined and waiting for the agent.
+        case joining(CallTransport, hasJoined: Bool)
+        /// The credential fetch in flight, and the transport made for the ring, if any.
+        case fetching(Task<CallConnection, any Error>, transport: CallTransport?, isSubscribed: Bool)
+        /// The credentials, and the transport made for the ring, if any.
+        case credentials(CallConnection, transport: CallTransport?)
+
+        var isPrepared: Bool {
+            if case .none = self { false } else { true }
+        }
+    }
+
+    /// Hand the ring's preparation to the answer, leaving none behind.
+    private func takeRingPreparation() -> AnsweredPreparation {
+        let preparation: AnsweredPreparation
+        switch (ringPreparationPhase, ringTransport, preparationFetch, preparedConnection) {
+        case (.ready, let transport?, _, _):
+            preparation = .ready(transport)
+        case (.connecting, let transport?, _, _):
+            preparation = .joining(transport, hasJoined: isRingTransportJoined)
+        case (.fetchingCredentials, let transport, let fetch?, _):
+            preparation = .fetching(fetch, transport: transport ?? transportForAnswer, isSubscribed: transport != nil)
+        case (.credentialsReady, _, _, let connection?):
+            preparation = .credentials(connection, transport: transportForAnswer)
+        default:
+            cancelRingPreparation()
+            return .none
+        }
+        preparationID = nil
+        preparationFetch = nil
+        preparedConnection = nil
+        ringTransport = nil
+        transportForAnswer = nil
+        isRingTransportJoined = false
+        ringPreparationPhase = .idle
+        return preparation
     }
 
     /// Fire-and-forget receipt to the server that sent the push, authenticated with the
@@ -618,25 +895,24 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         ringStatusReporter.report(status, callID: callID, endpoint: endpoint, apiKey: apiKey ?? "")
     }
 
-    /// Create and subscribe the transport, then resolve credentials and connect.
-    /// Shared by `placeCall` and `answer`. The transport exists before the
-    /// credential fetch so a CallKit activation landing mid-fetch still reaches
-    /// `attachAudioSession()`.
-    private func connectTransport(for target: CallTarget, request: ConnectRequest) async {
-        let transport = target.makeTransport()
-        self.transport = transport
-        mediaTask = nil
-        signalTask = nil
-        subscribe(to: transport)
-        // CallKit can activate before the transport exists (while dialing, or
-        // before `answer()` runs); that activation found no transport to attach.
-        if isAudioActivated, !isOnHold {
-            await enqueueMedia { await $0.attachAudioSession() }?.value
+    /// Adopt the transport (a new one, or one a ring prepared), then resolve
+    /// credentials and connect. Shared by `placeCall` and `answer`. The transport
+    /// is the call's before the credential fetch so a CallKit activation landing
+    /// mid-fetch still reaches `attachAudioSession()`.
+    private func connectTransport(
+        for target: CallTarget,
+        using prepared: CallTransport? = nil,
+        isSubscribed: Bool = false,
+        credentials: () async throws -> CallConnection
+    ) async {
+        let transport = prepared ?? target.makeTransport()
+        if let attach = adopt(transport, isSubscribed: isSubscribed) {
+            await attach.value
             guard self.transport === transport else { return }
         }
 
         do {
-            let connection = try await target.connect(request)
+            let connection = try await credentials()
             // The call may have ended while credentials were in flight.
             guard self.transport === transport else { return }
             try await transport.connect(connection)
@@ -653,6 +929,20 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         }
     }
 
+    /// Make `transport` the call's: media commands and signals from here on go to
+    /// it. CallKit can activate before the transport exists (while dialing, or
+    /// before `answer()` runs); that activation found no transport to attach, so
+    /// this attaches it, and returns that command.
+    @discardableResult
+    private func adopt(_ transport: CallTransport, isSubscribed: Bool) -> Task<Void, Never>? {
+        self.transport = transport
+        mediaTask = nil
+        signalTask = nil
+        if !isSubscribed { subscribe(to: transport) }
+        guard isAudioActivated, !isOnHold else { return nil }
+        return enqueueMedia { await $0.attachAudioSession() }
+    }
+
     private func subscribe(to transport: CallTransport) {
         eventTask?.cancel()
         let events = transport.events
@@ -665,7 +955,15 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
 
     // MARK: - Transport events (the transition table)
 
+    /// An event from the call's transport: the ring's while a ring is preparing
+    /// one, the live call's otherwise.
     package func handle(_ event: TransportEvent) {
+        if ringTransport != nil {
+            handleRingEvent(event)
+            return
+        }
+        // A ring has no live transport; nothing may end or change it from here.
+        guard state != .incomingRinging else { return }
         switch event {
         case .connecting:
             break // already reflected by `.connecting` / `.reconnecting`
@@ -714,6 +1012,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
             transition(to: .connected(since: start))
             // The transport may have ignored a mic set before it joined.
             applyMic()
+            sendAnswerSignalIfDue()
             syncHoldSignal()
             scheduleAudioDeviceUpdate()
             Log.info(.call, "Connected")
@@ -726,6 +1025,8 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
             transition(to: .connected(since: firstConnectedAt ?? now()))
             applyMic()
             // A new connection may be a new agent session: tell it again.
+            isAnswerSignalSent = false
+            sendAnswerSignalIfDue()
             syncHoldSignal()
             Log.info(.call, "Reconnected")
 
@@ -968,6 +1269,8 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
             return
         }
         isAudioActivated = true
+        let routeWaited = routeWaitsForActivation
+        routeWaitsForActivation = false
         switch interruption {
         case .interrupted: interruption = .interrupted(reactivated: true)
         case .endedAwaitingActivation: interruption = .none
@@ -982,7 +1285,14 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         // join), this is a no-op and the mic is (re)enabled in `handleConnected`.
         await applyMic()?.value
         guard self.transport === transport else { return }
-        await refreshAudioDevices(of: transport)
+        // After the attach and the mic, so an agent waiting for the answer starts
+        // speaking into a running audio engine.
+        sendAnswerSignalIfDue()
+        if routeWaited, case .connected = state {
+            scheduleAudioDeviceUpdate()
+        } else {
+            await refreshAudioDevices(of: transport)
+        }
     }
 
     /// Hands-free default: prefer the loudspeaker when nothing external (car /
@@ -1091,6 +1401,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         if isAudioActivated { enqueueMedia { await $0.attachAudioSession() } }
         applyMic()
         syncHoldSignal()
+        sendAnswerSignalIfDue()
         delegate?.callEngine(self, cue: .moment(.resumed))
         if case .connected = state, !isConnectionMarked {
             isConnectionMarked = true
@@ -1124,14 +1435,30 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         }
     }
 
-    private func send(_ signal: CallSignal) {
+    /// Queue `signal` after the signals already queued and, when given, after the
+    /// media command `barrier`; a signal never holds up a media command.
+    private func send(_ signal: CallSignal, after barrier: Task<Void, Never>? = nil) {
         guard let transport else { return }
         let previous = signalTask
         signalTask = Task { [weak self] in
             await previous?.value
+            await barrier?.value
             guard let self, self.transport === transport else { return }
             await transport.send(signal)
         }
+    }
+
+    /// Tell an agent that may be waiting for the answer (the push carried
+    /// `preconnect`) that it can speak, once the user has answered, CallKit has
+    /// activated the audio and the transport is connected, whichever comes last;
+    /// again on every new connection; and not while held (the resume sends it). It
+    /// follows the attach and mic commands issued so far.
+    private func sendAnswerSignalIfDue() {
+        guard signalsAnswer, callDirection == .incoming, !isAnswerSignalSent,
+              case .connected = state, isAudioActivated, !isOnHold
+        else { return }
+        isAnswerSignalSent = true
+        send(.answered, after: mediaTask)
     }
 
     /// Test hook: await every call-control signal sent so far.
@@ -1269,7 +1596,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     /// default once it's available. Runs on connect and on device changes, for the
     /// transport live when it was scheduled.
     private func scheduleAudioDeviceUpdate() {
-        guard let transport else { return }
+        guard let transport, !routeWaitsForActivation else { return }
         Task { [weak self] in
             await self?.refreshAudioDevices(of: transport)
             await self?.applyHandsFreeDefaultIfNeeded(on: transport)
@@ -1302,7 +1629,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     }
 
     /// Whether a call currently has a transport whose events the engine consumes.
-    package var hasTransport: Bool { transport != nil }
+    package var hasTransport: Bool { transport != nil || ringTransport != nil }
 
     // MARK: - The mic rule and media commands
 
@@ -1415,6 +1742,9 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         isOnHold = false
         isAgentToldHeld = false
         isReconnectionPaused = false
+        isAnswerSignalSent = false
+        routeWaitsForActivation = false
+        cancelRingPreparation()
         activeCallID = nil
         let outgoing = transport
         transport = nil
@@ -1450,6 +1780,10 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         isPushToTalkHeld = false
         endedByUser = false
         isAnswerRequested = false
+        signalsAnswer = false
+        isAnswerSignalSent = false
+        routeWaitsForActivation = false
+        cancelRingPreparation()
         cancelRingTimer()
         transition(to: .idle)
     }
@@ -1474,7 +1808,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         var moment: CallMoment?
         if !isOnHold {
             switch (old, new) {
-            case (.connecting, .connected): moment = .connected
+            case (.connecting, .connected), (.incomingRinging, .connected): moment = .connected
             case (.reconnecting, .connected): moment = .reconnected
             case (.connected, .reconnecting): moment = .connectionLost
             default: moment = nil
@@ -1526,12 +1860,13 @@ extension CallEngine {
     /// The optional push features this engine understands, for a host to send to
     /// its server with the VoIP token, so the server uses a feature only with
     /// devices that list it: `"ring_timeout"` (a ring push may carry
-    /// `ring_timeout`) and `"cancel"` (the server may send a cancel push,
+    /// `ring_timeout`), `"cancel"` (the server may send a cancel push,
     /// `{"action": "cancel", "call_id": ...}` with no `target_id`, to withdraw a
-    /// ring). An engine that lacks a feature ignores its key, or, for a cancel,
+    /// ring) and `"preconnect"` (a ring push may carry `preconnect`, and the engine
+    /// sends `CallSignal.answered`; see `RingPreparation`). An engine that lacks a feature ignores its key, or, for a cancel,
     /// shows it as a brief incoming call that ends at once. Later versions add
     /// features to this set; servers must ignore names they do not know.
-    nonisolated public static let supportedPushFeatures: Set<String> = ["cancel", "ring_timeout"]
+    nonisolated public static let supportedPushFeatures: Set<String> = ["cancel", "ring_timeout", "preconnect"]
 }
 
 extension CallEngine {

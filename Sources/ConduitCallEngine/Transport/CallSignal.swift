@@ -19,8 +19,12 @@ import Foundation
 /// call), so an agent must treat each one as a statement of the current state, not
 /// as a toggle. Agents must ignore names they do not know.
 public enum CallSignal: String, CaseIterable, Sendable {
-    /// The user answered an incoming call. Reserved for pre-connect; this version
-    /// never sends it.
+    /// The user answered an incoming call whose push carried `preconnect`, CallKit
+    /// has activated its audio, and the transport is connected: the agent may
+    /// start speaking. Sent once all three hold, whichever comes last, again after
+    /// every reconnect of the call, and at the resume when they come to hold while
+    /// the call is on hold. An agent that joined during the ring must stay silent
+    /// until it arrives.
     case answered = "call-answered"
     /// The user's side put the call on hold (for example to take a phone call).
     /// The user cannot hear the agent and the mic is closed until `resumed`; the

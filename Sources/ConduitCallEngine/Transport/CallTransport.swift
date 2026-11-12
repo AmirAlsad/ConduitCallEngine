@@ -47,9 +47,24 @@ public protocol CallTransport: AnyObject {
     /// when the connection is gone, and may be called again with the same signal.
     /// The default implementation drops the signal.
     func send(_ signal: CallSignal) async
+
+    /// Whether the engine may call `connect(_:)` while an incoming call is still
+    /// ringing, before the answer and before CallKit activates the audio session
+    /// (pre-connect's `.media` tier). True only if this transport's `connect(_:)`
+    /// then joins without configuring or activating `AVAudioSession`, starting audio
+    /// input or output, or making the remote party audible, until the engine calls
+    /// `attachAudioSession()` after CallKit's activation, and `send(_:)` reaches the
+    /// remote agent, which waits for `CallSignal.answered` before it speaks. Read
+    /// once per ring, right after `CallTarget.makeTransport` creates the transport.
+    /// The default implementation returns false, which keeps the transport at the
+    /// `.credentials` tier: it joins only once the user answers.
+    var canConnectWhileRinging: Bool { get }
 }
 
 extension CallTransport {
+    /// False: a transport that does not declare it is never connected during a ring.
+    public var canConnectWhileRinging: Bool { false }
+
     /// Drops the signal: a transport that does not implement `send(_:)` leaves its
     /// agent uninformed, and the call works as before.
     public func send(_ signal: CallSignal) async {}

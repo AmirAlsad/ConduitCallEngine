@@ -25,7 +25,9 @@ import Foundation
 ///   followed by `.start(.retrying)`.
 /// - A ring that is never answered (declined, timed out, cancelled, filtered,
 ///   busy, or ended before it could proceed) produces no cues: CallKit's ringtone
-///   is the only sound.
+///   is the only sound. That includes a ring prepared while it rang.
+/// - An answer to a pre-connected ring whose agent is already there produces
+///   `.moment(.connected)` with no `.start(.connecting)` before it.
 /// - Nothing plays while the call is on hold: `.moment(.held)` comes with no loop
 ///   running (a running one is stopped first), and the next cue is
 ///   `.moment(.resumed)`, followed by the loop the call's state wants, if any. An
@@ -46,7 +48,8 @@ public enum CallCue: Equatable, Sendable {
 /// A cue a host plays on a loop until the engine says `stop`.
 public enum RepeatingCue: Equatable, Sendable {
     /// The call is connecting: placed and accepted by CallKit, or answered, and
-    /// waiting for the agent. Starts on the transition to `.connecting`.
+    /// waiting for the agent. Starts on the transition to `.connecting`, which an
+    /// answer to a pre-connected ring whose agent is there skips.
     case connecting
     /// The connection dropped and the engine or the transport is trying to get it
     /// back. Starts on the transition from `.connected` to `.reconnecting`.
@@ -55,8 +58,9 @@ public enum RepeatingCue: Equatable, Sendable {
 
 /// A one-shot moment of a call.
 public enum CallMoment: Equatable, Sendable {
-    /// The call connected for the first time (`.connecting` to `.connected`, or
-    /// at the resume for a call that connected on hold). Once per call.
+    /// The call connected for the first time (`.connecting` to `.connected`,
+    /// `.incomingRinging` to `.connected` for a pre-connected ring answered with its
+    /// agent there, or at the resume for a call that connected on hold). Once per call.
     case connected
     /// The call came back after an outage (`.reconnecting` to `.connected`).
     case reconnected

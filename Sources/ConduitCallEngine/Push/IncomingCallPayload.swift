@@ -30,6 +30,9 @@ package struct IncomingCallPayload: Equatable, Sendable {
     /// The sender's `ring_timeout`, in whole seconds (a positive integer string);
     /// the engine clamps it. nil when absent or invalid.
     package let ringTimeoutSeconds: Int?
+    /// What the sender's `preconnect` asks to prepare during the ring: `"credentials"`
+    /// or `"media"`; anything else, or no key, is `.none`.
+    package let preparation: RingPreparation
 
     /// Inline room credentials, if the push carried both a room and a token.
     package var inlineConnection: CallConnection? {
@@ -55,6 +58,11 @@ extension IncomingCallPayload {
         self.token = dictionary["token"] as? String
         self.statusURL = Self.string(dictionary["status_url"]).flatMap { URL(string: $0) }
         self.ringTimeoutSeconds = Self.string(dictionary["ring_timeout"]).flatMap { Int($0) }.flatMap { $0 > 0 ? $0 : nil }
+        switch Self.string(dictionary["preconnect"]) {
+        case "credentials": self.preparation = .credentials
+        case "media": self.preparation = .media
+        default: self.preparation = .none
+        }
     }
 
     fileprivate static func uuid(_ value: Any?) -> UUID? {
