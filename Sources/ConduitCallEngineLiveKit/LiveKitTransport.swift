@@ -158,14 +158,15 @@ public final class LiveKitTransport: CallTransport {
     }
 
     private func mapConnectError(_ error: Error) -> TransportError {
-        if let lkError = error as? LiveKitError {
-            if lkError.type == .insufficientPermissions { return .authenticationFailed }
-            let description = String(describing: lkError).lowercased()
-            if ["unauthorized", "401", "permission", "token"].contains(where: description.contains) {
-                return .authenticationFailed
-            }
+        let kind: LiveKitConnectFailure.Kind
+        switch (error as? LiveKitError)?.type {
+        case .insufficientPermissions: kind = .insufficientPermissions
+        case .validation: kind = .validation(message: (error as? LiveKitError)?.message)
+        default: kind = .other
         }
-        return .connectionFailed(String(describing: error))
+        return LiveKitConnectFailure.isRejectedCredentials(kind)
+            ? .authenticationFailed
+            : .connectionFailed(String(describing: error))
     }
 }
 
