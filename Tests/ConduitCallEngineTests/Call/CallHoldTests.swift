@@ -467,6 +467,7 @@ struct CallHoldTests {
     @Test func aCallThatConnectsWhileHeldIsMarkedConnectedOnce() async throws {
         let h = CallEngineHarness()
         await h.placeCall()
+        await h.engine.activate(FakeAudioSession())
         await setHeld(h, true)
         h.engine.handle(.connected)
         await setHeld(h, false)

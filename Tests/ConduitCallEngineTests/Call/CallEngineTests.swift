@@ -48,6 +48,7 @@ struct CallEngineTests {
     @Test func connectedIsReportedToCallKitBeforeTheHostHearsIt() async throws {
         let h = CallEngineHarness()
         await h.placeCall()
+        await h.engine.activate(FakeAudioSession())
         h.engine.handle(.connected)
 
         // CallKit's timer starts before the host's "Connected" cue.

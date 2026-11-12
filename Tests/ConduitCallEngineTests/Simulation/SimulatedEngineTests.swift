@@ -126,6 +126,7 @@ struct SimulatedEngineTests {
 
     @Test func cuesReachTheHost() async throws {
         await engine.placeCall(target)
+        await system.activateAudioSession()
         #expect(engine.repeatingCue == .connecting)
         #expect(system.deliverTransportEvent(.connected))
         #expect(system.deliverTransportEvent(.disconnected(reason: .networkDropped)))
@@ -265,10 +266,11 @@ struct SimulatedEngineTests {
 
         await system.answerIncomingCall()
         #expect(engine.state == .connected(since: now))
-        #expect(host.cues == [.moment(.connected)])
+        #expect(host.cues.isEmpty) // marked connected once CallKit has activated the audio
         #expect(!ringTransport.isAudioAttached)
 
         await system.activateAudioSession()
+        #expect(host.cues == [.moment(.connected)])
         await settle { ringTransport.sentSignals == [.answered] }
         #expect(ringTransport.isAudioAttached)
         #expect(ringTransport.isMicEnabled)

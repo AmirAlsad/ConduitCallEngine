@@ -359,7 +359,7 @@ What else to know:
 | `.start(.connecting)` | The call moved to `.connecting` (placed and accepted by CallKit, or answered). Loop a ringback until `.stop`. Not delivered for a pre-connected ring answered with its agent there, which goes straight to connected. |
 | `.start(.retrying)` | The connection dropped (`.connected` to `.reconnecting`). Loop a "retrying" sound until `.stop`. |
 | `.stop` | End the loop that is running. |
-| `.moment(.connected)` | The call connected for the first time, including at the answer of a pre-connected ring whose agent was there. |
+| `.moment(.connected)` | The call connected for the first time, including at the answer of a pre-connected ring whose agent was there, once CallKit has activated the call's audio: with the transition if the session is already active, otherwise at the activation. |
 | `.moment(.reconnected)` | The call came back after an outage. |
 | `.moment(.connectionLost)` | The connection dropped. Once per outage, followed by `.start(.retrying)`. |
 | `.moment(.held)` | The call was put on hold. A running loop is stopped first; no other cue comes until `.moment(.resumed)`. |
@@ -371,8 +371,9 @@ What the engine guarantees, so you need no bookkeeping of your own:
 - `.moment(.connectionLost)` comes once per outage, also when a transport's own healing escalates to the engine's retries (`reconnecting(attempt: 0) -> reconnecting(attempt: 1)` is not a second outage).
 - A ring that is never answered (declined, timed out, cancelled, filtered by Focus, busy, or ended before it could proceed) produces no cues; CallKit's ringtone is the only sound. Preparing a ring produces none either.
 - An answer to a pre-connected ring whose agent is there delivers `.moment(.connected)` with no `.start(.connecting)` before it.
+- `.moment(.connected)` never comes before CallKit has activated the call's audio (`isAudioActivated`), so a sound you play on it plays into a live session. For a pre-connected ring answered with its agent there, and for any call that connects before the activation, it comes at the activation, with no state change; the ringback, if one ran, stopped with the state change. A call that drops before then gets it, instead of `.moment(.reconnected)`, when it is back.
 - While the call is on hold, nothing plays: `.moment(.held)` comes with no loop running, and the next cue is `.moment(.resumed)`. A connection that drops and comes back during the hold is not marked; one still down at the resume is marked then, once. Hold and resume cues come when CallKit performs the hold action, not with a state change.
-- Cues arrive synchronously on the main actor, right after the `didChangeStateFrom:to:` of the same change and after that change's ring-status receipt (so `answered` is sent before the ringback starts). `engine.repeatingCue` is already updated when a cue arrives.
+- Cues arrive synchronously on the main actor, right after the `didChangeStateFrom:to:` of the same change and after that change's ring-status receipt (so `answered` is sent before the ringback starts), except a `.moment(.connected)` that waited for CallKit's activation and the hold cues. `engine.repeatingCue` is already updated when a cue arrives.
 
 A host that speaks its cues:
 

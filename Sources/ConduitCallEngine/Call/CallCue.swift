@@ -13,8 +13,9 @@ import Foundation
 ///
 /// Delivered through `CallEngineDelegate.callEngine(_:cue:)`, synchronously on the
 /// main actor, right after the `callEngine(_:didChangeStateFrom:to:)` of the state
-/// change that caused it and after any ring-status receipt of that change. The
-/// engine guarantees, for every call:
+/// change that caused it and after any ring-status receipt of that change, except
+/// where noted below (`.moment(.connected)`, hold and resume). The engine
+/// guarantees, for every call:
 ///
 /// - At most one repeating cue runs at a time. Every `start` is followed by exactly
 ///   one `stop`, before the next `start`, before `.moment(.connected)` or
@@ -28,6 +29,11 @@ import Foundation
 ///   is the only sound. That includes a ring prepared while it rang.
 /// - An answer to a pre-connected ring whose agent is already there produces
 ///   `.moment(.connected)` with no `.start(.connecting)` before it.
+/// - `.moment(.connected)` comes only once CallKit has activated the call's audio
+///   (`CallEngine.isAudioActivated`), so a sound played on it plays into a live
+///   session: with the state change when the session is already active, otherwise
+///   at the activation, with no state change. The loop the state change stopped is
+///   stopped with the state change.
 /// - Nothing plays while the call is on hold: `.moment(.held)` comes with no loop
 ///   running (a running one is stopped first), and the next cue is
 ///   `.moment(.resumed)`, followed by the loop the call's state wants, if any. An
@@ -58,9 +64,12 @@ public enum RepeatingCue: Equatable, Sendable {
 
 /// A one-shot moment of a call.
 public enum CallMoment: Equatable, Sendable {
-    /// The call connected for the first time (`.connecting` to `.connected`,
+    /// The call connected for the first time (`.connecting` to `.connected`, or
     /// `.incomingRinging` to `.connected` for a pre-connected ring answered with its
-    /// agent there, or at the resume for a call that connected on hold). Once per call.
+    /// agent there), once CallKit has activated its audio and it is not held:
+    /// delivered with that transition, or later at CallKit's activation or at the
+    /// resume, whichever comes last. Once per call; a call that drops before it is
+    /// delivered gets it, instead of `.reconnected`, when it is back.
     case connected
     /// The call came back after an outage (`.reconnecting` to `.connected`).
     case reconnected

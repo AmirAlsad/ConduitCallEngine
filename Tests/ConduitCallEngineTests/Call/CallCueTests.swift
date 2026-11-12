@@ -19,8 +19,10 @@ struct CallCueTests {
 
     private let statusEndpoint = URL(string: "https://engine.example.com/inbound/status/live")!
 
+    /// Placed, activated by CallKit (as it does right after the start), connected.
     private func connectedCall(_ h: CallEngineHarness) async {
         await h.placeCall()
+        await h.engine.activate(FakeAudioSession())
         h.engine.handle(.connected)
     }
 
@@ -31,6 +33,7 @@ struct CallCueTests {
         await h.placeCall()
         #expect(h.delegate.cues == [.start(.connecting)])
         #expect(h.engine.repeatingCue == .connecting)
+        await h.engine.activate(FakeAudioSession())
 
         h.engine.handle(.connected)
 
@@ -41,8 +44,7 @@ struct CallCueTests {
 
     @Test func cuesFollowTheTransitionTheyBelongTo() async throws {
         let h = CallEngineHarness()
-        await h.placeCall()
-        h.engine.handle(.connected)
+        await connectedCall(h)
 
         #expect(h.log.entries.filter { $0.hasPrefix("T(") || $0.hasPrefix("cue(") } == [
             "T(idle→dialing)",
@@ -62,8 +64,63 @@ struct CallCueTests {
         #expect(Array(h.log.entries.dropFirst(before).prefix(4)) == [
             "bearer", "receipt(answered)", "T(incomingRinging→connecting)", "cue(start(connecting))",
         ])
+        await h.engine.activate(FakeAudioSession())
         h.engine.handle(.connected)
         #expect(h.delegate.cues == [.start(.connecting), .stop, .moment(.connected)])
+        #expect(h.delegate.cueViolations.isEmpty)
+    }
+
+    // MARK: - The connected moment waits for CallKit's audio
+
+    /// A host plays its "connected" sound on `.moment(.connected)`; before CallKit
+    /// has activated the session that sound plays into a session that is not live.
+    @Test(arguments: [false, true])
+    func aCallConnectedBeforeCallKitActivatedIsMarkedConnectedAtTheActivation(answered: Bool) async throws {
+        let h = CallEngineHarness()
+        if answered {
+            h.ring()
+            await h.engine.answer()
+        } else {
+            await h.placeCall()
+        }
+        h.engine.handle(.connected)
+        #expect(h.delegate.cues == [.start(.connecting), .stop]) // the ringback stops with the state
+
+        await h.engine.activate(FakeAudioSession())
+
+        #expect(h.delegate.cues == [.start(.connecting), .stop, .moment(.connected)])
+        #expect(h.delegate.cueViolations.isEmpty)
+    }
+
+    @Test func aCallHeldBeforeCallKitActivatedIsMarkedConnectedOnceResumedAndActive() async throws {
+        let h = CallEngineHarness()
+        await h.placeCall()
+        h.engine.handle(.connected)
+        #expect(h.engine.providerPerformSetHeld(h.callID, onHold: true))
+        await h.engine.activate(FakeAudioSession())
+        #expect(h.delegate.cues == [.start(.connecting), .stop, .moment(.held)])
+
+        #expect(h.engine.providerPerformSetHeld(h.callID, onHold: false))
+
+        #expect(h.delegate.cues == [.start(.connecting), .stop, .moment(.held), .moment(.resumed), .moment(.connected)])
+        #expect(h.delegate.cueViolations.isEmpty)
+    }
+
+    /// The user never heard it connect: when it is back, it is marked connected, once.
+    @Test func aCallThatDroppedBeforeCallKitActivatedIsMarkedConnectedWhenItIsBack() async throws {
+        let h = CallEngineHarness()
+        await h.placeCall()
+        h.engine.handle(.connected)
+        h.engine.handle(.reconnecting)
+        await h.engine.activate(FakeAudioSession())
+
+        h.engine.handle(.connected)
+
+        #expect(h.delegate.cues == [
+            .start(.connecting), .stop,
+            .moment(.connectionLost), .start(.retrying),
+            .stop, .moment(.connected),
+        ])
         #expect(h.delegate.cueViolations.isEmpty)
     }
 

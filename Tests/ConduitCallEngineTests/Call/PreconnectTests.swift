@@ -323,10 +323,13 @@ struct PreconnectTests {
         #expect(h.engine.state == .connected(since: answeredAt))
         #expect(h.engine.ringPreparationPhase == .idle)
         #expect(h.delegate.transitions == ["idle→incomingRinging", "incomingRinging→connected"])
-        #expect(h.delegate.cues == [.moment(.connected)])
+        #expect(h.delegate.cues.isEmpty) // CallKit has not activated the call's audio yet
         #expect(Array(h.log.entries.dropFirst(before)) == [
-            "bearer", "receipt(answered)", "T(incomingRinging→connected)", "cue(connected)",
+            "bearer", "receipt(answered)", "T(incomingRinging→connected)",
         ])
+        await activate(h)
+        #expect(h.delegate.cues == [.moment(.connected)])
+        #expect(h.log.entries.last == "cue(connected)")
         #expect(h.provider.reportedConnected.isEmpty) // CallKit's answer action marks it connected
         #expect(h.target.makeTransportCount == 1)
         #expect(h.transport.connectCount == 1)
@@ -455,6 +458,7 @@ struct PreconnectTests {
         #expect(h.engine.ringPreparationPhase == .connecting)
 
         await h.engine.answer()
+        await h.engine.activate(FakeAudioSession())
 
         #expect(h.engine.state == .connecting)
         #expect(h.delegate.cues == [.start(.connecting)])
@@ -532,6 +536,7 @@ struct PreconnectTests {
 
         h.engine.handle(.connected)
         #expect(h.engine.state.isConnected)
+        await h.engine.activate(FakeAudioSession())
         #expect(h.delegate.cues == [.start(.connecting), .stop, .moment(.connected)])
         #expect(h.delegate.cueViolations.isEmpty)
     }
@@ -1057,9 +1062,9 @@ struct PreconnectTests {
         #expect(h.transport.connectCount == 1, label)
         #expect(h.delegate.cueViolations.isEmpty, label)
         let agentFirst = order.firstIndex(of: .agent)! < order.firstIndex(of: .answer)!
-        #expect(h.delegate.cues == (agentFirst
-            ? [.moment(.connected)]
-            : [.start(.connecting), .stop, .moment(.connected)]), label)
+        // The connected moment waits for CallKit's activation of the answered call.
+        let connected: [CallCue] = activated ? [.moment(.connected)] : []
+        #expect(h.delegate.cues == (agentFirst ? connected : [.start(.connecting), .stop] + connected), label)
         if activated {
             #expect(h.transport.isAudioAttached, label)
             #expect(h.transport.isMicEnabled, label)

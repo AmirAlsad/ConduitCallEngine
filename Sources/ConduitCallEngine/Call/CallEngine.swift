@@ -141,8 +141,9 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     /// Whether this outage's `connectionLost` cue has been delivered (it is not
     /// while held, so the resume delivers it).
     private var isOutageMarked = false
-    /// Whether `.moment(.connected)` has been delivered for this call (it is not
-    /// when the call first connects while held, so the resume delivers it).
+    /// Whether `.moment(.connected)` has been delivered for this call. It waits until
+    /// the call is connected, CallKit has activated its audio and it is not held,
+    /// whichever comes last (`markConnectedIfDue`).
     private var isConnectionMarked = false
     package private(set) var reconnectTask: Task<Void, Never>?
     /// Identifies the engine's reconnect attempt in progress. An attempt whose id
@@ -1430,6 +1431,8 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         case .endedAwaitingActivation: interruption = .none
         case .none: break
         }
+        // A call that connected before this activation is marked connected now.
+        markConnectedIfDue()
         // A transport created later attaches as soon as it exists; a held call's
         // attaches on the resume.
         guard let transport else { return }
@@ -1563,10 +1566,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         syncHoldSignal()
         sendAnswerSignalIfDue()
         delegate?.callEngine(self, cue: .moment(.resumed))
-        if case .connected = state, !isConnectionMarked {
-            isConnectionMarked = true
-            delegate?.callEngine(self, cue: .moment(.connected))
-        }
+        markConnectedIfDue()
         if case .reconnecting = state, !isOutageMarked {
             isOutageMarked = true
             delegate?.callEngine(self, cue: .moment(.connectionLost))
@@ -2054,8 +2054,11 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         var moment: CallMoment?
         if !isOnHold {
             switch (old, new) {
-            case (.connecting, .connected), (.incomingRinging, .connected): moment = .connected
-            case (.reconnecting, .connected): moment = .reconnected
+            case (.connecting, .connected), (.incomingRinging, .connected):
+                moment = isAudioActivated ? .connected : nil
+            case (.reconnecting, .connected):
+                // A call the user never heard connect is marked connected, not back.
+                moment = isConnectionMarked ? .reconnected : (isAudioActivated ? .connected : nil)
             case (.connected, .reconnecting): moment = .connectionLost
             default: moment = nil
             }
@@ -2072,6 +2075,16 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
             repeatingCue = loop
             delegate?.callEngine(self, cue: .start(loop))
         }
+    }
+
+    /// Deliver `.moment(.connected)` once the call is connected, CallKit has
+    /// activated its audio and it is not held, whichever comes last, so a host that
+    /// plays a sound on it plays into a live session. When the activation or the
+    /// resume is last, the moment comes with no state change.
+    private func markConnectedIfDue() {
+        guard case .connected = state, !isConnectionMarked, isAudioActivated, !isOnHold else { return }
+        isConnectionMarked = true
+        delegate?.callEngine(self, cue: .moment(.connected))
     }
 
     private func wantedLoop(for state: CallState) -> RepeatingCue? {
