@@ -17,8 +17,10 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/pipecat-ai/pipecat-client-ios.git", from: "1.2.0"),
         .package(url: "https://github.com/pipecat-ai/pipecat-client-ios-daily.git", from: "1.2.0"),
-        // Floor at 2.15.1 pulls LiveKitWebRTC 144.7559.10 or later (App Review binary-scan hygiene).
-        .package(url: "https://github.com/livekit/client-sdk-swift.git", from: "2.15.1"),
+        // Floor at 2.18.0: from that version a reconnect LiveKit gives up on always ends with the
+        // room disconnected (client-sdk-swift PR #1144), which LiveKitTransport relies on. It also
+        // pulls LiveKitWebRTC 144.7559.10 or later (App Review binary-scan hygiene).
+        .package(url: "https://github.com/livekit/client-sdk-swift.git", from: "2.18.0"),
     ],
     targets: [
         // Core must never import a transport SDK.

@@ -23,6 +23,9 @@
 //  (`DailyInterruptionReporter`): losing it emits `.reconnecting`, getting it back
 //  emits `.connected`. This reflects the path, not Daily's media state.
 //
+//  A `connect` while the client is still in the call (the engine reconnecting by
+//  itself while Daily heals) does not rejoin: see `DailyConnectionGate.planConnect`.
+//
 //  Teardown: `disconnect()` sends the end-call signal, leaves, then releases the
 //  Pipecat client, whose Daily transport and call client otherwise outlive the call.
 //  A released client cannot connect again, so a `connect` after `disconnect()`
@@ -39,6 +42,7 @@ public final class PipecatDailyTransport: CallTransport {
     public nonisolated let events: AsyncStream<TransportEvent>
     private nonisolated let continuation: AsyncStream<TransportEvent>.Continuation
     private let makePipecatTransport: @MainActor () -> Transport
+    private let makePathMonitor: @MainActor () -> NetworkPathMonitoring
 
     /// A Pipecat client and the mapper that is its delegate. `disconnect()` takes the
     /// session away and releases its client, so a later `connect` builds a new one.
@@ -55,11 +59,15 @@ public final class PipecatDailyTransport: CallTransport {
         self.init(makePipecatTransport: { PipecatClientIOSDaily.DailyTransport() })
     }
 
-    init(makePipecatTransport: @escaping @MainActor () -> Transport) {
+    init(
+        makePipecatTransport: @escaping @MainActor () -> Transport,
+        makePathMonitor: @escaping @MainActor () -> NetworkPathMonitoring = { SystemNetworkPathMonitor() }
+    ) {
         let (stream, continuation) = AsyncStream.makeStream(of: TransportEvent.self)
         self.events = stream
         self.continuation = continuation
         self.makePipecatTransport = makePipecatTransport
+        self.makePathMonitor = makePathMonitor
         self.session = makeSession()
     }
 
@@ -73,7 +81,7 @@ public final class PipecatDailyTransport: CallTransport {
                 enableCam: false
             )
         )
-        let events = PipecatEventMapper(continuation: continuation)
+        let events = PipecatEventMapper(continuation: continuation, pathMonitor: makePathMonitor())
         client.delegate = events
         return Session(client: client, events: events)
     }
@@ -83,6 +91,21 @@ public final class PipecatDailyTransport: CallTransport {
     public func connect(_ connection: CallConnection) async throws {
         let session = self.session ?? makeSession()
         self.session = session
+        let plan = session.events.gate.planConnect(
+            sessionIsInCall: Self.statesInCall.contains(session.client.state),
+            interruption: session.events.interruptions.phase
+        )
+        switch plan {
+        case .join:
+            break
+        case .reportConnected:
+            Log.info(.transport, "Daily connect: the session healed by itself; reporting it connected")
+            session.events.reportConnectedAgain()
+            return
+        case .refuse:
+            Log.warning(.transport, "Daily connect: the session is still in the call (\(session.client.state)); not rejoining")
+            throw TransportError.connectionFailed("Daily session is still in the call")
+        }
         session.events.gate.connectDidStart()
         session.events.interruptions.connectDidStart()
         do {
@@ -96,6 +119,9 @@ public final class PipecatDailyTransport: CallTransport {
             throw TransportError.connectionFailed(String(describing: error))
         }
     }
+
+    /// The client states in which `PipecatClient.connect` throws `BotAlreadyStartedError`.
+    private static let statesInCall: Set<TransportState> = [.authenticating, .connecting, .connected, .ready]
 
     public func disconnect() async {
         guard let session else { return }
@@ -160,9 +186,9 @@ private final class PipecatEventMapper: PipecatClientDelegate {
     let interruptions: DailyInterruptionReporter
     var gate = DailyConnectionGate()
 
-    init(continuation: AsyncStream<TransportEvent>.Continuation) {
+    init(continuation: AsyncStream<TransportEvent>.Continuation, pathMonitor: NetworkPathMonitoring) {
         self.continuation = continuation
-        self.interruptions = DailyInterruptionReporter { continuation.yield($0) }
+        self.interruptions = DailyInterruptionReporter(pathMonitor: pathMonitor) { continuation.yield($0) }
     }
 
     nonisolated func onTransportStateChanged(state: TransportState) {
@@ -185,6 +211,10 @@ private final class PipecatEventMapper: PipecatClientDelegate {
         @unknown default:
             break
         }
+    }
+
+    func reportConnectedAgain() {
+        continuation.yield(.connected)
     }
 
     private func reportReady() {

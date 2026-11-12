@@ -111,4 +111,35 @@ struct DailyConnectionGateTests {
         #expect(gate.transportDidBecomeReady() == .connected)
         #expect(gate.transportDidDisconnect() == .disconnected(reason: .networkDropped))
     }
+
+    // MARK: - A connect while the client is still in the call
+
+    @Test(arguments: [DailyInterruptionGate.Phase.waitingForConnect, .connected, .interrupted, .closed])
+    func aClientOutOfTheCallJoins(interruption: DailyInterruptionGate.Phase) {
+        #expect(connectedGate().planConnect(sessionIsInCall: false, interruption: interruption) == .join)
+        #expect(DailyConnectionGate().planConnect(sessionIsInCall: false, interruption: interruption) == .join)
+    }
+
+    @Test func aConnectedCallWhosePathIsUpHasHealed() {
+        #expect(connectedGate().planConnect(sessionIsInCall: true, interruption: .connected) == .reportConnected)
+    }
+
+    @Test func aConnectedCallWhosePathIsDownIsStillHealing() {
+        #expect(connectedGate().planConnect(sessionIsInCall: true, interruption: .interrupted) == .refuse)
+    }
+
+    @Test func aJoinStillWaitingForTheBotIsLeftToFinish() {
+        var gate = DailyConnectionGate()
+        gate.connectDidStart()
+
+        #expect(gate.planConnect(sessionIsInCall: true, interruption: .waitingForConnect) == .refuse)
+        #expect(gate.transportDidBecomeReady() == .connected)
+    }
+
+    @Test func anAttemptThatIsOverIsNeverReportedConnectedAgain() {
+        var gate = connectedGate()
+        _ = gate.transportDidDisconnect()
+
+        #expect(gate.planConnect(sessionIsInCall: true, interruption: .connected) == .refuse)
+    }
 }

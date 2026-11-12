@@ -28,7 +28,7 @@ Link the core plus the adapter for the transport you use. Linking both adapters 
 - A physical iPhone for real calls (see [Device-only reality](#device-only-reality)).
 - For incoming calls: a paid Apple Developer account, the Push Notifications capability, and an APNs key on your server.
 
-The manifest's dependency floors are `pipecat-client-ios` 1.2.0, `pipecat-client-ios-daily` 1.2.0 and LiveKit `client-sdk-swift` 2.15.1. These are minimums SwiftPM may resolve above, not tested versions; see [Verified SDK versions](#verified-sdk-versions). With the LiveKit adapter, use LiveKit 2.18.0 or later: earlier versions can report a reconnect they gave up on as complete (see [the LiveKit notes](Docs/IntegrationGuide.md#livekit-livekittransport)).
+The manifest's dependency floors are `pipecat-client-ios` 1.2.0, `pipecat-client-ios-daily` 1.2.0 and LiveKit `client-sdk-swift` 2.18.0. These are minimums SwiftPM may resolve above, not tested versions; see [Verified SDK versions](#verified-sdk-versions). The LiveKit floor is a requirement: LiveKit before 2.18.0 can report a reconnect it gave up on as complete, which the adapter no longer handles (see [the LiveKit notes](Docs/IntegrationGuide.md#livekit-livekittransport)).
 
 ## Installation
 
@@ -182,7 +182,7 @@ The transport SDK versions this package has been verified against on a device, w
 
 That run covered outgoing and incoming calls, mute, route switching, hang-up, declining, a ring during a call, short network drops and long outages on both adapters. Two paths could not be triggered on the test phone and are covered by unit tests only: a ring filtered by a Focus, and an audio interruption pausing the microphone.
 
-Newer SDK versions that the manifest allows (for example LiveKit 2.19 and Pipecat 1.3) compile and pass the unit tests, but have not been through a device run. To stay on the verified set, pin those versions in your app.
+Newer SDK versions that the manifest allows (for example Pipecat 1.3) compile and pass the unit tests, but have not been through a device run; to stay on the verified Daily set, pin those versions in your app. The LiveKit row predates the package's 2.18.0 floor, so no verified LiveKit version can be pinned: LiveKit 2.18.0 and 2.19.0 compile and pass the unit tests, and still need a device run.
 
 ## Documentation
 

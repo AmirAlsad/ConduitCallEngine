@@ -62,10 +62,22 @@ public final class LiveKitTransport: CallTransport {
     // MARK: - CallTransport
 
     public func connect(_ connection: CallConnection) async throws {
-        // On LiveKit before 2.18.0 an abandoned SDK reconnect can leave the room to be
-        // disconnected; a connect running alongside that teardown would be torn down with it.
-        await roomEvents.roomReset?.value
-        roomEvents.gate = LiveKitConnectGate(abandonedReconnectsLookComplete: RoomEventMapper.abandonedReconnectsLookComplete)
+        let plan = roomEvents.gate.planConnect(
+            roomPhase: LiveKitEndCallSignal.RoomPhase(room.connectionState),
+            remotesPresent: !room.remoteParticipants.isEmpty
+        )
+        switch plan {
+        case .join:
+            break
+        case .reportConnected:
+            Log.info(.transport, "LiveKit connect: the room healed by itself; reporting it connected")
+            continuation.yield(.connected)
+            return
+        case .refuse:
+            Log.warning(.transport, "LiveKit connect: the room is still reconnecting; not rejoining")
+            throw TransportError.connectionFailed("LiveKit is still reconnecting")
+        }
+        roomEvents.gate = LiveKitConnectGate()
         roomEvents.wasBotSpeaking = false
         do {
             // Engine off until CallKit activates — unless activation already
@@ -146,14 +158,15 @@ public final class LiveKitTransport: CallTransport {
     }
 
     private func mapConnectError(_ error: Error) -> TransportError {
-        if let lkError = error as? LiveKitError {
-            if lkError.type == .insufficientPermissions { return .authenticationFailed }
-            let description = String(describing: lkError).lowercased()
-            if ["unauthorized", "401", "permission", "token"].contains(where: description.contains) {
-                return .authenticationFailed
-            }
+        let kind: LiveKitConnectFailure.Kind
+        switch (error as? LiveKitError)?.type {
+        case .insufficientPermissions: kind = .insufficientPermissions
+        case .validation: kind = .validation(message: (error as? LiveKitError)?.message)
+        default: kind = .other
         }
-        return .connectionFailed(String(describing: error))
+        return LiveKitConnectFailure.isRejectedCredentials(kind)
+            ? .authenticationFailed
+            : .connectionFailed(String(describing: error))
     }
 }
 
@@ -176,15 +189,8 @@ private extension LiveKitEndCallSignal.RoomPhase {
 @MainActor
 private final class RoomEventMapper: NSObject, RoomDelegate {
     private nonisolated let continuation: AsyncStream<TransportEvent>.Continuation
-    static let abandonedReconnectsLookComplete = LiveKitConnectGate.abandonedReconnectsLookComplete(
-        sdkVersion: LiveKitSDK.version
-    )
-    var gate = LiveKitConnectGate(abandonedReconnectsLookComplete: abandonedReconnectsLookComplete)
+    var gate = LiveKitConnectGate()
     var wasBotSpeaking = false
-    /// Disconnects a room whose reconnect the SDK abandoned while still reporting it
-    /// connected (LiveKit before 2.18.0), so the engine's next connect starts from a
-    /// disconnected room.
-    private(set) var roomReset: Task<Void, Never>?
 
     init(continuation: AsyncStream<TransportEvent>.Continuation) {
         self.continuation = continuation
@@ -252,9 +258,6 @@ private final class RoomEventMapper: NSObject, RoomDelegate {
             guard let event = self.gate.reconnectDidComplete(
                 roomConnected: isRoomConnected, remotesPresent: !room.remoteParticipants.isEmpty
             ) else { return }
-            if self.gate.roomNeedsReset {
-                self.roomReset = Task { await room.disconnect() }
-            }
             self.continuation.yield(event)
         }
     }

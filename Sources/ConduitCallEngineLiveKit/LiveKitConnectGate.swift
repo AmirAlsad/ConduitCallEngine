@@ -17,16 +17,27 @@
 //  before that belongs to the cleanup of an earlier session (`Room.connect` itself
 //  cleans up first).
 //
-//  LiveKit before 2.18.0 could also report an abandoned full reconnect as complete
-//  with the room still marked connected: its retry loop returned early once a full
-//  reconnect had failed, and the loop's success path set the room connected
-//  (client-sdk-swift PR #1144). A failed full reconnect has cleared the remotes, so
-//  on those versions a completion with the room connected and no remote is taken as
-//  that drop, and the room, which still claims to be connected, must be reset
-//  before the engine's next connect. From 2.18.0 that completion is a real one: the
-//  rejoin succeeded and the agent is not in the room, so it left while the device
+//  A completion with the room connected follows a rejoin that succeeded (LiveKit
+//  2.18.0, the package's floor, ends every failed reconnect with the room
+//  disconnected). If no remote is in the room then, the agent left while the device
 //  was offline, and the call ends as `.botLeft`, as it would had the agent left a
 //  connected call or had a quick reconnect brought the news.
+//
+//  A completion before this attempt's room connected is ignored: no reconnect of
+//  this attempt can have started yet, so it belongs to an earlier session (the
+//  cleanup `Room.connect` runs first clears a reconnect still in progress).
+//
+//  A connect can arrive while LiveKit is still reconnecting: the engine reconnects
+//  by itself when a `.reconnecting` is not followed by `.connected` or
+//  `.disconnected` within 30 seconds. `Room.connect` would clean the room up
+//  without cancelling LiveKit's reconnect task, whose next iteration then finds no
+//  reconnect in progress, returns as if it had succeeded and marks the room
+//  connected, possibly while the new connect is still joining; the join's own
+//  transition to connected is then a no-op and the agent, delivered with the join
+//  response, is never announced, so no `.connected` would follow. So such a connect
+//  does not start an attempt (`planConnect`): it fails and leaves LiveKit's
+//  reconnect to report how it ends, which LiveKit bounds by its own attempt count.
+//  A room that has already healed is reported `.connected` again.
 //
 //  An attempt is over once it has reported a disconnect (a drop, an abandoned
 //  reconnect, or the agent leaving) or the host has asked to disconnect. From then
@@ -39,31 +50,25 @@
 import ConduitCallEngine
 
 struct LiveKitConnectGate {
-    /// Whether the SDK can report an abandoned reconnect as complete with the room
-    /// still connected (LiveKit before 2.18.0).
-    let abandonedReconnectsLookComplete: Bool
+    enum ConnectPlan: Equatable {
+        /// Start a fresh attempt and join.
+        case join
+        /// The room healed and the agent is in it: report `.connected` again.
+        case reportConnected
+        /// LiveKit is still reconnecting the room: fail this connect and leave the
+        /// reconnect to report how it ends.
+        case refuse
+    }
+
     private(set) var roomConnected = false
     private(set) var hasRemote = false
     private(set) var reportedConnected = false
     private(set) var hasReportedDisconnect = false
+    /// Between the SDK reporting a reconnect started and reporting it complete.
+    private(set) var sdkIsReconnecting = false
     /// Set when the engine initiates the disconnect, so a teardown isn't mistaken for a
     /// network drop (which would trigger the engine's reconnect loop).
     var userRequestedDisconnect = false
-    /// The room claims to be connected after a reconnect the SDK abandoned; it must be
-    /// disconnected before the next connect.
-    private(set) var roomNeedsReset = false
-
-    init(abandonedReconnectsLookComplete: Bool = false) {
-        self.abandonedReconnectsLookComplete = abandonedReconnectsLookComplete
-    }
-
-    /// Whether LiveKit `sdkVersion` can report an abandoned reconnect as complete.
-    /// A version that does not parse is taken as a newer one.
-    static func abandonedReconnectsLookComplete(sdkVersion: String) -> Bool {
-        let parts = sdkVersion.split(separator: ".").map { Int($0.prefix { $0.isNumber }) }
-        guard parts.count >= 2, let major = parts[0], let minor = parts[1] else { return false }
-        return (major, minor) < (2, 18)
-    }
 
     mutating func roomDidConnect() -> TransportEvent? {
         roomConnected = true
@@ -91,15 +96,30 @@ struct LiveKitConnectGate {
     }
 
     /// The SDK started healing the room itself.
-    func reconnectDidStart() -> TransportEvent? {
-        isAttemptOver ? nil : .reconnecting
+    mutating func reconnectDidStart() -> TransportEvent? {
+        sdkIsReconnecting = true
+        return isAttemptOver ? nil : .reconnecting
+    }
+
+    /// What a connect does, given the room's state and whether a remote is in it.
+    func planConnect(roomPhase: LiveKitEndCallSignal.RoomPhase, remotesPresent: Bool) -> ConnectPlan {
+        switch roomPhase {
+        case .reconnecting:
+            return .refuse
+        case .connected where sdkIsReconnecting:
+            return .refuse // a quick reconnect keeps the room marked connected
+        case .connected where reportedConnected && !isAttemptOver && remotesPresent:
+            return .reportConnected
+        case .connected, .connecting, .disconnecting, .disconnected:
+            return .join
+        }
     }
 
     /// The SDK reports a reconnect complete. `roomConnected` and `remotesPresent` are
-    /// the room's state at that moment. After a `.disconnected` result, check
-    /// `roomNeedsReset` before the next connect.
+    /// the room's state at that moment.
     mutating func reconnectDidComplete(roomConnected isRoomConnected: Bool, remotesPresent: Bool) -> TransportEvent? {
-        guard !isAttemptOver else { return nil }
+        sdkIsReconnecting = false
+        guard roomConnected, !isAttemptOver else { return nil }
         guard isRoomConnected else { return abandonReconnect() }
         roomConnected = true
         guard reportedConnected else {
@@ -107,12 +127,8 @@ struct LiveKitConnectGate {
             return readyEvent()
         }
         guard remotesPresent else {
-            guard abandonedReconnectsLookComplete else {
-                hasReportedDisconnect = true
-                return .disconnected(reason: .botLeft)
-            }
-            roomNeedsReset = true
-            return abandonReconnect()
+            hasReportedDisconnect = true
+            return .disconnected(reason: .botLeft)
         }
         hasRemote = true
         return .connected

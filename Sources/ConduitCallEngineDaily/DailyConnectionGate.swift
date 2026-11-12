@@ -17,13 +17,43 @@
 //  call that is reconnecting, and a second drop would spend another retry. The
 //  next connect starts a fresh attempt.
 //
+//  A connect can also arrive while the Pipecat client is still in the call: the
+//  engine reconnects by itself when a `.reconnecting` (a lost network path, which
+//  Daily heals inside its SDK) is not followed by `.connected` or `.disconnected`
+//  within 30 seconds, and it can start an attempt while an earlier join is still
+//  waiting for the bot. Pipecat refuses to connect a client in that state, so such
+//  a connect does not start an attempt (`planConnect`): if the call is connected
+//  and its path is up, the session has healed and is reported `.connected` again;
+//  otherwise the connect fails and the attempt in progress keeps reporting, so
+//  Daily's recovery (the path coming back, the bot becoming ready) or its drop
+//  still reaches the engine.
+//
 
 import ConduitCallEngine
 
 struct DailyConnectionGate {
+    enum ConnectPlan: Equatable {
+        /// Start a fresh attempt and join.
+        case join
+        /// The session is in the call and usable: report `.connected` again.
+        case reportConnected
+        /// The session is still in the call and cannot join again: fail this connect
+        /// and leave the attempt in progress to report how it ends.
+        case refuse
+    }
+
     private(set) var reportedConnected = false
     private(set) var isAttemptOver = false
     private(set) var userRequestedDisconnect = false
+
+    /// What a connect does. `sessionIsInCall` is whether the Pipecat client is joining
+    /// or in a call (it refuses to connect then); `interruption` is the phase of this
+    /// attempt's network-path watch.
+    func planConnect(sessionIsInCall: Bool, interruption: DailyInterruptionGate.Phase) -> ConnectPlan {
+        guard sessionIsInCall else { return .join }
+        let healed = reportedConnected && !isAttemptOver && !userRequestedDisconnect && interruption == .connected
+        return healed ? .reportConnected : .refuse
+    }
 
     mutating func connectDidStart() {
         self = DailyConnectionGate()
