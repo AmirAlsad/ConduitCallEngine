@@ -35,7 +35,7 @@ The manifest's dependency floors are `pipecat-client-ios` 1.2.0, `pipecat-client
 Add the package by URL in Xcode (File > Add Package Dependencies) or in a manifest:
 
 ```swift
-.package(url: "https://github.com/AmirAlsad/ConduitCallEngine.git", from: "0.1.0")
+.package(url: "https://github.com/AmirAlsad/ConduitCallEngine.git", from: "0.2.0")
 ```
 
 Then add `ConduitCallEngine` and one adapter product to your app target, and `ConduitCallEngineTesting` if you want simulator support.
@@ -63,7 +63,6 @@ enum Assistant {
         CallTarget(
             id: id,
             displayName: "Assistant",
-            handle: nil,
             makeTransport: { LiveKitTransport() },
             // Runs for the first connect and again before every reconnect attempt;
             // its `ConnectRequest` argument says which.
@@ -170,7 +169,7 @@ struct CallScreen: View {
 
 CallKit and PushKit do not run in the iOS Simulator, and the Daily and LiveKit WebRTC stacks abort when they start audio there. A real two-way call can only be tested on a device.
 
-The `ConduitCallEngineTesting` product covers the rest. `CallEngine.simulated()` builds an engine over a `SimulatedCallSystem`, which stands in for CallKit, PushKit, audio interruptions and ring-status receipts, and `FakeTransport` stands in for the WebRTC transport. Use them behind `#if targetEnvironment(simulator)` to run your app's UI in the simulator, and in your own unit tests to deliver pushes, answer, mute, hold and end calls from the system side, activate the audio session, interrupt audio, and inject transport events. See [Integration Guide, section 12](Docs/IntegrationGuide.md#12-simulator-and-unit-testing).
+The `ConduitCallEngineTesting` product covers the rest. `CallEngine.simulated()` builds an engine over a `SimulatedCallSystem`, which stands in for CallKit, PushKit, audio interruptions and ring-status receipts, and `FakeTransport` stands in for the WebRTC transport. Use them behind `#if targetEnvironment(simulator)` to run your app's UI in the simulator, and in your own unit tests to deliver pushes, answer, mute, hold and end calls from the system side, activate the audio session, interrupt audio, inject transport events and run the engine's timers out, deterministically, without sleeping or polling. See [Integration Guide, section 12](Docs/IntegrationGuide.md#12-simulator-and-unit-testing).
 
 ## Verified SDK versions
 
