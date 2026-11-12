@@ -21,6 +21,8 @@ What it does not include:
 
 Link the core plus the adapter for the transport you use. Linking both adapters is supported. You can also write your own transport against `CallTransport` and link no adapter at all.
 
+**Which adapter?** If you can choose, LiveKit is the smoother fit for a CallKit app today; Daily is supported with known limits. The comparison, with the versions and device it was made on, is in [Choosing a transport](Docs/IntegrationGuide.md#choosing-a-transport).
+
 ## Requirements
 
 - iOS 18 or later.

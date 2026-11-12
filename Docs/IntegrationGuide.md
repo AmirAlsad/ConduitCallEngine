@@ -5,7 +5,7 @@ How to wire `ConduitCallEngine` into a real iOS app: what the engine owns, how t
 Contents:
 
 1. [What the engine does and does not do](#1-what-the-engine-does-and-does-not-do)
-2. [Choosing products](#2-choosing-products)
+2. [Choosing products](#2-choosing-products), and [choosing a transport](#choosing-a-transport)
 3. [Project setup](#3-project-setup)
 4. [Audio-session ownership](#4-audio-session-ownership)
 5. [Launch-time PushKit registration](#5-launch-time-pushkit-registration)
@@ -170,6 +170,23 @@ Until 1.0, read "major version" as "minor version": 0.3 may add a case to a clos
 | Simulator runs and host unit tests | add `ConduitCallEngineTesting` |
 
 The core imports no WebRTC SDK. `ConduitCallEngineTesting` imports neither XCTest nor Swift Testing, so linking it into the app target for simulator builds is safe.
+
+### Choosing a transport
+
+If you can choose between the bundled adapters, **LiveKit is the smoother fit for a CallKit app today.** Daily is supported, with the known limits below. The comparison was made with LiveKit `client-sdk-swift` 2.19.0 and `daily-client-ios` 0.41.0 (through `pipecat-client-ios-daily` 1.3.0), on one iPhone 17 running iOS 27.0, on the speaker route only; Bluetooth, AirPods and CarPlay were not tested.
+
+| | LiveKit (`LiveKitTransport`) | Daily (`PipecatDailyTransport`) |
+|---|---|---|
+| Audio session ownership | The app can turn off LiveKit's automatic session configuration and gate its audio engine on CallKit's activation; the adapter does both. | Daily's SDK configures the session itself and offers no way to defer to CallKit. |
+| Route while connecting | Stable. | The route dropped to the earpiece twice during a connect (category changes the app did not make), and the app's ringback broke up across them. |
+| Joining during a ring | Works as designed. | Works only with the agent's audio unsubscribed until the answer. With default subscriptions the agent was never audible after the answer; staging the audio instead also failed once in three. |
+| CallKit's route button on the system call screen | Works. | Cannot move audio. |
+| Hold | LiveKit's audio engine is paused and resumed. | Daily has no playout control, so the adapter unsubscribes from the agent's audio. |
+| The host's own sounds during a call | Speech in the app's audio session was audible only with LiveKit's minimal ducking of other audio; with Apple's default ducking it went silent. | Speech in the app's audio session was inaudible for the whole call. |
+| Speech through the system's own speech session (`AVSpeechSynthesizer.usesApplicationAudioSession = false`) | Audible. | Audible. |
+| Errors | A rejected token is reported as an authentication failure. | Every connect error is reported as a generic failure. |
+
+Daily has an open request for app-managed audio ([daily-co/daily-client-ios issue 41](https://github.com/daily-co/daily-client-ios/issues/41)); if it ships, most of this gap would close. The per-adapter details are in [section 11](#daily-pipecatdailytransport).
 
 ### What gets downloaded
 
