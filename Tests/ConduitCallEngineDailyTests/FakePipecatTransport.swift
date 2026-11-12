@@ -11,11 +11,18 @@
 //  detach stays reachable, so tests can tell whether it was detached.
 //
 
+import Foundation
 import PipecatClientIOS
 
 @MainActor
 final class FakePipecatTransport: Transport {
     private(set) var calls: [String] = []
+    /// Every message the client handed over, as the JSON Pipecat's Daily transport
+    /// encodes it for Daily's app message.
+    private(set) var sentMessages: [Data] = []
+    /// Whether `connect` leaves the client joined (`.connected`), as a Daily join that
+    /// completes does; `false` leaves it `.connecting`.
+    var joinsOnConnect = true
     var delegate: PipecatClientDelegate?
     var onMessage: ((RTVIMessageInbound) -> Void)?
     private var currentState: TransportState = .disconnected
@@ -36,7 +43,7 @@ final class FakePipecatTransport: Transport {
 
     func connect(transportParams: TransportConnectionParams?) async throws {
         calls.append("connect")
-        setState(state: .connected)
+        setState(state: joinsOnConnect ? .connected : .connecting)
     }
 
     func disconnect() async throws {
@@ -57,6 +64,7 @@ final class FakePipecatTransport: Transport {
 
     func sendMessage(message: RTVIMessageOutbound) throws {
         calls.append("send \(message.type)")
+        sentMessages.append(try JSONEncoder().encode(message))
     }
 
     func state() -> TransportState { currentState }

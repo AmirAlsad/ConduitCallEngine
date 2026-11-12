@@ -3,10 +3,11 @@
 //  ConduitCallEngineDailyTests
 //
 //  The adapter over a real `PipecatClient` whose Daily transport is replaced by a
-//  fake, because Daily's WebRTC audio unit aborts in the simulator. Covers teardown:
-//  the end-call signal goes out before the leave, and the client is released after
-//  it, without touching a client a later connect created. Audio and the real Daily
-//  call client are verified on device.
+//  fake, because Daily's WebRTC audio unit aborts in the simulator. Covers teardown
+//  (the end-call signal goes out before the leave, and the client is released after
+//  it, without touching a client a later connect created) and the RTVI client
+//  messages that carry call-control signals. Audio and the real Daily call client
+//  are verified on device.
 //
 
 import Foundation
@@ -18,6 +19,7 @@ import ConduitCallEngine
 struct PipecatDailyTransportTests {
     private final class Clients {
         var made: [FakePipecatTransport] = []
+        var joinOnConnect = true
         var pathMonitors: [FakePathMonitor] = []
     }
 
@@ -33,6 +35,7 @@ struct PipecatDailyTransportTests {
         PipecatDailyTransport(
             makePipecatTransport: { [clients] in
                 let fake = FakePipecatTransport()
+                fake.joinsOnConnect = clients.joinOnConnect
                 clients.made.append(fake)
                 return fake
             },
@@ -42,6 +45,10 @@ struct PipecatDailyTransportTests {
                 return monitor
             }
         )
+    }
+
+    private func clientsJoinOnConnect(_ joins: Bool) {
+        clients.joinOnConnect = joins
     }
 
     private func record(_ transport: PipecatDailyTransport) -> EventLog {
@@ -100,7 +107,20 @@ struct PipecatDailyTransportTests {
         #expect(fake.calls == ["connect", "send client-message", "disconnect", "release"])
     }
 
-    @Test func disconnectReleasesTheClientWhenTheBotWasNeverReady() async throws {
+    /// A joined call whose bot never became ready still has a bot that can hear the
+    /// app message, and would otherwise wait out its grace window.
+    @Test func disconnectSendsTheEndCallWhenJoinedButTheBotWasNeverReady() async throws {
+        let transport = makeTransport()
+        try await transport.connect(connection)
+        let fake = try #require(clients.made.first)
+
+        await transport.disconnect()
+
+        #expect(fake.calls == ["connect", "send client-message", "disconnect", "release"])
+    }
+
+    @Test func disconnectSendsNoEndCallBeforeTheCallIsJoined() async throws {
+        clientsJoinOnConnect(false)
         let transport = makeTransport()
         try await transport.connect(connection)
         let fake = try #require(clients.made.first)
@@ -235,5 +255,78 @@ struct PipecatDailyTransportTests {
 
         #expect(callEvents(log) == [.connected])
         #expect(fake.calls == ["connect"])
+    }
+
+    // MARK: - Call-control signals
+
+    /// The RTVI client message last handed to Daily, decoded.
+    private func lastMessage(_ fake: FakePipecatTransport) throws -> [String: Any] {
+        let data = try #require(fake.sentMessages.last)
+        return try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+    }
+
+    @Test(arguments: CallSignal.allCases)
+    func aSignalIsSentAsAnRTVIClientMessage(signal: CallSignal) async throws {
+        let transport = makeTransport()
+        try await transport.connect(connection)
+        let fake = try #require(clients.made.first)
+        fake.becomeReady()
+
+        await transport.send(signal)
+
+        let message = try lastMessage(fake)
+        #expect(message["label"] as? String == "rtvi-ai")
+        #expect(message["type"] as? String == "client-message")
+        #expect((message["id"] as? String)?.count == 8)
+        let data = try #require(message["data"] as? [String: Any])
+        #expect(data["t"] as? String == signal.rawValue)
+    }
+
+    /// Pipecat's `sendClientMessage` refuses until the bot is ready, which on a call
+    /// joined while ringing can be after the answer the signal reports.
+    @Test func aSignalIsSentOnceJoinedEvenIfTheBotIsNotReady() async throws {
+        let transport = makeTransport()
+        try await transport.connect(connection)
+        let fake = try #require(clients.made.first)
+
+        await transport.send(.answered)
+
+        #expect(fake.calls == ["connect", "send client-message"])
+    }
+
+    @Test func aSignalBeforeTheCallIsJoinedIsDropped() async throws {
+        clientsJoinOnConnect(false)
+        let transport = makeTransport()
+        try await transport.connect(connection)
+        let fake = try #require(clients.made.first)
+
+        await transport.send(.held)
+
+        #expect(fake.calls == ["connect"])
+    }
+
+    @Test func aSignalAfterDisconnectIsDropped() async throws {
+        let transport = makeTransport()
+        try await transport.connect(connection)
+        let fake = try #require(clients.made.first)
+        fake.becomeReady()
+        await transport.disconnect()
+
+        await transport.send(.held)
+
+        #expect(fake.calls == ["connect", "send client-message", "disconnect", "release"])
+        #expect(clients.made.count == 1)
+    }
+
+    @Test func aRepeatedSignalIsSentEachTime() async throws {
+        let transport = makeTransport()
+        try await transport.connect(connection)
+        let fake = try #require(clients.made.first)
+        fake.becomeReady()
+
+        await transport.send(.held)
+        await transport.send(.held)
+
+        #expect(fake.calls == ["connect", "send client-message", "send client-message"])
     }
 }

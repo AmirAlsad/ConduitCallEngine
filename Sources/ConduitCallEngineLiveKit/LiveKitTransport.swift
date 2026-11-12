@@ -92,34 +92,45 @@ public final class LiveKitTransport: CallTransport {
 
     public func disconnect() async {
         roomEvents.gate.userRequestedDisconnect = true
-        await sendEndCallSignal()
+        await publishClientMessage("end-call")
         await room.disconnect()
     }
 
-    /// Deliberate hangup: tell the remote side to end now instead of waiting out
-    /// the grace period it may give a dropped participant. Sent as an RTVI client
-    /// message over the data channel; a Pipecat bot must read it from the raw data
-    /// event, because Pipecat's LiveKit input does not deliver client RTVI messages
-    /// to its RTVI processor. See `LiveKitEndCallSignal` for when it is sent.
-    private func sendEndCallSignal() async {
-        let message: [String: Any] = [
-            "id": String(UUID().uuidString.prefix(8)),
-            "label": "rtvi-ai",
-            "type": "client-message",
-            "data": ["t": "end-call"],
-        ]
-        guard let payload = try? JSONSerialization.data(withJSONObject: message) else { return }
+    /// Delivers a call-control signal as an RTVI client message on the data channel,
+    /// like the end-call signal, and returns within `LiveKitEndCallSignal.deadline`.
+    public func send(_ signal: CallSignal) async {
+        await publishClientMessage(signal.rawValue)
+    }
+
+    /// Publishes an RTVI client message reliably, so LiveKit retransmits it rather
+    /// than dropping it under backpressure (its default is lossy). A Pipecat bot must
+    /// read it from the raw data event, because Pipecat's LiveKit input does not
+    /// deliver client RTVI messages to its RTVI processor. See `LiveKitEndCallSignal`
+    /// for when it is sent; it is never retried.
+    private func publishClientMessage(_ type: String) async {
+        guard let payload = LiveKitEndCallSignal.payload(type: type) else { return }
         let room = room
-        await LiveKitEndCallSignal.run(within: LiveKitEndCallSignal.deadline) {
+        let finished = await LiveKitEndCallSignal.run(within: LiveKitEndCallSignal.deadline) {
             // A publish issued before the connect has set up the room's transports
             // would not start the publisher's negotiation, so let the connect finish first.
             while room.connectionState == .connecting {
                 try? await Task.sleep(for: .milliseconds(50))
                 if Task.isCancelled { return }
             }
-            guard LiveKitEndCallSignal.shouldSend(in: LiveKitEndCallSignal.RoomPhase(room.connectionState)) else { return }
-            do { try await room.localParticipant.publish(data: payload) }
-            catch { Log.warning(.transport, "end-call signal publish failed: \(error)") }
+            let phase = LiveKitEndCallSignal.RoomPhase(room.connectionState)
+            guard LiveKitEndCallSignal.shouldSend(in: phase) else {
+                Log.info(.transport, "LiveKit client message \(type) dropped: the room is \(phase)")
+                return
+            }
+            do {
+                try await room.localParticipant.publish(data: payload, options: DataPublishOptions(reliable: true))
+                Log.info(.transport, "LiveKit client message \(type) sent (reliable)")
+            } catch {
+                Log.warning(.transport, "LiveKit client message \(type) publish failed: \(error)")
+            }
+        }
+        if !finished {
+            Log.warning(.transport, "LiveKit client message \(type) not handed to the data channel within \(LiveKitEndCallSignal.deadline); left pending")
         }
     }
 

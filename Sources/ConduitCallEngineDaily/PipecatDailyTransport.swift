@@ -131,9 +131,10 @@ public final class PipecatDailyTransport: CallTransport {
         let client = session.client
         // Deliberate hangup: an explicit end-call message lets the remote side end
         // at once instead of waiting out the grace period it may give a dropped
-        // participant. Throws when the bot was never ready — exactly when there's
-        // no one to tell. The brief sleep lets the message flush before the leave.
-        if (try? client.sendClientMessage(msgType: "end-call")) != nil {
+        // participant. Sent once Daily has joined, whether or not the bot is ready;
+        // before the join there is no one to tell. The brief sleep lets the message
+        // flush before the leave.
+        if Self.sendClientMessage("end-call", on: client) {
             try? await Task.sleep(for: .milliseconds(200))
         }
         do { try await client.disconnect() }
@@ -144,6 +145,43 @@ public final class PipecatDailyTransport: CallTransport {
         client.release()
         client.delegate = nil
     }
+
+    /// Delivers a call-control signal as an RTVI client message, the end-call
+    /// signal's envelope with the signal's raw value as `t`.
+    public func send(_ signal: CallSignal) async {
+        guard let client = session?.client else {
+            Log.info(.transport, "Daily client message \(signal.rawValue) dropped: no session")
+            return
+        }
+        Self.sendClientMessage(signal.rawValue, on: client)
+    }
+
+    /// Sends an RTVI client message (`{"id", "label": "rtvi-ai", "type": "client-message",
+    /// "data": {"t": type, "d": null}}`) as a Daily app message to everyone in the call,
+    /// and returns whether it was handed to Daily. It goes through the Pipecat transport
+    /// rather than `PipecatClient.sendClientMessage`, which refuses until the bot is
+    /// ready: Daily delivers app messages once the call is joined, and a Pipecat bot's
+    /// RTVI processor handles client messages without waiting for client-ready.
+    /// Delivery is fire and forget; Daily reports no result to it.
+    @discardableResult
+    private static func sendClientMessage(_ type: String, on client: PipecatClient) -> Bool {
+        let state = client.state
+        guard statesJoined.contains(state) else {
+            Log.info(.transport, "Daily client message \(type) dropped: the call is not joined (\(state))")
+            return false
+        }
+        do {
+            try client.transport.sendMessage(message: .clientMessage(msgType: type))
+            Log.info(.transport, "Daily client message \(type) sent")
+            return true
+        } catch {
+            Log.warning(.transport, "Daily client message \(type) failed: \(error)")
+            return false
+        }
+    }
+
+    /// The client states in which the Daily call is joined, so an app message reaches the bot.
+    private static let statesJoined: Set<TransportState> = [.connected, .ready]
 
     public func setMicEnabled(_ enabled: Bool) async {
         guard let client = session?.client else { return }
