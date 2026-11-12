@@ -179,8 +179,10 @@ public final class LiveKitTransport: CallTransport {
     }
 
     /// Delivers a call-control signal as an RTVI client message on the data channel,
-    /// like the end-call signal, and returns within `LiveKitEndCallSignal.deadline`.
-    public func send(_ signal: CallSignal) async {
+    /// like the end-call signal, and returns within `LiveKitEndCallSignal.deadline`:
+    /// `.sent` once LiveKit took it on the reliable channel, `.failed` otherwise.
+    @discardableResult
+    public func send(_ signal: CallSignal) async -> CallSignalDelivery {
         await publishClientMessage(signal.rawValue)
     }
 
@@ -190,9 +192,11 @@ public final class LiveKitTransport: CallTransport {
     /// deliver client RTVI messages to its RTVI processor. See `LiveKitEndCallSignal`
     /// for when it is sent; it is never retried.
     /// `join`, when given, is a join in flight to let finish first, within the same bound.
-    private func publishClientMessage(_ type: String, after join: Task<Void, any Error>? = nil) async {
-        guard let payload = LiveKitEndCallSignal.payload(type: type) else { return }
+    @discardableResult
+    private func publishClientMessage(_ type: String, after join: Task<Void, any Error>? = nil) async -> CallSignalDelivery {
+        guard let payload = LiveKitEndCallSignal.payload(type: type) else { return .failed }
         let room = room
+        let outcome = PublishOutcome()
         let finished = await LiveKitEndCallSignal.run(within: LiveKitEndCallSignal.deadline) { @MainActor in
             if let join { _ = await join.result }
             // A publish issued before the connect has set up the room's transports
@@ -208,6 +212,7 @@ public final class LiveKitTransport: CallTransport {
             }
             do {
                 try await room.publish(payload)
+                outcome.isSent = true
                 Log.info(.transport, "LiveKit client message \(type) sent (reliable)")
             } catch {
                 Log.warning(.transport, "LiveKit client message \(type) publish failed: \(error)")
@@ -216,6 +221,7 @@ public final class LiveKitTransport: CallTransport {
         if !finished {
             Log.warning(.transport, "LiveKit client message \(type) not handed to the data channel within \(LiveKitEndCallSignal.deadline); left pending")
         }
+        return outcome.isSent ? .sent : .failed
     }
 
     public func setMicEnabled(_ enabled: Bool) async {
@@ -274,6 +280,12 @@ public final class LiveKitTransport: CallTransport {
             ? .authenticationFailed
             : .connectionFailed(String(describing: error))
     }
+}
+
+/// Whether a bounded publish handed its message to the data channel.
+@MainActor
+private final class PublishOutcome {
+    var isSent = false
 }
 
 /// Translates the room's callbacks into `TransportEvent`s. Kept out of the public type

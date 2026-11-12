@@ -363,6 +363,29 @@ struct PipecatDailyTransportTests {
         #expect(clients.made.count == 1)
     }
 
+    /// The engine sends the call's current state again when a signal did not leave
+    /// the device, so the adapter must say which it was.
+    @Test func aSignalReportsWhetherDailySentIt() async throws {
+        let transport = makeTransport()
+        try await transport.connect(connection)
+        let control = try #require(clients.controls.first)
+        try #require(clients.made.first).becomeReady()
+
+        #expect(await transport.send(.held) == .sent)
+        control.appMessageError = FakeDailyCallControl.Refused()
+        #expect(await transport.send(.resumed) == .failed)
+        await transport.disconnect()
+        #expect(await transport.send(.resumed) == .failed)
+    }
+
+    @Test func aSignalBeforeTheCallIsJoinedFails() async throws {
+        clientsJoinOnConnect(false)
+        let transport = makeTransport()
+        try await transport.connect(connection)
+
+        #expect(await transport.send(.answered) == .failed)
+    }
+
     @Test func aRepeatedSignalIsSentEachTime() async throws {
         let transport = makeTransport()
         try await transport.connect(connection)

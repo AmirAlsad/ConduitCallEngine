@@ -140,6 +140,14 @@ final class FakePipecatTransport: Transport {
         sentMessages.append(try JSONEncoder().encode(message))
     }
 
+    /// An app message the adapter sent on the Daily call client directly, logged as
+    /// Pipecat's own send of the same message is.
+    func recordAppMessage(_ json: Data) {
+        let type = (try? JSONSerialization.jsonObject(with: json) as? [String: Any])?["type"] as? String ?? "?"
+        calls.append("send \(type)")
+        sentMessages.append(json)
+    }
+
     func state() -> TransportState { currentState }
 
     func setState(state: TransportState) {

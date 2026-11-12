@@ -16,8 +16,9 @@ import Foundation
 /// signal: `{"id": "<8 characters>", "label": "rtvi-ai", "type": "client-message",
 /// "data": {"t": "call-held"}}`. Delivery is best effort and a signal may arrive
 /// more than once (the engine repeats `held` after every reconnect of a held
-/// call), so an agent must treat each one as a statement of the current state, not
-/// as a toggle. Agents must ignore names they do not know.
+/// call, and sends the call's state again when a send did not leave the device;
+/// see `CallSignalDelivery`), so an agent must treat each one as a statement of the
+/// current state, not as a toggle. Agents must ignore names they do not know.
 public enum CallSignal: String, CaseIterable, Sendable {
     /// The user answered an incoming call whose push carried `preconnect`, CallKit
     /// has activated its audio, and the transport is connected: the agent may
@@ -33,4 +34,25 @@ public enum CallSignal: String, CaseIterable, Sendable {
     case held = "call-held"
     /// The call is back from hold: the user can hear and speak to the agent again.
     case resumed = "call-resumed"
+}
+
+/// What became of a call-control signal handed to `CallTransport.send(_:)`.
+///
+/// The engine uses it to make the agent converge on the call's real state: a signal
+/// that `failed` is sent again, as the call's current state, until one is `sent` or
+/// the connection changes. Neither result says the agent acted on the signal; only
+/// whether it left the device.
+public enum CallSignalDelivery: Equatable, Sendable {
+    /// Handed to the connection to the agent (for the bundled adapters: published on
+    /// LiveKit's reliable data channel, or accepted by Daily's app-message send). It
+    /// reaches the agent unless that connection drops, after which the engine tells
+    /// the next connection the current state anyway.
+    case sent
+    /// Not sent: there was no connection to send it on, it was refused, or it could
+    /// not be handed over within the transport's bound. The engine sends the call's
+    /// current state again after a short wait, a few times, and again on the next
+    /// connection.
+    case failed
+    /// The transport carries no signals. The engine never sends it again.
+    case unsupported
 }

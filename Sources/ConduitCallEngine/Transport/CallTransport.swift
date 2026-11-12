@@ -41,12 +41,17 @@ public protocol CallTransport: AnyObject {
     /// or the call ends. Can be called more than once in a row; make it idempotent.
     func detachAudioSession() async
 
-    /// Deliver a call-control signal to the remote agent. Best effort: the engine
-    /// does not wait for or retry a delivery, and sends a signal only while the
-    /// transport has reported `.connected`. Must not throw, must return promptly
-    /// when the connection is gone, and may be called again with the same signal.
-    /// The default implementation drops the signal.
-    func send(_ signal: CallSignal) async
+    /// Deliver a call-control signal to the remote agent, and say what became of it.
+    /// Best effort: the engine never waits on a delivery for anything else, and sends
+    /// a signal only while the transport has reported `.connected`. Return `.sent`
+    /// once the signal is handed to the connection, `.failed` when it could not be
+    /// (the engine then sends the call's current state again, a few times with a
+    /// growing wait, and on the next connection), and `.unsupported` if you carry no
+    /// signals. Must not throw, must return promptly when the connection is gone
+    /// (bound your wait), and may be called again with the same signal. The default
+    /// implementation drops the signal and returns `.unsupported`.
+    @discardableResult
+    func send(_ signal: CallSignal) async -> CallSignalDelivery
 
     /// Whether the engine may call `connect(_:)` while an incoming call is still
     /// ringing, before the answer and before CallKit activates the audio session
@@ -67,5 +72,6 @@ extension CallTransport {
 
     /// Drops the signal: a transport that does not implement `send(_:)` leaves its
     /// agent uninformed, and the call works as before.
-    public func send(_ signal: CallSignal) async {}
+    @discardableResult
+    public func send(_ signal: CallSignal) async -> CallSignalDelivery { .unsupported }
 }

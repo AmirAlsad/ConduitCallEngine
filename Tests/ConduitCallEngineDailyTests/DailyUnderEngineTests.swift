@@ -67,6 +67,39 @@ struct DailyUnderEngineTests {
         #expect(rig.engine.state == .failed(.agentUnreachable))
     }
 
+    // MARK: - Signals that do not leave the device
+
+    /// Daily refuses the app message carrying `call-resumed`: before, the agent that
+    /// closed its audio on `call-held` stayed closed for the rest of the call.
+    @Test(.timeLimit(.minutes(1)))
+    func aResumeDailyCouldNotSendReachesTheAgentOnARetry() async throws {
+        let rig = DailyEngineRig()
+        let id = try await rig.placeActivatedCall()
+        let pipecat = try #require(rig.pipecat)
+        pipecat.botJoins()
+        await waitUntil { rig.engine.state.isConnected }
+        rig.sleeper.wakeAll() // the first connect's bound, stale once connected
+        await drain()
+        await rig.system.setHeldFromSystem(id, onHold: true)
+        let control = try #require(rig.controls.last)
+        control.appMessageError = FakeDailyCallControl.Refused()
+
+        await rig.system.setHeldFromSystem(id, onHold: false)
+        await waitUntil { rig.sleeper.pendingCount == 1 }
+        control.appMessageError = nil
+        rig.sleeper.wakeAll()
+        await waitUntil { signals(pipecat).last == "call-resumed" }
+
+        #expect(signals(pipecat) == ["call-held", "call-resumed"])
+    }
+
+    private func signals(_ pipecat: FakePipecatTransport) -> [String] {
+        pipecat.sentMessages.compactMap {
+            let message = try? JSONSerialization.jsonObject(with: $0) as? [String: Any]
+            return (message?["data"] as? [String: Any])?["t"] as? String
+        }
+    }
+
     // MARK: - Reconnect attempts on the same transport
 
     /// A connected call whose Daily client dropped: the engine's first attempt has

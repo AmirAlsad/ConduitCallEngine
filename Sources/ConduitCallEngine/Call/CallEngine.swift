@@ -121,8 +121,19 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     /// The tail of the call-control signals sent to the live transport, in order.
     /// Kept apart from media so a slow delivery never delays the mic.
     private var signalTask: Task<Void, Never>?
-    /// Whether the agent was last sent `held` and not yet `resumed`.
+    /// Whether the agent may believe the call is held: it was sent `held`, and no
+    /// `resumed` is known to have left the device since.
     private var isAgentToldHeld = false
+    /// Counts the hold signals queued; only the latest one's delivery result counts.
+    private var holdSignalGeneration = 0
+    /// Counts the transport's connections, so a delivery result from an earlier one
+    /// changes nothing.
+    private var connectionGeneration = 0
+    /// Sends the call's state again after a signal failed to leave the device.
+    private var signalRetryTask: Task<Void, Never>?
+    /// Retries spent since the last signal that left the device, a hold or resume,
+    /// or a new connection.
+    private var signalRetryCount = 0
     /// A drop while held: the reconnection waits for the resume, then starts at
     /// attempt 1 at once.
     private var isReconnectionPaused = false
@@ -674,6 +685,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
             firstConnectedAt = start
             transition(to: .connected(since: start))
             applyMic()
+            startSignalConnection()
             sendAnswerSignalIfDue()
             syncHoldSignal()
             if !routeWaitsForActivation { scheduleAudioDeviceUpdate() }
@@ -1107,6 +1119,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
             transition(to: .connected(since: start))
             // The transport may have ignored a mic set before it joined.
             applyMic()
+            startSignalConnection()
             sendAnswerSignalIfDue()
             syncHoldSignal()
             scheduleAudioDeviceUpdate()
@@ -1120,6 +1133,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
             transition(to: .connected(since: firstConnectedAt ?? now()))
             applyMic()
             // A new connection may be a new agent session: tell it again.
+            startSignalConnection()
             isAnswerSignalSent = false
             sendAnswerSignalIfDue()
             syncHoldSignal()
@@ -1533,6 +1547,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     private func hold() {
         Log.info(.call, "Call held")
         isOnHold = true
+        signalRetryCount = 0
         applyMic()
         enqueueMedia { await $0.detachAudioSession() }
         syncHoldSignal()
@@ -1550,6 +1565,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     private func resume() {
         Log.info(.call, "Call resumed")
         isOnHold = false
+        signalRetryCount = 0
         if isAudioActivated { enqueueMedia { await $0.attachAudioSession() } }
         applyMic()
         syncHoldSignal()
@@ -1577,29 +1593,88 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     }
 
     /// Tell the agent whether the call is held, whenever it can be told: on hold
-    /// and resume while connected, and on every connection (a reconnect may reach
-    /// a new agent session). A resume while disconnected is sent on reconnect.
+    /// and resume while connected, on every connection (a reconnect may reach a new
+    /// agent session, or the same one, which may have missed a resume), and on a
+    /// retry after a signal failed to leave the device.
     private func syncHoldSignal() {
         guard case .connected = state else { return }
         if isOnHold {
-            send(.held)
             isAgentToldHeld = true
+            sendHoldSignal(.held)
         } else if isAgentToldHeld {
-            send(.resumed)
-            isAgentToldHeld = false
+            sendHoldSignal(.resumed)
         }
     }
 
+    private func sendHoldSignal(_ signal: CallSignal) {
+        holdSignalGeneration += 1
+        let generation = holdSignalGeneration
+        send(signal) { [weak self] delivery in
+            guard let self, generation == self.holdSignalGeneration else { return }
+            switch delivery {
+            case .sent, .unsupported:
+                // Only now can the agent be taken to have heard the resume.
+                if signal == .resumed { self.isAgentToldHeld = false }
+                if delivery == .sent { self.signalRetryCount = 0 }
+            case .failed:
+                Log.warning(.call, "Signal \(signal.rawValue) did not leave the device; sending the call's state again")
+                self.scheduleSignalRetry()
+            }
+        }
+    }
+
+    /// A new connection: delivery results from the old one change nothing, and the
+    /// retries start over.
+    private func startSignalConnection() {
+        connectionGeneration += 1
+        signalRetryCount = 0
+    }
+
+    /// Send the call's state again after a short wait that grows with each retry. A
+    /// retry sends the state as it is when it runs, not the signal that failed. After
+    /// the last one the engine waits for the next connection, which is told again.
+    private func scheduleSignalRetry() {
+        guard signalRetryTask == nil else { return }
+        guard signalRetryCount < Self.signalRetryDelays.count else {
+            Log.warning(.call, "Signals still not leaving the device after \(signalRetryCount) retries; waiting for the next connection")
+            return
+        }
+        let delay = Self.signalRetryDelays[signalRetryCount]
+        signalRetryCount += 1
+        let sleep = self.sleep
+        signalRetryTask = Task { [weak self] in
+            try? await sleep(delay)
+            guard let self, !Task.isCancelled else { return }
+            self.signalRetryTask = nil
+            guard case .connected = self.state else { return }
+            self.syncHoldSignal()
+            self.sendAnswerSignalIfDue()
+        }
+    }
+
+    private func cancelSignalRetry() {
+        signalRetryTask?.cancel()
+        signalRetryTask = nil
+        signalRetryCount = 0
+    }
+
     /// Queue `signal` after the signals already queued and, when given, after the
-    /// media command `barrier`; a signal never holds up a media command.
-    private func send(_ signal: CallSignal, after barrier: Task<Void, Never>? = nil) {
+    /// media command `barrier`; a signal never holds up a media command. `delivered`
+    /// gets the transport's result, unless the call's transport changed meanwhile.
+    private func send(
+        _ signal: CallSignal,
+        after barrier: Task<Void, Never>? = nil,
+        delivered: (@MainActor (CallSignalDelivery) -> Void)? = nil
+    ) {
         guard let transport else { return }
         let previous = signalTask
         signalTask = Task { [weak self] in
             await previous?.value
             await barrier?.value
             guard let self, self.transport === transport else { return }
-            await transport.send(signal)
+            let delivery = await transport.send(signal)
+            guard self.transport === transport else { return }
+            delivered?(delivery)
         }
     }
 
@@ -1613,7 +1688,18 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
               case .connected = state, isAudioActivated, !isOnHold
         else { return }
         isAnswerSignalSent = true
-        send(.answered, after: mediaTask)
+        let connection = connectionGeneration
+        send(.answered, after: mediaTask) { [weak self] delivery in
+            guard let self, connection == self.connectionGeneration, self.isAnswerSignalSent else { return }
+            switch delivery {
+            case .sent: self.signalRetryCount = 0
+            case .unsupported: break
+            case .failed:
+                Log.warning(.call, "Signal \(CallSignal.answered.rawValue) did not leave the device; sending it again")
+                self.isAnswerSignalSent = false
+                self.scheduleSignalRetry()
+            }
+        }
     }
 
     /// Test hook: await every call-control signal sent so far.
@@ -1894,6 +1980,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         eventTask = nil
         mediaTask = nil
         signalTask = nil
+        cancelSignalRetry()
         isOnHold = false
         isAgentToldHeld = false
         isReconnectionPaused = false
@@ -2038,4 +2125,6 @@ extension CallEngine {
     package nonisolated static let rememberedCancelLifetime: TimeInterval = 10 * 60
     /// The shortest ring a push's `ring_timeout` can ask for.
     package nonisolated static let minimumPushedRingTimeout: Duration = .seconds(10)
+    /// The waits before each retry of a signal that did not leave the device.
+    package nonisolated static let signalRetryDelays: [Duration] = [1, 2, 4, 8, 16, 30].map { .seconds($0) }
 }

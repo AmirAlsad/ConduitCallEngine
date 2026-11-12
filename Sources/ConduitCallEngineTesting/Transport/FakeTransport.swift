@@ -128,11 +128,15 @@ public final class FakeTransport: CallTransport, @unchecked Sendable {
         isAudioAttached = false
     }
 
-    /// Every call-control signal the engine sent, in order.
+    /// Every call-control signal the engine sent, in order, whatever became of it.
     public private(set) var sentSignals: [CallSignal] = []
+    /// What the next sends return, in order; once it is empty, every send is `.sent`.
+    public var signalDeliveries: [CallSignalDelivery] = []
 
-    public func send(_ signal: CallSignal) async {
+    @discardableResult
+    public func send(_ signal: CallSignal) async -> CallSignalDelivery {
         sentSignals.append(signal)
+        return signalDeliveries.isEmpty ? .sent : signalDeliveries.removeFirst()
     }
 
     /// Drive an event onto the stream from a test or a simulator build.

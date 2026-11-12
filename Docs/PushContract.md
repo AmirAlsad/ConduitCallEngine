@@ -155,7 +155,7 @@ For every ring whose push carried `preconnect` (either value), the engine tells 
 {"id": "<8 characters>", "label": "rtvi-ai", "type": "client-message", "data": {"t": "call-answered"}}
 ```
 
-It is sent when all three hold, whichever comes last: the user answered, iOS activated the call's audio, and the connection to the agent is up. It is sent again after every reconnect of the call, since a new connection may reach a new agent session. While the call is on hold it waits for the resume. It is sent even when the device prepared nothing (the app allowed no pre-connect), because your agent may have been started for the ring anyway. The app's transport carries it (see [Integration Guide, section 11](IntegrationGuide.md#call-control-signals)); a transport that does not deliver signals sends nothing.
+It is sent when all three hold, whichever comes last: the user answered, iOS activated the call's audio, and the connection to the agent is up. It is sent again after every reconnect of the call, since a new connection may reach a new agent session, and again if it could not leave the device (a few times, over about a minute). While the call is on hold it waits for the resume. It is sent even when the device prepared nothing (the app allowed no pre-connect), because your agent may have been started for the ring anyway. The app's transport carries it (see [Integration Guide, section 11](IntegrationGuide.md#call-control-signals)); a transport that does not deliver signals sends nothing.
 
 ### What the agent must do for `"media"`
 

@@ -223,13 +223,33 @@ public final class PipecatDailyTransport: CallTransport {
     }
 
     /// Delivers a call-control signal as an RTVI client message, the end-call
-    /// signal's envelope with the signal's raw value as `t`.
-    public func send(_ signal: CallSignal) async {
-        guard let client = session?.client else {
+    /// signal's envelope with the signal's raw value as `t`, through Daily's call
+    /// client, whose app-message send reports a result (Pipecat's own send discards
+    /// it): `.sent` once Daily has sent it, `.failed` when the call is not joined or
+    /// Daily could not send it.
+    @discardableResult
+    public func send(_ signal: CallSignal) async -> CallSignalDelivery {
+        guard let session else {
             Log.info(.transport, "Daily client message \(signal.rawValue) dropped: no session")
-            return
+            return .failed
         }
-        Self.sendClientMessage(signal.rawValue, on: client)
+        let state = session.client.state
+        guard Self.statesJoined.contains(state) else {
+            Log.info(.transport, "Daily client message \(signal.rawValue) dropped: the call is not joined (\(state))")
+            return .failed
+        }
+        guard let callControl = session.callControl else {
+            return Self.sendClientMessage(signal.rawValue, on: session.client) ? .sent : .failed
+        }
+        do {
+            let json = try JSONEncoder().encode(RTVIMessageOutbound.clientMessage(msgType: signal.rawValue))
+            try await callControl.sendAppMessage(json)
+            Log.info(.transport, "Daily client message \(signal.rawValue) sent")
+            return .sent
+        } catch {
+            Log.warning(.transport, "Daily client message \(signal.rawValue) failed: \(error)")
+            return .failed
+        }
     }
 
     /// Sends an RTVI client message (`{"id", "label": "rtvi-ai", "type": "client-message",

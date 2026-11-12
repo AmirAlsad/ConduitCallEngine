@@ -36,5 +36,13 @@ final class FakeDailyCallControl: DailyCallControlling {
         transport.remoteAudioDidChange(state)
     }
 
+    /// When set, app messages fail with it.
+    var appMessageError: (any Error)?
+
+    func sendAppMessage(_ json: Data) async throws {
+        if let appMessageError { throw appMessageError }
+        transport.recordAppMessage(json)
+    }
+
     var remoteAudioDescription: String { "fake" }
 }
