@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- A call the remote party leaves before it connects now ends in `.ended(.noAnswer)`, matching its `CallRecord`; it was `.ended(.completed)`. An incoming call the user answers and then ends before it connects is now `.canceled` in both state and record; it was `.declined`, which is now kept for a ring the user declines. The outcome in `.ended(_)` is always the record's outcome. (#1)
+
 ## 0.1.1 - 2026-11-11
 
 - Correct the stated requirement: the package needs Xcode 26 or later, not 16.3. The sources use iOS 26 SDK names and never compiled with Xcode 16. CI now builds with Xcode 26.

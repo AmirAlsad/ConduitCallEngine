@@ -780,10 +780,10 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
 
     private func endRemote() {
         guard !state.isTerminal else { return }
-        let connected = firstConnectedAt != nil
-        transition(to: .ended(.completed))
+        let outcome: CallOutcome = firstConnectedAt != nil ? .completed : .noAnswer
+        transition(to: .ended(outcome))
         if let id = activeCallID { callProvider.reportCallEnded(id, reason: .remoteEnded) }
-        finish(outcome: connected ? .completed : .noAnswer)
+        finish(outcome: outcome)
         teardownTransport()
     }
 
@@ -792,11 +792,16 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     /// CallKit end → providerPerformEndCall round-trip idempotent (no double record).
     private func finishEnded() {
         guard !state.isTerminal else { return }
-        let connected = firstConnectedAt != nil
-        // An incoming call ended before it ever connected was declined; an outgoing
-        // one was canceled.
-        let outcome: CallOutcome = connected ? .completed
-            : (callDirection == .incoming ? .declined : .canceled)
+        // Only a ring can be declined; a call placed or answered that ends before it
+        // connects was canceled.
+        let outcome: CallOutcome
+        if firstConnectedAt != nil {
+            outcome = .completed
+        } else if case .incomingRinging = state {
+            outcome = .declined
+        } else {
+            outcome = .canceled
+        }
         if outcome == .declined, let url = ringStatusURL, let id = activeCallID {
             reportRingStatus(.declined, callID: id, endpoint: url, targetID: recordTargetID)
             ringStatusURL = nil

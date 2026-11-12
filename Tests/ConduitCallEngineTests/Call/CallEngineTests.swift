@@ -284,6 +284,59 @@ struct CallEngineTests {
         #expect(h.provider.reportedEnded.first?.reason == .remoteEnded)
     }
 
+    @Test func remoteEndBeforeConnectEndsAsNoAnswerInStateAndRecord() async throws {
+        let h = CallEngineHarness()
+        await h.placeCall()
+
+        h.engine.handle(.disconnected(reason: .botLeft))
+
+        #expect(h.engine.state == .ended(.noAnswer))
+        #expect(h.delegate.records.map(\.outcome) == [.noAnswer])
+        #expect(h.delegate.transitions.last == "connecting→ended(noAnswer)")
+        #expect(h.provider.reportedEnded.map(\.reason) == [.remoteEnded])
+    }
+
+    enum Ending: String, CaseIterable, Sendable {
+        case remoteBeforeConnect, remoteAfterConnect
+        case userBeforeConnect, userAfterConnect
+        case systemBeforeConnect, systemAfterConnect
+        case declined, answeredThenUserEnd, answeredThenSystemEnd, answeredThenRemoteEnd
+    }
+
+    /// A host switching on `.ended(let outcome)` and its history must agree.
+    @Test(arguments: Ending.allCases)
+    func endedStateCarriesTheRecordedOutcome(ending: Ending) async throws {
+        let h = CallEngineHarness()
+        let ringID = UUID()
+        switch ending {
+        case .declined, .answeredThenUserEnd, .answeredThenSystemEnd, .answeredThenRemoteEnd:
+            h.ring(callID: ringID)
+            if ending != .declined { await h.engine.answer() }
+        default:
+            await h.placeCall()
+        }
+        let callID = h.engine.activeCall?.direction == .incoming ? ringID : h.callID
+        switch ending {
+        case .remoteAfterConnect, .userAfterConnect, .systemAfterConnect:
+            h.engine.handle(.connected)
+        default:
+            break
+        }
+
+        switch ending {
+        case .remoteBeforeConnect, .remoteAfterConnect, .answeredThenRemoteEnd:
+            h.engine.handle(.disconnected(reason: .botLeft))
+        case .userBeforeConnect, .userAfterConnect, .answeredThenUserEnd:
+            await h.engine.endCall()
+        case .systemBeforeConnect, .systemAfterConnect, .declined, .answeredThenSystemEnd:
+            h.engine.providerPerformEndCall(callID)
+        }
+
+        let record = try #require(h.delegate.records.first)
+        #expect(h.delegate.records.count == 1)
+        #expect(h.engine.state == .ended(record.outcome))
+    }
+
     @Test func callLogRecordsConnectedDuration() async throws {
         let clock = MutableClock()
         let h = CallEngineHarness(now: clock.now)

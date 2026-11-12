@@ -65,10 +65,12 @@ Terminal states stay until you call `reset()` (typically when your call screen i
 | `CallOutcome` | When |
 |---|---|
 | `.completed` | The call connected, then ended by the user, the system UI, or the agent leaving. |
-| `.canceled` | An outgoing call ended by the user before it connected. |
-| `.declined` | An incoming call ended before it connected (the user declined). |
+| `.canceled` | The user ended the call (in-app or from the system UI) after placing or answering it, before it connected. |
+| `.declined` | The user declined an incoming call while it was still ringing. |
 | `.noAnswer` | The agent left before the call ever connected, or the ring never reached the user (busy, Focus). |
 | `.failed` | See the reason. |
+
+A call that reaches `.ended(outcome)` is recorded with the same outcome, so a host can switch on either and show the same thing.
 
 | `CallFailureReason` | Produced by |
 |---|---|

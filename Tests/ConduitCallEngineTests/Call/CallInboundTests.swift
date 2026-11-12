@@ -106,6 +106,27 @@ struct CallInboundTests {
         #expect(!h.interruption.isObserving)
     }
 
+    /// Answering ends the ring; ending the call after that, before it connects, is
+    /// the user abandoning a call they took, not declining one.
+    @Test(arguments: [false, true])
+    func answeredCallEndedBeforeConnectingIsCanceled(fromSystem: Bool) async throws {
+        let h = CallEngineHarness()
+        let callID = UUID()
+        h.ring(callID: callID, statusURL: statusEndpoint)
+        await h.engine.answer()
+
+        if fromSystem {
+            h.engine.providerPerformEndCall(callID)
+        } else {
+            await h.engine.endCall()
+        }
+
+        #expect(h.engine.state == .ended(.canceled))
+        #expect(h.delegate.records.map(\.outcome) == [.canceled])
+        #expect(h.delegate.records.first?.direction == .incoming)
+        #expect(h.ringStatusReporter.reports.map(\.status) == [.answered]) // no declined receipt
+    }
+
     @Test func unknownAgentReportsThenFails() async throws {
         let h = CallEngineHarness()
         let unknownID = UUID()
