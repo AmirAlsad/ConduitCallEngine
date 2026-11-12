@@ -261,6 +261,10 @@ public final class SimulatedCallSystem {
         /// with its audio activated. Firing it releases the withhold, as the engine
         /// does when the bound runs out.
         case micWithholdTimeout
+        /// The rest of `CallEngineConfiguration.minimumConnectingDuration`, running
+        /// while the transport has reported `.connected` and the engine holds the
+        /// call in `.connecting`. Firing it reports the call connected now.
+        case minimumConnectingDuration
     }
 
     /// Run `timer` out now, as if its wait were over, if it is running: the engine
@@ -278,6 +282,7 @@ public final class SimulatedCallSystem {
         case .reconnectBackoff: return engine.fireTimer(.reconnectBackoff)
         case .signalRetry: return engine.fireTimer(.signalRetry)
         case .micWithholdTimeout: return engine.fireTimer(.micWithholdTimeout)
+        case .minimumConnectingDuration: return engine.fireTimer(.minimumConnecting)
         }
     }
 

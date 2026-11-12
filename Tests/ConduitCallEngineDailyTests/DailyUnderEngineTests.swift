@@ -177,6 +177,46 @@ struct DailyUnderEngineTests {
         #expect(pipecat.micHistory.last == true)
     }
 
+    // MARK: - The minimum connecting time
+
+    @Test(.timeLimit(.minutes(1)))
+    func aBotReadyBeforeTheMinimumStaysConnectingUntilItHasPassed() async throws {
+        let rig = DailyEngineRig(minimumConnecting: .seconds(3))
+        _ = try await rig.placeActivatedCall()
+        let pipecat = try #require(rig.pipecat)
+        pipecat.botJoins()
+        await waitUntil { rig.engine.isTimerRunning(.minimumConnecting) }
+        await rig.system.awaitPendingWork()
+
+        #expect(rig.engine.state == .connecting)
+        #expect(!pipecat.micHistory.contains(true))
+        #expect(signals(pipecat).isEmpty)
+
+        #expect(rig.system.fireTimer(.minimumConnectingDuration))
+        await rig.system.awaitPendingWork()
+
+        #expect(rig.engine.state.isConnected)
+        #expect(pipecat.micHistory.last == true)
+        #expect(signals(pipecat) == ["call-connected"])
+    }
+
+    /// Daily drops while the engine holds the connection: the call reconnects, as a
+    /// connected call does, instead of failing as one that never connected.
+    @Test(.timeLimit(.minutes(1)))
+    func aDropDuringTheMinimumReconnectsTheCallItMade() async throws {
+        let rig = DailyEngineRig(minimumConnecting: .seconds(3))
+        _ = try await rig.placeActivatedCall()
+        let pipecat = try #require(rig.pipecat)
+        pipecat.botJoins()
+        await waitUntil { rig.engine.isTimerRunning(.minimumConnecting) }
+
+        pipecat.setState(state: .disconnected) // Daily left the call
+        await waitUntil { rig.engine.state == .reconnecting(attempt: 1) }
+
+        #expect(rig.engine.state == .reconnecting(attempt: 1))
+        #expect(rig.host.records.isEmpty)
+    }
+
     // MARK: - Signals that do not leave the device
 
     /// Daily refuses the app message carrying `call-resumed`: before, the agent that

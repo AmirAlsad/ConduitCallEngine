@@ -64,7 +64,11 @@ public enum CallCue: Equatable, Sendable {
 public enum RepeatingCue: Equatable, Sendable {
     /// The call is connecting: placed and accepted by CallKit, or answered, and
     /// waiting for the agent. Starts on the transition to `.connecting`, which an
-    /// answer to a pre-connected ring whose agent is there skips.
+    /// answer to a pre-connected ring whose agent is there skips, and again at the
+    /// resume of a call held while connecting. Its `stop` comes no sooner than
+    /// `CallEngineConfiguration.minimumConnectingDuration` after its start, unless the
+    /// call is held or ends, or its transport reports a drop, a self-heal or the
+    /// agent leaving, which are applied to the call at once.
     case connecting
     /// The connection dropped and the engine or the transport is trying to get it
     /// back. Starts on the transition from `.connected` to `.reconnecting`.

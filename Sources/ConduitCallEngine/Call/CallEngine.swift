@@ -169,6 +169,14 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     /// Whether this outage's `connectionLost` cue has been delivered (it is not
     /// while held, so the resume delivers it).
     private var isOutageMarked = false
+    /// When the connecting loop last started (`.start(.connecting)`): the transition
+    /// to `.connecting`, or the resume of a call held while connecting. nil while it
+    /// is not running. `minimumConnectingDuration` counts from here.
+    private var connectingLoopStartedAt: Date?
+    /// The transport reported `.connected` while the call was `.connecting`, and the
+    /// engine holds that connection until `minimumConnectingDuration` has passed
+    /// (`completeConnectionWhenDue`). The join deadline is over: the agent is there.
+    private var isConnectionPending = false
     /// Whether `.moment(.connected)` has been delivered for this call. It waits until
     /// the call is connected, CallKit has activated its audio and it is not held,
     /// whichever comes last (`markConnectedIfDue`).
@@ -195,6 +203,9 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     /// Ends a host's withhold of the mic that outlasts its bound; see
     /// `startMicWithholdTimeoutIfDue`.
     private var micWithholdTask: Task<Void, Never>?
+    /// Reports a ready connection once `minimumConnectingDuration` has passed; see
+    /// `completeConnectionWhenDue`.
+    private var minimumConnectingTask: Task<Void, Never>?
     /// What each running timer does when its wait is over, so a simulated system
     /// can run one out early (`fireTimer(_:)`).
     private var timerExpiries: [EngineTimer: @MainActor () -> Void] = [:]
@@ -1033,6 +1044,9 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     /// The call's first connect threw: the call fails, unless it was connecting with
     /// what the ring prepared, which then gives way to an unprepared connect.
     private func failFirstConnect(_ error: any Error) {
+        // A connect that throws after its transport reported the agent there fails
+        // the call it made, as without the minimum.
+        if isConnectionPending { completeConnection() }
         if canFallBackFromPreparation {
             fallBackFromPreparation("its connect failed: \(error)")
         } else {
@@ -1126,6 +1140,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         }
         // A ring has no live transport; nothing may end or change it from here.
         guard state != .incomingRinging else { return }
+        completeConnectionBefore(event)
         switch event {
         case .connecting:
             break // already reflected by `.connecting` / `.reconnecting`
@@ -1163,26 +1178,14 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     private func handleConnected() {
         switch state {
         case .connecting:
+            // The agent is there: the join deadline is over, and nothing the ring
+            // prepared can fail any more.
             isAwaitingAgent = false
             isPreparedConnect = false
             freshConnectID = nil
             cancelJoinDeadline()
-            let start = now()
-            firstConnectedAt = start
-            // Incoming calls are marked connected to CallKit by fulfilling the answer
-            // action; only outgoing calls report connected here — before the host's
-            // "Connected" cue, as it always has.
-            if callDirection == .outgoing, let id = activeCallID {
-                callProvider.reportOutgoingCallConnected(id)
-            }
-            transition(to: .connected(since: start))
-            // The transport may have ignored a mic set before it joined.
-            applyMic()
-            startSignalConnection()
-            syncHoldSignal()
-            sendConnectedSignalIfDue()
-            scheduleAudioDeviceUpdate()
-            Log.info(.call, "Connected")
+            isConnectionPending = true
+            completeConnectionWhenDue()
 
         case .reconnecting:
             reconnectAttempt = 0
@@ -1199,6 +1202,82 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
             sendConnectedSignalIfDue()
             Log.info(.call, "Reconnected")
 
+        default:
+            break
+        }
+    }
+
+    /// Report the connection the transport made once `minimumConnectingDuration` has
+    /// passed since the connecting loop last started; until then the call stays
+    /// `.connecting`. A held call's loop is not running: its resume starts the loop
+    /// and this wait again.
+    private func completeConnectionWhenDue() {
+        guard isConnectionPending, case .connecting = state else { return }
+        guard let remaining = remainingConnectingMinimum() else { return }
+        guard remaining > .zero else {
+            completeConnection()
+            return
+        }
+        guard minimumConnectingTask == nil else { return }
+        Log.info(.call, "The agent is there; connecting for another \(remaining), the minimum")
+        minimumConnectingTask = startTimer(.minimumConnecting, after: remaining) { [weak self] in
+            guard let self else { return }
+            self.minimumConnectingTask = nil
+            self.completeConnection()
+        }
+    }
+
+    /// What is left of `minimumConnectingDuration`: zero when there is none or it has
+    /// passed, nil while the connecting loop is not running (the call is held).
+    private func remainingConnectingMinimum() -> Duration? {
+        let minimum = configuration.minimumConnectingDuration
+        guard minimum > .zero else { return .zero }
+        guard let started = connectingLoopStartedAt else { return isOnHold ? nil : .zero }
+        return minimum - .seconds(now().timeIntervalSince(started))
+    }
+
+    private func cancelMinimumConnecting() {
+        minimumConnectingTask?.cancel()
+        minimumConnectingTask = nil
+        timerExpiries[.minimumConnecting] = nil
+    }
+
+    /// The call connects: the transport reported `.connected` while connecting, and
+    /// the minimum has passed (or the transport's news about the connection cannot
+    /// wait for it).
+    private func completeConnection() {
+        guard isConnectionPending, case .connecting = state else { return }
+        isConnectionPending = false
+        cancelMinimumConnecting()
+        let start = now()
+        firstConnectedAt = start
+        // Incoming calls are marked connected to CallKit by fulfilling the answer
+        // action; only outgoing calls report connected here — before the host's
+        // "Connected" cue, as it always has.
+        if callDirection == .outgoing, let id = activeCallID {
+            callProvider.reportOutgoingCallConnected(id)
+        }
+        transition(to: .connected(since: start))
+        // The transport may have ignored a mic set before it joined.
+        applyMic()
+        startSignalConnection()
+        syncHoldSignal()
+        sendConnectedSignalIfDue()
+        scheduleAudioDeviceUpdate()
+        Log.info(.call, "Connected")
+    }
+
+    /// While the engine holds a ready connection for the minimum, the transport's
+    /// news about that connection is applied to the call it made, as without the
+    /// minimum: the connection is reported first. News that a connected call only
+    /// logs (an `.error`) leaves the wait running.
+    private func completeConnectionBefore(_ event: TransportEvent) {
+        guard isConnectionPending else { return }
+        switch event {
+        case .reconnecting, .disconnected(reason: .networkDropped), .disconnected(reason: .unknown),
+             .disconnected(reason: .botLeft), .disconnected(reason: .authFailed):
+            Log.info(.call, "The transport reported \(event) during the minimum; reporting its connection first")
+            completeConnection()
         default:
             break
         }
@@ -1249,6 +1328,8 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
 
     private func handleError(_ error: TransportError) {
         switch state {
+        case .connecting where isConnectionPending:
+            Log.error(.transport, "Transport error while the call waits out the minimum: \(error)")
         case .connecting where canFallBackFromPreparation:
             fallBackFromPreparation("a transport error: \(error)")
         case .connecting where isConnectingAfresh:
@@ -1398,7 +1479,9 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     }
 
     /// The call's first connect returned: wait for the agent, bounded unless held.
+    /// Not when the transport already reported the agent there.
     private func awaitAgent(on transport: CallTransport) {
+        guard !isConnectionPending else { return }
         isAwaitingAgent = true
         guard !isOnHold else { return }
         startJoinDeadline(for: transport)
@@ -1491,6 +1574,9 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         case .micWithholdTimeout:
             micWithholdTask?.cancel()
             micWithholdTask = nil
+        case .minimumConnecting:
+            minimumConnectingTask?.cancel()
+            minimumConnectingTask = nil
         case .reconnectBackoff:
             break // its expiry replaces the waiting task itself
         }
@@ -1502,6 +1588,8 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     /// ready. A reconnect attempt counts as failed.
     private func joinTimedOut(after timeout: Duration) {
         switch state {
+        case .connecting where isConnectionPending:
+            break // the agent came in time
         case .connecting where canFallBackFromPreparation:
             fallBackFromPreparation("the agent was not ready within \(timeout) of the join")
         case .connecting:
@@ -1676,12 +1764,16 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         enqueueMedia { await $0.detachAudioSession() }
         syncHoldSignal()
         if repeatingCue != nil {
-            repeatingCue = nil
+            setRepeatingCue(nil)
             delegate?.callEngine(self, cue: .stop)
         }
         delegate?.callEngine(self, cue: .moment(.held))
-        // The wait for a first connection's agent is not bounded while held.
-        if case .connecting = state { cancelJoinDeadline() }
+        // The wait for a first connection's agent is not bounded while held, and
+        // the minimum starts again with the ringback at the resume.
+        if case .connecting = state {
+            cancelJoinDeadline()
+            cancelMinimumConnecting()
+        }
         // A retry already scheduled would spend the budget during the hold.
         if reconnectTask != nil { pauseReconnection() }
     }
@@ -1701,9 +1793,10 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
             delegate?.callEngine(self, cue: .moment(.connectionLost))
         }
         if let loop = wantedLoop(for: state) {
-            repeatingCue = loop
+            setRepeatingCue(loop)
             delegate?.callEngine(self, cue: .start(loop))
         }
+        completeConnectionWhenDue()
         if isReconnectionPaused {
             isReconnectionPaused = false
             scheduleReconnect(immediately: true)
@@ -2204,6 +2297,8 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         timerExpiries[.reconnectBackoff] = nil
         cancelSelfHealDeadline()
         cancelJoinDeadline()
+        cancelMinimumConnecting()
+        isConnectionPending = false
         eventTask?.cancel()
         eventTask = nil
         mediaTask = nil
@@ -2249,6 +2344,9 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         freshConnectID = nil
         isOutageMarked = false
         isConnectionMarked = false
+        isConnectionPending = false
+        cancelMinimumConnecting()
+        connectingLoopStartedAt = nil
         audioDevices = []
         selectedAudioDeviceID = nil
         didApplyHandsFreeDefault = false
@@ -2295,14 +2393,20 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         if moment == .connected { isConnectionMarked = true }
 
         if repeatingCue != nil, repeatingCue != loop {
-            repeatingCue = nil
+            setRepeatingCue(nil)
             delegate?.callEngine(self, cue: .stop)
         }
         if let moment { delegate?.callEngine(self, cue: .moment(moment)) }
         if let loop, repeatingCue != loop {
-            repeatingCue = loop
+            setRepeatingCue(loop)
             delegate?.callEngine(self, cue: .start(loop))
         }
+    }
+
+    /// Set the looping cue, noting when a connecting loop starts.
+    private func setRepeatingCue(_ loop: RepeatingCue?) {
+        repeatingCue = loop
+        connectingLoopStartedAt = loop == .connecting ? now() : nil
     }
 
     /// Deliver `.moment(.connected)` once the call is connected, CallKit has

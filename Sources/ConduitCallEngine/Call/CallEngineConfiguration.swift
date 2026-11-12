@@ -36,6 +36,29 @@ public struct CallEngineConfiguration: @unchecked Sendable {
     /// anyway). Measured with the engine's injected sleep. nil waits indefinitely, as
     /// 0.1 did. Default 30 seconds.
     public var joinTimeout: Duration?
+    /// The shortest time a call stays `.connecting`, counted from the connecting
+    /// cue (`CallCue.start(.connecting)`): set it to the length of your ringback's
+    /// first tone, so a call whose transport is ready sooner still rings that long.
+    /// The engine itself holds the call in `.connecting` (and does not report it
+    /// connected to CallKit, deliver `.moment(.connected)`, open the mic, send
+    /// `CallSignal.connected` or start the call's duration) until both the transport
+    /// has reported `.connected` and this much time has passed since the connecting
+    /// loop last started: the transition to `.connecting`, or the resume of a call
+    /// held while connecting, which starts the loop and this wait again in full.
+    ///
+    /// The transport's readiness, not the delayed state, ends the wait bounded by
+    /// `joinTimeout`. While the engine holds a ready connection, what the transport
+    /// reports about it (a drop, healing itself, the agent leaving, rejected
+    /// credentials, a failed connect) is applied to the call it made: the engine
+    /// reports the connection at once, then handles the event, so the call ends up
+    /// where it would have without the minimum. What the user or the system does
+    /// (ending the call, a provider reset, a hold, mute, an interruption, CallKit
+    /// deactivating the audio) applies to the call as it stands, connecting: a call
+    /// ended then was never connected (`.canceled`). An answered ring whose
+    /// pre-connected agent is already there goes straight to `.connected` and is not
+    /// delayed. Measured with the engine's injected clock and sleep. Keep it to a few
+    /// seconds: the agent and the user wait it out. Default zero (no minimum).
+    public var minimumConnectingDuration: Duration
     /// The longest the host can keep the mic closed with `CallEngine.setMicWithheld(_:)`
     /// once the call is connected and CallKit has activated its audio, whichever
     /// comes last (or from the withhold, if that is later). When it runs out, the
@@ -61,6 +84,7 @@ public struct CallEngineConfiguration: @unchecked Sendable {
         unknownCallerName: String = "Unknown",
         ringTimeout: Duration? = .seconds(60),
         joinTimeout: Duration? = .seconds(30),
+        minimumConnectingDuration: Duration = .zero,
         micWithholdTimeout: Duration = .seconds(5),
         supportsHolding: Bool = true,
         isPushToTalkEnabled: @escaping @MainActor () -> Bool = { false }
@@ -68,6 +92,7 @@ public struct CallEngineConfiguration: @unchecked Sendable {
         self.unknownCallerName = unknownCallerName
         self.ringTimeout = ringTimeout
         self.joinTimeout = joinTimeout
+        self.minimumConnectingDuration = minimumConnectingDuration
         self.micWithholdTimeout = micWithholdTimeout
         self.supportsHolding = supportsHolding
         self.isPushToTalkEnabled = isPushToTalkEnabled

@@ -72,11 +72,19 @@ final class DailyEngineRig {
     /// What the target allows a ring to prepare.
     var ringPreparation: RingPreparation = .none
 
-    init(joinTimeout: Duration? = .seconds(30), strategy: DailyRingJoinStrategy = .unsupported) {
+    init(
+        joinTimeout: Duration? = .seconds(30),
+        minimumConnecting: Duration = .zero,
+        strategy: DailyRingJoinStrategy = .unsupported
+    ) {
         self.strategy = strategy
         let sleeper = sleeper
         engine = CallEngine.simulated(
-            configuration: CallEngineConfiguration(ringTimeout: nil, joinTimeout: joinTimeout),
+            configuration: CallEngineConfiguration(
+                ringTimeout: nil,
+                joinTimeout: joinTimeout,
+                minimumConnectingDuration: minimumConnecting
+            ),
             system: system,
             sleep: { await sleeper.sleep($0) }
         )

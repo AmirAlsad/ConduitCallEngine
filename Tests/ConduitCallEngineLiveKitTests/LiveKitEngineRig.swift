@@ -58,10 +58,14 @@ final class LiveKitEngineRig {
     private(set) var audioEngines: [FakeLiveKitAudioEngine] = []
     private(set) var requests: [ConnectRequest] = []
 
-    init(joinTimeout: Duration? = .seconds(30), ringTimeout: Duration? = nil) {
+    init(joinTimeout: Duration? = .seconds(30), ringTimeout: Duration? = nil, minimumConnecting: Duration = .zero) {
         let sleeper = sleeper
         engine = CallEngine.simulated(
-            configuration: CallEngineConfiguration(ringTimeout: ringTimeout, joinTimeout: joinTimeout),
+            configuration: CallEngineConfiguration(
+                ringTimeout: ringTimeout,
+                joinTimeout: joinTimeout,
+                minimumConnectingDuration: minimumConnecting
+            ),
             system: system,
             sleep: { await sleeper.sleep($0) }
         )

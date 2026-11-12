@@ -170,6 +170,32 @@ struct DeterministicHostTests {
         #expect(host.records.map(\.missedReason) == [.canceledByCaller])
     }
 
+    // MARK: - The minimum connecting time
+
+    @Test func aHostRunsTheMinimumConnectingTimeOutWithFireTimer() async throws {
+        let system = SimulatedCallSystem()
+        let host = Host()
+        let engine = CallEngine.simulated(
+            configuration: CallEngineConfiguration(minimumConnectingDuration: .seconds(3)),
+            system: system
+        )
+        engine.delegate = host
+        await engine.placeCall(target())
+        await system.activateAudioSession()
+        #expect(system.deliverTransportEvent(.connected))
+        await system.awaitPendingWork()
+        #expect(engine.state == .connecting)
+        #expect(engine.repeatingCue == .connecting)
+
+        #expect(system.fireTimer(.minimumConnectingDuration))
+        await system.awaitPendingWork()
+
+        #expect(engine.state.isConnected)
+        #expect(Array(host.cues.suffix(2)) == [.stop, .moment(.connected)])
+        #expect(made.last.sentSignals == [.connected])
+        #expect(!system.fireTimer(.minimumConnectingDuration))
+    }
+
     // MARK: - Hold, interruption, activation, reset
 
     @Test func holdFromTheHostAndFromTheSystem() async throws {

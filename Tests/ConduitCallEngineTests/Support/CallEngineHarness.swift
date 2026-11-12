@@ -305,6 +305,7 @@ final class CallEngineHarness {
         pushToTalk: Bool = false,
         ringTimeout: Duration? = nil,
         joinTimeout: Duration? = nil,
+        minimumConnectingDuration: Duration = .zero,
         micWithholdTimeout: Duration = .seconds(5),
         supportsHolding: Bool = true,
         now: @escaping () -> Date = { Date() },
@@ -324,6 +325,7 @@ final class CallEngineHarness {
                 unknownCallerName: "Agent",
                 ringTimeout: ringTimeout,
                 joinTimeout: joinTimeout,
+                minimumConnectingDuration: minimumConnectingDuration,
                 micWithholdTimeout: micWithholdTimeout,
                 supportsHolding: supportsHolding,
                 isPushToTalkEnabled: { pushToTalk }

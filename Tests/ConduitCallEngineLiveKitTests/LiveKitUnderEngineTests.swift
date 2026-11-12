@@ -57,6 +57,50 @@ struct LiveKitUnderEngineTests {
         #expect(room.published == ["call-connected"])
     }
 
+    // MARK: - The minimum connecting time
+
+    /// LiveKit connects in about a second, sooner than a ringback's first tone. The
+    /// engine holds the call connecting: the mic is not published and the agent is
+    /// not told, until the minimum has passed.
+    @Test(.timeLimit(.minutes(1)))
+    func aRoomReadyBeforeTheMinimumStaysConnectingUntilItHasPassed() async throws {
+        let rig = LiveKitEngineRig(minimumConnecting: .seconds(3))
+        await rig.engine.placeCall(rig.target)
+        await rig.system.activateAudioSession()
+        let room = try #require(rig.room)
+        await waitUntil { rig.engine.isTimerRunning(.minimumConnecting) }
+        await rig.system.awaitPendingWork()
+
+        #expect(rig.engine.state == .connecting)
+        #expect(!room.log.contains("mic on"))
+        #expect(room.published.isEmpty)
+
+        #expect(rig.system.fireTimer(.minimumConnectingDuration))
+        await rig.system.awaitPendingWork()
+
+        #expect(rig.engine.state.isConnected)
+        #expect(room.log.last(where: { $0.hasPrefix("mic ") }) == "mic on")
+        #expect(room.published == ["call-connected"])
+    }
+
+    /// The agent leaves while the engine holds the connection: the call ends as the
+    /// agent's hangup of a connected call, as it would have without the minimum.
+    @Test(.timeLimit(.minutes(1)))
+    func theAgentLeavingDuringTheMinimumEndsTheCallItMade() async throws {
+        let rig = LiveKitEngineRig(minimumConnecting: .seconds(3))
+        await rig.engine.placeCall(rig.target)
+        await rig.system.activateAudioSession()
+        let room = try #require(rig.room)
+        await waitUntil { rig.engine.isTimerRunning(.minimumConnecting) }
+
+        room.agentLeaves()
+        await waitUntil { rig.engine.state.isTerminal }
+
+        #expect(rig.engine.state == .ended(.completed))
+        #expect(rig.host.records.map(\.outcome) == [.completed])
+        #expect(!rig.system.fireTimer(.minimumConnectingDuration))
+    }
+
     // MARK: - A disconnect while the room is still setting up
 
     /// The user declines a pre-connected ring just as the transport starts joining:
