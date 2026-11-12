@@ -142,4 +142,63 @@ struct DailyConnectionGateTests {
 
         #expect(gate.planConnect(sessionIsInCall: true, interruption: .connected) == .refuse)
     }
+
+    // MARK: - Presence as ready (experimental ring-join strategies)
+
+    @Test func aDefaultGateDoesNotCountPresenceAsReady() {
+        var gate = DailyConnectionGate()
+        gate.connectDidStart()
+
+        #expect(gate.transportDidJoin(remotePresent: true) == nil)
+        #expect(gate.botDidJoin() == nil)
+        #expect(gate.transportDidBecomeReady() == .connected)
+    }
+
+    @Test func presenceConnectsOnceJoinedWithTheBotInEitherOrder() {
+        var joinedFirst = DailyConnectionGate(readyOnPresence: true)
+        joinedFirst.connectDidStart()
+        #expect(joinedFirst.transportDidJoin(remotePresent: false) == nil)
+        #expect(joinedFirst.botDidJoin() == .connected)
+
+        var botFirst = DailyConnectionGate(readyOnPresence: true)
+        botFirst.connectDidStart()
+        #expect(botFirst.botDidJoin() == nil)
+        #expect(botFirst.transportDidJoin(remotePresent: false) == .connected)
+
+        var alreadyThere = DailyConnectionGate(readyOnPresence: true)
+        alreadyThere.connectDidStart()
+        #expect(alreadyThere.transportDidJoin(remotePresent: true) == .connected)
+    }
+
+    /// The bot becomes ready after the answer subscribes to its audio; the call was
+    /// already reported connected on presence.
+    @Test func presenceAndLaterReadinessConnectOnce() {
+        var gate = DailyConnectionGate(readyOnPresence: true)
+        gate.connectDidStart()
+
+        #expect(gate.transportDidJoin(remotePresent: true) == .connected)
+        #expect(gate.transportDidJoin(remotePresent: true) == nil)
+        #expect(gate.transportDidBecomeReady() == nil)
+    }
+
+    @Test func eachAttemptKeepsCountingPresenceAndStartsUnjoined() {
+        var gate = DailyConnectionGate(readyOnPresence: true)
+        gate.connectDidStart()
+        _ = gate.transportDidJoin(remotePresent: true)
+        _ = gate.transportDidDisconnect()
+
+        gate.connectDidStart()
+
+        #expect(gate.readyOnPresence)
+        #expect(gate.botDidJoin() == nil)
+        #expect(gate.transportDidJoin(remotePresent: false) == .connected)
+    }
+
+    @Test func presenceAfterTheHostDisconnectedIsNotReported() {
+        var gate = DailyConnectionGate(readyOnPresence: true)
+        gate.connectDidStart()
+        gate.userDidRequestDisconnect()
+
+        #expect(gate.transportDidJoin(remotePresent: true) == nil)
+    }
 }

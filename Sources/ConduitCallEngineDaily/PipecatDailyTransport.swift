@@ -14,14 +14,21 @@
 //  documented hook to defer activation to CallKit, so the transport joins with the
 //  mic DISABLED and enables capture only via `setMicEnabled`, which the engine
 //  calls after CallKit activation, so the mic is never hot before activation.
-//  `attachAudioSession`/`detachAudioSession` are no-ops here because Daily owns the
-//  session; they exist to satisfy the seam.
+//  Nor can playout be paused, so `detachAudioSession` (a hold, CallKit deactivating
+//  the session) stops the agent's audio by unsubscribing from it and
+//  `attachAudioSession` subscribes again (`DailyRemoteAudioGate`). A call that is
+//  never detached keeps Daily's default subscription.
 //
 //  Interruptions: Daily heals short network outages inside its SDK without changing
 //  the Pipecat transport state, so nothing in the client's callbacks reports them.
 //  Once connected, the transport watches the device's network path instead
 //  (`DailyInterruptionReporter`): losing it emits `.reconnecting`, getting it back
 //  emits `.connected`. This reflects the path, not Daily's media state.
+//
+//  Connecting while ringing is not supported (`canConnectWhileRinging` is false):
+//  whether a Daily join during a ring disturbs the ringtone or the audio session is
+//  for a device test to show. That test selects one of three experimental join
+//  strategies through SPI (`DailyRingJoinStrategy`).
 //
 //  A `connect` while the client is still in the call (the engine reconnecting by
 //  itself while Daily heals) does not rejoin: see `DailyConnectionGate.planConnect`.
@@ -43,6 +50,9 @@ public final class PipecatDailyTransport: CallTransport {
     private nonisolated let continuation: AsyncStream<TransportEvent>.Continuation
     private let makePipecatTransport: @MainActor () -> Transport
     private let makePathMonitor: @MainActor () -> NetworkPathMonitoring
+    private let makeCallControl: @MainActor (any Transport) -> DailyCallControlling?
+    private var remoteAudio: DailyRemoteAudioGate
+    private nonisolated let ringJoinStrategy: DailyRingJoinStrategy
 
     /// A Pipecat client and the mapper that is its delegate. `disconnect()` takes the
     /// session away and releases its client, so a later `connect` builds a new one.
@@ -51,6 +61,8 @@ public final class PipecatDailyTransport: CallTransport {
         // `PipecatClient.delegate` is weak, so the session keeps the mapper alive as
         // long as the client is in use. The mapper holds neither the client nor the transport.
         let events: PipecatEventMapper
+        /// `nil` when the Pipecat transport is not Daily's (tests).
+        let callControl: DailyCallControlling?
     }
 
     private var session: Session?
@@ -59,31 +71,58 @@ public final class PipecatDailyTransport: CallTransport {
         self.init(makePipecatTransport: { PipecatClientIOSDaily.DailyTransport() })
     }
 
+    /// EXPERIMENTAL, for the device test of joining while ringing; not supported API.
+    @_spi(RingJoinExperiment)
+    public convenience init(ringJoinStrategy: DailyRingJoinStrategy) {
+        self.init(
+            makePipecatTransport: { PipecatClientIOSDaily.DailyTransport() },
+            ringJoinStrategy: ringJoinStrategy
+        )
+    }
+
+    /// Whether `connect` may run while the call is still ringing. False unless an
+    /// experimental ring-join strategy was chosen (see `DailyRingJoinStrategy`).
+    public nonisolated var canConnectWhileRinging: Bool {
+        ringJoinStrategy != .unsupported
+    }
+
     init(
         makePipecatTransport: @escaping @MainActor () -> Transport,
-        makePathMonitor: @escaping @MainActor () -> NetworkPathMonitoring = { SystemNetworkPathMonitor() }
+        makePathMonitor: @escaping @MainActor () -> NetworkPathMonitoring = { SystemNetworkPathMonitor() },
+        makeCallControl: @escaping @MainActor (any Transport) -> DailyCallControlling? = DailyCallClientControl.make(for:),
+        ringJoinStrategy: DailyRingJoinStrategy = .unsupported
     ) {
         let (stream, continuation) = AsyncStream.makeStream(of: TransportEvent.self)
         self.events = stream
         self.continuation = continuation
         self.makePipecatTransport = makePipecatTransport
         self.makePathMonitor = makePathMonitor
+        self.makeCallControl = makeCallControl
+        self.ringJoinStrategy = ringJoinStrategy
+        self.remoteAudio = DailyRemoteAudioGate(untilFirstAttach: ringJoinStrategy.agentAudioUntilAnswer)
         self.session = makeSession()
     }
 
     private func makeSession() -> Session {
         // Join with the mic disabled; capture is enabled only on CallKit activation
         // (via setMicEnabled), preserving the audio-session-ownership invariant.
+        let pipecatTransport = makePipecatTransport()
         let client = PipecatClient(
             options: PipecatClientOptions(
-                transport: makePipecatTransport(),
+                transport: pipecatTransport,
                 enableMic: false,
                 enableCam: false
             )
         )
-        let events = PipecatEventMapper(continuation: continuation, pathMonitor: makePathMonitor())
+        let callControl = makeCallControl(pipecatTransport)
+        let events = PipecatEventMapper(
+            continuation: continuation,
+            pathMonitor: makePathMonitor(),
+            readyOnPresence: ringJoinStrategy.reportsPresenceAsReady,
+            isRemotePresent: { [weak callControl] in callControl?.hasRemoteParticipant ?? false }
+        )
         client.delegate = events
-        return Session(client: client, events: events)
+        return Session(client: client, events: events, callControl: callControl)
     }
 
     // MARK: - CallTransport
@@ -108,6 +147,12 @@ public final class PipecatDailyTransport: CallTransport {
         }
         session.events.gate.connectDidStart()
         session.events.interruptions.connectDidStart()
+        remoteAudio.sessionDidReset()
+        if ringJoinStrategy != .unsupported {
+            Log.info(.transport, "Daily connect: ring-join strategy \(ringJoinStrategy.rawValue), agent audio before the first attach: \(Self.describe(ringJoinStrategy.agentAudioUntilAnswer)), attached=\(remoteAudio.isAttached)")
+        }
+        // Before the join, so a held call that reconnects joins with the agent silent.
+        await applyRemoteAudio()
         do {
             let params = DailyTransportConnectionParams(
                 roomUrl: connection.url.absoluteString, token: connection.token
@@ -118,6 +163,10 @@ public final class PipecatDailyTransport: CallTransport {
             Log.error(.transport, "Daily connect failed: \(error)")
             throw TransportError.connectionFailed(String(describing: error))
         }
+        session.events.transportDidJoin()
+        // Daily may not take a subscription change before the join; it does now.
+        remoteAudio.joinDidComplete()
+        await applyRemoteAudio()
     }
 
     /// The client states in which `PipecatClient.connect` throws `BotAlreadyStartedError`.
@@ -126,14 +175,16 @@ public final class PipecatDailyTransport: CallTransport {
     public func disconnect() async {
         guard let session else { return }
         self.session = nil
+        remoteAudio.sessionDidReset()
         session.events.gate.userDidRequestDisconnect()
         session.events.interruptions.userDidRequestDisconnect()
         let client = session.client
         // Deliberate hangup: an explicit end-call message lets the remote side end
         // at once instead of waiting out the grace period it may give a dropped
-        // participant. Throws when the bot was never ready — exactly when there's
-        // no one to tell. The brief sleep lets the message flush before the leave.
-        if (try? client.sendClientMessage(msgType: "end-call")) != nil {
+        // participant. Sent once Daily has joined, whether or not the bot is ready;
+        // before the join there is no one to tell. The brief sleep lets the message
+        // flush before the leave.
+        if Self.sendClientMessage("end-call", on: client) {
             try? await Task.sleep(for: .milliseconds(200))
         }
         do { try await client.disconnect() }
@@ -144,6 +195,43 @@ public final class PipecatDailyTransport: CallTransport {
         client.release()
         client.delegate = nil
     }
+
+    /// Delivers a call-control signal as an RTVI client message, the end-call
+    /// signal's envelope with the signal's raw value as `t`.
+    public func send(_ signal: CallSignal) async {
+        guard let client = session?.client else {
+            Log.info(.transport, "Daily client message \(signal.rawValue) dropped: no session")
+            return
+        }
+        Self.sendClientMessage(signal.rawValue, on: client)
+    }
+
+    /// Sends an RTVI client message (`{"id", "label": "rtvi-ai", "type": "client-message",
+    /// "data": {"t": type, "d": null}}`) as a Daily app message to everyone in the call,
+    /// and returns whether it was handed to Daily. It goes through the Pipecat transport
+    /// rather than `PipecatClient.sendClientMessage`, which refuses until the bot is
+    /// ready: Daily delivers app messages once the call is joined, and a Pipecat bot's
+    /// RTVI processor handles client messages without waiting for client-ready.
+    /// Delivery is fire and forget; Daily reports no result to it.
+    @discardableResult
+    private static func sendClientMessage(_ type: String, on client: PipecatClient) -> Bool {
+        let state = client.state
+        guard statesJoined.contains(state) else {
+            Log.info(.transport, "Daily client message \(type) dropped: the call is not joined (\(state))")
+            return false
+        }
+        do {
+            try client.transport.sendMessage(message: .clientMessage(msgType: type))
+            Log.info(.transport, "Daily client message \(type) sent")
+            return true
+        } catch {
+            Log.warning(.transport, "Daily client message \(type) failed: \(error)")
+            return false
+        }
+    }
+
+    /// The client states in which the Daily call is joined, so an app message reaches the bot.
+    private static let statesJoined: Set<TransportState> = [.connected, .ready]
 
     public func setMicEnabled(_ enabled: Bool) async {
         guard let client = session?.client else { return }
@@ -168,13 +256,53 @@ public final class PipecatDailyTransport: CallTransport {
         catch { Log.error(.audio, "Daily setAudioDevice(\(id)) error: \(error)") }
     }
 
+    /// Daily owns the AVAudioSession, so attaching only lets the agent be heard again
+    /// after a detach; the mic stays off until the engine enables it.
     public func attachAudioSession() async {
-        // Daily owns the AVAudioSession, so there is nothing to attach; the mic
-        // stays off until the engine enables it after activation.
+        remoteAudio.attach()
+        Log.info(.audio, "Daily attach: agent audio wanted \(Self.describe(remoteAudio.wanted))")
+        startApplyingRemoteAudio()
     }
 
+    /// Stops the agent's playout by unsubscribing from its audio (the engine closes the
+    /// mic first). Returns without waiting for Daily, so a teardown is not held up.
     public func detachAudioSession() async {
-        // See attachAudioSession.
+        remoteAudio.detach()
+        Log.info(.audio, "Daily detach: agent audio wanted \(Self.describe(remoteAudio.wanted))")
+        startApplyingRemoteAudio()
+    }
+
+    private func startApplyingRemoteAudio() {
+        Task { await self.applyRemoteAudio() }
+    }
+
+    /// Applies the gate's wanted subscription until Daily has it. Returns at once when
+    /// another call is already applying; that one picks up the latest state.
+    private func applyRemoteAudio() async {
+        while let application = remoteAudio.beginApplying() {
+            guard let callControl = session?.callControl else {
+                remoteAudio.applyDidFail(application)
+                Log.info(.audio, "Daily agent audio not set to \(application.state): no Daily call client")
+                return
+            }
+            Log.info(.audio, "Daily agent audio -> \(application.state) (\(Self.playoutEffect(of: application.state)))")
+            do {
+                try await callControl.setRemoteAudio(application.state)
+                remoteAudio.applyDidSucceed(application)
+                Log.info(.audio, "Daily agent audio is \(application.state): \(callControl.remoteAudioDescription)")
+            } catch {
+                remoteAudio.applyDidFail(application)
+                Log.warning(.audio, "Daily agent audio -> \(application.state) refused: \(error)")
+            }
+        }
+    }
+
+    private static func describe(_ state: DailyRemoteAudio?) -> String {
+        state.map { "\($0)" } ?? "unchanged (Daily default)"
+    }
+
+    private static func playoutEffect(of state: DailyRemoteAudio) -> String {
+        state == .subscribed ? "playout restored" : "playout stopped"
     }
 }
 
@@ -184,11 +312,19 @@ public final class PipecatDailyTransport: CallTransport {
 private final class PipecatEventMapper: PipecatClientDelegate {
     private nonisolated let continuation: AsyncStream<TransportEvent>.Continuation
     let interruptions: DailyInterruptionReporter
-    var gate = DailyConnectionGate()
+    var gate: DailyConnectionGate
+    private let isRemotePresent: @MainActor () -> Bool
 
-    init(continuation: AsyncStream<TransportEvent>.Continuation, pathMonitor: NetworkPathMonitoring) {
+    init(
+        continuation: AsyncStream<TransportEvent>.Continuation,
+        pathMonitor: NetworkPathMonitoring,
+        readyOnPresence: Bool,
+        isRemotePresent: @escaping @MainActor () -> Bool
+    ) {
         self.continuation = continuation
         self.interruptions = DailyInterruptionReporter(pathMonitor: pathMonitor) { continuation.yield($0) }
+        self.gate = DailyConnectionGate(readyOnPresence: readyOnPresence)
+        self.isRemotePresent = isRemotePresent
     }
 
     nonisolated func onTransportStateChanged(state: TransportState) {
@@ -197,8 +333,11 @@ private final class PipecatEventMapper: PipecatClientDelegate {
 
     private func mapState(_ state: TransportState) {
         switch state {
-        case .initializing, .initialized, .authenticating, .authenticated, .connecting, .connected:
+        case .initializing, .initialized, .authenticating, .authenticated, .connecting:
             continuation.yield(.connecting)
+        case .connected:
+            continuation.yield(.connecting)
+            transportDidJoin()
         case .ready:
             reportReady()
         case .disconnecting:
@@ -218,13 +357,33 @@ private final class PipecatEventMapper: PipecatClientDelegate {
     }
 
     private func reportReady() {
-        guard let event = gate.transportDidBecomeReady() else { return }
+        reportConnected(gate.transportDidBecomeReady())
+    }
+
+    /// The Daily call is joined. Counts as connected only for a gate that takes
+    /// presence as ready.
+    func transportDidJoin() {
+        let event = gate.transportDidJoin(remotePresent: isRemotePresent())
+        if event != nil { Log.info(.transport, "Daily connected on presence: joined with a remote participant") }
+        reportConnected(event)
+    }
+
+    private func reportConnected(_ event: TransportEvent?) {
+        guard let event else { return }
         continuation.yield(event)
         interruptions.callDidConnect()
     }
 
     nonisolated func onBotReady(botReadyData: BotReadyData) {
         Task { @MainActor in self.reportReady() }
+    }
+
+    nonisolated func onBotConnected(participant: Participant) {
+        Task { @MainActor in
+            let event = self.gate.botDidJoin()
+            if event != nil { Log.info(.transport, "Daily connected on presence: the bot joined") }
+            self.reportConnected(event)
+        }
     }
 
     nonisolated func onBotDisconnected(participant: Participant) {

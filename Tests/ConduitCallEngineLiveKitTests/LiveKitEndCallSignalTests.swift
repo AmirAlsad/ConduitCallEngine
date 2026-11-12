@@ -2,11 +2,14 @@
 //  LiveKitEndCallSignalTests.swift
 //  ConduitCallEngineLiveKitTests
 //
-//  When LiveKitTransport's disconnect sends the end-call signal: whenever the room
-//  is not already leaving, including while it is still connecting or reconnecting.
+//  How LiveKitTransport sends its RTVI client messages (the end-call signal and the
+//  call-control signals): whenever the room is not already leaving, including while
+//  it is still connecting or reconnecting, in the envelope a Pipecat bot parses.
 //
 
+import Foundation
 import Testing
+import ConduitCallEngine
 @testable import ConduitCallEngineLiveKit
 
 struct LiveKitEndCallSignalTests {
@@ -22,15 +25,39 @@ struct LiveKitEndCallSignalTests {
     func theSignalIsNotSentOnceTheRoomIsLeaving(phase: LiveKitEndCallSignal.RoomPhase) {
         #expect(LiveKitEndCallSignal.shouldSend(in: phase) == false)
     }
+
+    /// The bytes the reference bot's `_livekit_client_signal` parses: label, type and `data.t`.
+    @Test(arguments: ["end-call"] + CallSignal.allCases.map(\.rawValue))
+    func thePayloadIsTheRTVIClientMessageEnvelope(type: String) throws {
+        let payload = try #require(LiveKitEndCallSignal.payload(type: type, id: "abcd1234"))
+
+        let message = try #require(try JSONSerialization.jsonObject(with: payload) as? [String: Any])
+        #expect(message["id"] as? String == "abcd1234")
+        #expect(message["label"] as? String == "rtvi-ai")
+        #expect(message["type"] as? String == "client-message")
+        #expect(message["data"] as? [String: String] == ["t": type])
+    }
+
+    @Test func eachPayloadGetsAFreshEightCharacterID() throws {
+        let first = try #require(LiveKitEndCallSignal.payload(type: "call-held"))
+        let second = try #require(LiveKitEndCallSignal.payload(type: "call-held"))
+
+        let ids = try [first, second].map {
+            try #require(try JSONSerialization.jsonObject(with: $0) as? [String: Any])["id"] as? String
+        }
+        #expect(ids.allSatisfy { $0?.count == 8 })
+        #expect(ids[0] != ids[1])
+    }
 }
 
 struct LiveKitEndCallSignalDeadlineTests {
     @Test func aSendThatFinishesInTimeIsAwaited() async {
         let sent = SentFlag()
 
-        await LiveKitEndCallSignal.run(within: .seconds(10)) { await sent.set() }
+        let finished = await LiveKitEndCallSignal.run(within: .seconds(10)) { await sent.set() }
 
         #expect(await sent.value)
+        #expect(finished)
     }
 
     /// A send held by LiveKit (a reconnecting room, a channel that never opens) must
@@ -40,12 +67,13 @@ struct LiveKitEndCallSignalDeadlineTests {
         let clock = ContinuousClock()
         let start = clock.now
 
-        await LiveKitEndCallSignal.run(within: .milliseconds(100)) {
+        let finished = await LiveKitEndCallSignal.run(within: .milliseconds(100)) {
             let end = clock.now + .seconds(5)
             while clock.now < end { try? await Task.sleep(for: .milliseconds(10)) }
         }
 
         #expect(clock.now - start < .seconds(3))
+        #expect(finished == false)
     }
 
     private actor SentFlag {
