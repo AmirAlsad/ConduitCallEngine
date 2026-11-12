@@ -157,7 +157,9 @@ public final class SimulatedCallSystem {
     }
 
     /// The interruption ended. With `shouldResume`, the engine re-applies the mic
-    /// state on its next main-actor turn; without it, the mic stays paused.
+    /// state on its next main-actor turn; without it, the mic stays paused until
+    /// the session is activated again (or the user unmutes), unless it already was
+    /// during the interruption.
     public func endAudioInterruption(shouldResume: Bool) {
         interruptionObserver.simulateEnded(shouldResume: shouldResume)
     }

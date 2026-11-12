@@ -65,8 +65,9 @@ struct CallInterruptionTests {
         await waitUntil { !h.transport.isMicEnabled }
 
         h.interruption.simulateEnded(shouldResume: false)
+        await h.engine.awaitPendingMediaWork()
 
-        #expect(!h.engine.isInterrupted)
+        #expect(h.engine.isInterrupted) // until CallKit activates the session again
         #expect(!h.transport.isMicEnabled) // not auto-resumed
     }
 

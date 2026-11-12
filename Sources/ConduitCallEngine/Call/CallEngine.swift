@@ -32,9 +32,13 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     /// Whether CallKit has activated the audio session for the call in progress.
     /// Cleared when that call ends.
     public private(set) var isAudioActivated = false
-    /// Whether another audio session (Siri, a phone call, navigation) is currently
-    /// interrupting the call. Transient — the mic pauses while true.
-    public private(set) var isInterrupted = false
+    /// Whether an interruption by another audio session (Siri, a phone call,
+    /// navigation) is keeping the mic closed. True from the interruption's start
+    /// until it ends with permission to resume, or, when it ends without that
+    /// permission, until CallKit activates the session again or the user unmutes
+    /// or presses push-to-talk. If CallKit activated the session during the
+    /// interruption, its end clears this either way.
+    public var isInterrupted: Bool { interruption != .none }
     /// Available audio routes and the active one, for the in-call route picker.
     public private(set) var audioDevices: [AudioDeviceInfo] = []
     public private(set) var selectedAudioDeviceID: String?
@@ -86,6 +90,11 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     /// Whether the push-to-talk button is held (push-to-talk mode only).
     private var isPushToTalkHeld = false
     private var eventTask: Task<Void, Never>?
+    /// Where an interruption stands; see `isInterrupted`.
+    private var interruption: InterruptionPhase = .none
+    /// The tail of the media commands (attach, detach, mic) sent to the live
+    /// transport, which run one after another in the order the engine issued them.
+    private var mediaTask: Task<Void, Never>?
     package private(set) var reconnectTask: Task<Void, Never>?
     /// Ends the wait for a transport that is healing itself; see `enterReconnectingDisplay`.
     private var selfHealDeadlineTask: Task<Void, Never>?
@@ -579,11 +588,12 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     private func connectTransport(for target: CallTarget) async {
         let transport = target.makeTransport()
         self.transport = transport
+        mediaTask = nil
         subscribe(to: transport)
         // CallKit can activate before the transport exists (while dialing, or
         // before `answer()` runs); that activation found no transport to attach.
         if isAudioActivated {
-            await transport.attachAudioSession()
+            await enqueueMedia { await $0.attachAudioSession() }?.value
             guard self.transport === transport else { return }
         }
 
@@ -662,7 +672,8 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
                 callProvider.reportOutgoingCallConnected(id)
             }
             transition(to: .connected(since: start))
-            applyMicIfActivated()
+            // The transport may have ignored a mic set before it joined.
+            applyMic()
             scheduleAudioDeviceUpdate()
             Log.info(.call, "Connected")
 
@@ -672,22 +683,11 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
             reconnectTask = nil
             cancelSelfHealDeadline()
             transition(to: .connected(since: firstConnectedAt ?? now()))
-            applyMicIfActivated()
+            applyMic()
             Log.info(.call, "Reconnected")
 
         default:
             break
-        }
-    }
-
-    /// Re-apply the mic state once connected — covers the case where CallKit
-    /// activated the audio session before the transport finished connecting (so
-    /// the `activate(_:)` call to `setMicEnabled` no-op'd on a not-yet-joined client).
-    private func applyMicIfActivated() {
-        guard isAudioActivated, let transport else { return }
-        Task { [weak self] in
-            guard let self, self.transport === transport else { return }
-            await transport.setMicEnabled(self.micShouldBeOn)
         }
     }
 
@@ -813,6 +813,11 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         activationTask = Task { [weak self] in await self?.activate(audioSession) }
     }
 
+    /// Test hook: await every media command (attach, detach, mic) issued so far.
+    package func awaitPendingMediaWork() async {
+        await mediaTask?.value
+    }
+
     /// Test hook: await the in-flight audio-session activation.
     package func awaitPendingActivation() async {
         await activationTask?.value
@@ -828,14 +833,18 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
             return
         }
         isAudioActivated = true
+        switch interruption {
+        case .interrupted: interruption = .interrupted(reactivated: true)
+        case .endedAwaitingActivation: interruption = .none
+        case .none: break
+        }
         // A transport created later attaches as soon as it exists.
         guard let transport else { return }
-        await transport.attachAudioSession()
-        guard self.transport === transport else { return }
+        enqueueMedia { await $0.attachAudioSession() }
         // Enabling the mic only takes effect once the transport is connected. If
         // CallKit activates BEFORE connect (e.g. slow credential resolution delays the
         // join), this is a no-op and the mic is (re)enabled in `handleConnected`.
-        await transport.setMicEnabled(micShouldBeOn)
+        await applyMic()?.value
         guard self.transport === transport else { return }
         await refreshAudioDevices(of: transport)
     }
@@ -865,8 +874,8 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     package func providerDidDeactivate(_ audioSession: AudioSessionActivating) {
         Log.info(.callkit, "Audio session deactivated")
         isAudioActivated = false
-        let transport = transport
-        Task { await transport?.detachAudioSession() }
+        applyMic()
+        enqueueMedia { await $0.detachAudioSession() }
     }
 
     package func providerPerformAnswerCall(_ id: UUID) {
@@ -897,11 +906,8 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
             return
         }
         isMuted = muted
-        guard let transport else { return }
-        Task { [weak self] in
-            guard let self, self.transport === transport else { return }
-            await transport.setMicEnabled(self.micShouldBeOn)
-        }
+        if !muted { endInterruptionAwaitingActivation() }
+        applyMic()
     }
 
     /// The reset already ended every call in CallKit, so nothing is reported back
@@ -923,24 +929,34 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     //
     // A transient takeover (Siri, a navigation prompt that can't mix, a real phone
     // call): pause the mic while interrupted and re-apply it on resume. We never
-    // touch the audio session — CallKit owns it and re-fires `providerDidActivate`
-    // when the interruption ends, so this and that activation are two unordered
-    // edges; both re-apply mic state idempotently.
+    // touch the audio session — CallKit owns it and may activate it again around
+    // the interruption's end, in either order; each edge re-derives the mic.
 
     package func audioInterruptionBegan() {
         guard state.isActive, !state.isTerminal else { return }
         Log.info(.call, "Call interrupted; pausing mic")
-        isInterrupted = true
-        let transport = transport
-        Task { await transport?.setMicEnabled(false) }
+        interruption = .interrupted(reactivated: false)
+        applyMic()
     }
 
     package func audioInterruptionEnded(shouldResume: Bool) {
-        guard isInterrupted else { return }
         Log.info(.call, "Interruption ended; resume=\(shouldResume)")
-        isInterrupted = false
-        guard shouldResume else { return }
-        applyMicIfActivated()
+        switch interruption {
+        case .none:
+            return
+        case .interrupted(reactivated: true):
+            // CallKit already handed the session back during the interruption.
+            interruption = .none
+        case .interrupted, .endedAwaitingActivation:
+            interruption = shouldResume ? .none : .endedAwaitingActivation
+        }
+        applyMic()
+    }
+
+    /// The user asking for the mic (unmuting, pressing push-to-talk) ends an
+    /// interruption that ended without permission to resume.
+    private func endInterruptionAwaitingActivation() {
+        if interruption == .endedAwaitingActivation { interruption = .none }
     }
 
     // MARK: - User-initiated controls
@@ -971,9 +987,10 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     /// has activated the session and while nothing interrupts it.
     public func setMuted(_ muted: Bool) async {
         isMuted = muted
+        if !muted { endInterruptionAwaitingActivation() }
         // Captured first: after the await below this may be a newer call.
         let id = activeCallID
-        await transport?.setMicEnabled(micShouldBeOn)
+        await applyMic()?.value
         if let id { await callProvider.setMuted(id, muted: muted) }
     }
 
@@ -982,7 +999,8 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     public func setPushToTalkActive(_ active: Bool) async {
         guard isPushToTalkEnabled() else { return }
         isPushToTalkHeld = active
-        await transport?.setMicEnabled(micShouldBeOn)
+        if active { endInterruptionAwaitingActivation() }
+        await applyMic()?.value
     }
 
     // MARK: - Audio route (driven through the transport so the SDK honors it)
@@ -1042,12 +1060,52 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     /// Whether a call currently has a transport whose events the engine consumes.
     package var hasTransport: Bool { transport != nil }
 
-    /// Every path that sets the mic goes through this: it opens only on a session
-    /// CallKit has activated and no other audio has taken over, then follows mute,
-    /// or in push-to-talk mode the button.
+    // MARK: - The mic rule and media commands
+
+    /// Where an interruption stands, as far as the mic is concerned.
+    private enum InterruptionPhase: Equatable {
+        case none
+        /// Another audio session took over. `reactivated` once CallKit has
+        /// activated the session again since the interruption began.
+        case interrupted(reactivated: Bool)
+        /// It ended without permission to resume before CallKit activated the
+        /// session again: the mic waits for that activation, or for the user.
+        case endedAwaitingActivation
+    }
+
+    /// The one mic rule: on only on a session CallKit has activated and no other
+    /// audio holds, then following mute, or in push-to-talk mode the button.
     private var micShouldBeOn: Bool {
         guard isAudioActivated, !isInterrupted else { return false }
         return isPushToTalkEnabled() ? isPushToTalkHeld : !isMuted
+    }
+
+    /// Re-derive the mic from `micShouldBeOn` and send it to the live transport.
+    /// Every change to an input of the rule calls this. The rule is read when the
+    /// command runs, after the commands before it, so the transport always ends
+    /// up with the current rule whatever order the inputs arrived in.
+    @discardableResult
+    private func applyMic() -> Task<Void, Never>? {
+        enqueueMedia { [weak self] transport in
+            guard let self else { return }
+            await transport.setMicEnabled(self.micShouldBeOn)
+        }
+    }
+
+    /// Queue a media command for the live transport, after the ones already
+    /// queued. It is skipped if that transport is no longer the call's when its
+    /// turn comes.
+    @discardableResult
+    private func enqueueMedia(_ command: @escaping @MainActor (CallTransport) async -> Void) -> Task<Void, Never>? {
+        guard let transport else { return nil }
+        let previous = mediaTask
+        let task = Task { [weak self] in
+            await previous?.value
+            guard let self, self.transport === transport else { return }
+            await command(transport)
+        }
+        mediaTask = task
+        return task
     }
 
     // MARK: - Terminal transitions
@@ -1096,7 +1154,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     private func teardownTransport() {
         cancelRingTimer()
         interruptionObserver.stopObserving()
-        isInterrupted = false
+        interruption = .none
         // The session CallKit activated belonged to this call.
         isAudioActivated = false
         reconnectTask?.cancel()
@@ -1104,6 +1162,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         cancelSelfHealDeadline()
         eventTask?.cancel()
         eventTask = nil
+        mediaTask = nil
         activeCallID = nil
         let outgoing = transport
         transport = nil
@@ -1127,7 +1186,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         isBotSpeaking = false
         remoteAudioLevel = 0
         isAudioActivated = false
-        isInterrupted = false
+        interruption = .none
         audioDevices = []
         selectedAudioDeviceID = nil
         didApplyHandsFreeDefault = false
