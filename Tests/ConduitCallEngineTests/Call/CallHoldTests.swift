@@ -70,7 +70,7 @@ struct CallHoldTests {
         #expect(h.engine.state == state) // hold is not a state
         #expect(!h.transport.isMicEnabled)
         #expect(!h.transport.isAudioAttached)
-        #expect(h.transport.sentSignals == [.held])
+        #expect(h.transport.sentSignals == [.connected, .held])
         #expect(h.delegate.cues.last == .moment(.held))
         #expect(h.delegate.cueViolations.isEmpty)
     }
@@ -86,7 +86,7 @@ struct CallHoldTests {
         #expect(!h.engine.isOnHold)
         #expect(h.transport.isAudioAttached)
         #expect(h.transport.isMicEnabled)
-        #expect(h.transport.sentSignals == [.held, .resumed])
+        #expect(h.transport.sentSignals == [.connected, .held, .resumed])
         #expect(Array(h.delegate.cues.suffix(2)) == [.moment(.held), .moment(.resumed)])
         #expect(h.delegate.cueViolations.isEmpty)
     }
@@ -179,7 +179,7 @@ struct CallHoldTests {
         await setHeld(h, false)
         #expect(await setHeld(h, false))
 
-        #expect(h.transport.sentSignals == [.held, .resumed])
+        #expect(h.transport.sentSignals == [.connected, .held, .resumed])
         #expect(h.delegate.cues.filter { $0 == .moment(.held) }.count == 1)
         #expect(h.delegate.cues.filter { $0 == .moment(.resumed) }.count == 1)
         #expect(h.delegate.cueViolations.isEmpty)
@@ -196,7 +196,7 @@ struct CallHoldTests {
         #expect(!performed)
         #expect(!h.engine.isOnHold)
         #expect(h.transport.isMicEnabled)
-        #expect(h.transport.sentSignals.isEmpty)
+        #expect(h.transport.sentSignals == [.connected])
     }
 
     @Test func holdIsRefusedWhenHoldingIsTurnedOff() async throws {
@@ -364,12 +364,12 @@ struct CallHoldTests {
         h.provider.simulateSetHeld(h.callID, onHold: false)
         await waitUntil { h.transport.pendingAttachCount == 1 }
         await settle()
-        #expect(h.transport.sentSignals == [.held])
+        #expect(h.transport.sentSignals == [.connected, .held])
 
         h.transport.releaseAttach()
         await h.engine.awaitPendingMediaWork()
         await h.engine.awaitPendingSignals()
-        #expect(h.transport.sentSignals == [.held, .resumed])
+        #expect(h.transport.sentSignals == [.connected, .held, .resumed])
     }
 
     @Test func aHeldCallTellsTheAgentAgainAfterEveryReconnect() async throws {
@@ -382,7 +382,7 @@ struct CallHoldTests {
         await h.engine.awaitPendingSignals()
         await h.engine.awaitPendingMediaWork()
 
-        #expect(h.transport.sentSignals == [.held, .held])
+        #expect(h.transport.sentSignals == [.connected, .held, .held])
         #expect(!h.transport.isMicEnabled)
     }
 
@@ -393,13 +393,13 @@ struct CallHoldTests {
         h.engine.handle(.disconnected(reason: .networkDropped))
 
         await setHeld(h, false)
-        #expect(h.transport.sentSignals == [.held]) // nobody to tell yet
+        #expect(h.transport.sentSignals == [.connected, .held]) // nobody to tell yet
 
         await h.engine.awaitPendingReconnect()
         h.engine.handle(.connected)
         await h.engine.awaitPendingSignals()
 
-        #expect(h.transport.sentSignals == [.held, .resumed])
+        #expect(h.transport.sentSignals == [.connected, .held, .resumed, .connected])
     }
 
     @Test func aHoldBeforeConnectingReachesTheAgentOnceConnected() async throws {
@@ -421,7 +421,7 @@ struct CallHoldTests {
         #expect(h.delegate.cues == [.start(.connecting), .stop, .moment(.held)]) // quiet while held
 
         await setHeld(h, false)
-        #expect(h.transport.sentSignals == [.held, .resumed])
+        #expect(h.transport.sentSignals == [.held, .resumed, .connected])
         #expect(h.transport.isMicEnabled)
         #expect(Array(h.delegate.cues.suffix(2)) == [.moment(.resumed), .moment(.connected)])
         #expect(h.delegate.cueViolations.isEmpty)

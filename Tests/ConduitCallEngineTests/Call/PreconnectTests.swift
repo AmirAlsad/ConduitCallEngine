@@ -118,12 +118,12 @@ struct PreconnectTests {
         #expect(traced == today)
         #expect(traced.transportsMade.first == 0) // nothing made while ringing
         #expect(traced.requests == [ConnectRequest(purpose: .answered, callID: callID)])
-        #expect(traced.signals == [[]])
+        #expect(traced.signals == [[.connected]]) // as on every call
         #expect(h.delegate.resolved.first?.requestedPreparation == RingPreparation.none)
     }
 
-    /// The host decides: without its opt-in the ring and the call are today's. The
-    /// sender's agent may still be waiting for the answer, so it is told.
+    /// The host decides: without its opt-in the ring and the call are today's,
+    /// `call-connected` included.
     @Test(arguments: ["credentials", "media"])
     func withoutTheHostsOptInARingIsTodaysAndTheAgentHearsOfTheAnswer(preconnect: String) async throws {
         let callID = UUID()
@@ -431,23 +431,23 @@ struct PreconnectTests {
         #expect(h.delegate.cueViolations.isEmpty)
     }
 
-    @Test func aRingWhosePushAskedForNothingNeverSendsTheAnswer() async throws {
+    @Test func aRingWhosePushAskedForNothingIsToldAsEveryCallIs() async throws {
         let h = harness(allows: .media)
         await ring(h, preconnect: nil)
         await h.engine.answer()
         h.engine.handle(.connected)
         await activate(h)
 
-        #expect(h.transport.sentSignals.isEmpty)
+        #expect(h.transport.sentSignals == [.connected])
     }
 
-    @Test func anOutgoingCallNeverSendsTheAnswer() async throws {
+    @Test func anOutgoingCallIsToldAsEveryCallIs() async throws {
         let h = harness()
         await h.placeCall()
         h.engine.handle(.connected)
         await activate(h)
 
-        #expect(h.transport.sentSignals.isEmpty)
+        #expect(h.transport.sentSignals == [.connected])
     }
 
     // MARK: - Answering a ring that is still being prepared

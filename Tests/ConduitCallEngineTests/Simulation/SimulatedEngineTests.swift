@@ -441,13 +441,13 @@ struct SimulatedEngineTests {
         #expect(engine.isOnHold)
         #expect(!transport.isMicEnabled)
         #expect(!transport.isAudioAttached)
-        #expect(transport.sentSignals == [.held])
+        #expect(transport.sentSignals == [.connected, .held])
 
         #expect(await system.setHeldFromSystem(callID, onHold: false))
         #expect(!engine.isOnHold)
         #expect(transport.isAudioAttached)
         #expect(transport.isMicEnabled)
-        #expect(transport.sentSignals == [.held, .resumed])
+        #expect(transport.sentSignals == [.connected, .held, .resumed])
         #expect(Array(host.cues.suffix(2)) == [.moment(.held), .moment(.resumed)])
     }
 

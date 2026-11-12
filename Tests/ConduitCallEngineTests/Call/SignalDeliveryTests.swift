@@ -22,10 +22,12 @@ struct SignalDeliveryTests {
         return CallEngineHarness(sleep: { await sleeper.sleep($0) })
     }
 
+    /// Placed, connected and activated, with the agent told the user is on the line.
     private func liveCall(_ h: CallEngineHarness) async {
         await h.placeCall()
         h.engine.handle(.connected)
         await h.engine.activate(FakeAudioSession())
+        await h.engine.awaitPendingSignals()
     }
 
     private func setHeld(_ h: CallEngineHarness, _ onHold: Bool) async {
@@ -42,14 +44,14 @@ struct SignalDeliveryTests {
         h.transport.signalDeliveries = [.failed]
 
         await setHeld(h, false)
-        #expect(h.transport.sentSignals == [.held, .resumed])
+        #expect(h.transport.sentSignals == [.connected, .held, .resumed])
         await waitUntil { sleeper.pendingCount == 1 }
         #expect(sleeper.requested == [.seconds(1)])
         sleeper.wakeFirst()
-        await waitUntil { h.transport.sentSignals.count == 3 }
+        await waitUntil { h.transport.sentSignals.count == 4 }
         await settle()
 
-        #expect(h.transport.sentSignals == [.held, .resumed, .resumed])
+        #expect(h.transport.sentSignals == [.connected, .held, .resumed, .resumed])
         #expect(sleeper.pendingCount == 0) // sent: nothing more to retry
     }
 
@@ -61,9 +63,9 @@ struct SignalDeliveryTests {
         await setHeld(h, true)
         await waitUntil { sleeper.pendingCount == 1 }
         sleeper.wakeFirst()
-        await waitUntil { h.transport.sentSignals.count == 2 }
+        await waitUntil { h.transport.sentSignals.count == 3 }
 
-        #expect(h.transport.sentSignals == [.held, .held])
+        #expect(h.transport.sentSignals == [.connected, .held, .held])
     }
 
     /// A retry sends the call's state when it runs, not the signal that failed.
@@ -78,7 +80,7 @@ struct SignalDeliveryTests {
         sleeper.wakeFirst()
         await settle()
 
-        #expect(h.transport.sentSignals == [.held, .resumed])
+        #expect(h.transport.sentSignals == [.connected, .held, .resumed])
     }
 
     @Test func aSignalThatKeepsFailingIsRetriedAFewTimesThenOnTheNextConnection() async throws {
@@ -117,12 +119,12 @@ struct SignalDeliveryTests {
         h.engine.handle(.connected)
         await h.engine.awaitPendingSignals()
 
-        #expect(h.transport.sentSignals == [.held, .resumed, .resumed])
+        #expect(h.transport.sentSignals == [.connected, .held, .resumed, .resumed, .connected])
     }
 
-    @Test func anAnswerThatFailsToSendIsSentAgain() async throws {
+    @Test func aConnectedSignalThatFailsToSendIsSentAgain() async throws {
         let h = harness()
-        h.ring(preconnect: "media") // the host allows no preparation; the agent still waits
+        h.ring(preconnect: "media") // the host allows no preparation
         await h.engine.answer()
         h.engine.handle(.connected)
         h.transport.signalDeliveries = [.failed]
@@ -146,7 +148,7 @@ struct SignalDeliveryTests {
         await setHeld(h, false)
         await settle()
 
-        #expect(h.transport.sentSignals == [.held, .resumed])
+        #expect(h.transport.sentSignals == [.connected, .held, .resumed])
         #expect(sleeper.requested.isEmpty)
     }
 
@@ -161,6 +163,6 @@ struct SignalDeliveryTests {
         sleeper.wakeAll()
         await settle()
 
-        #expect(h.transport.sentSignals == [.held])
+        #expect(h.transport.sentSignals == [.connected, .held])
     }
 }

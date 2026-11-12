@@ -45,7 +45,9 @@ struct MicWithholdTests {
     @Test func aWithholdClosesTheMicAndChangesNothingElse() async throws {
         let h = harness()
         await liveCall(h)
+        await h.engine.awaitPendingSignals()
         #expect(h.transport.isMicEnabled)
+        #expect(h.transport.sentSignals == [.connected]) // told before the withhold
         let state = h.engine.state
         let cues = h.delegate.cues
         let transitions = h.delegate.transitions
@@ -57,7 +59,7 @@ struct MicWithholdTests {
         #expect(!h.engine.isMuted)
         #expect(h.provider.muteStates.isEmpty) // CallKit is never told of it
         #expect(h.transport.isAudioAttached) // the agent stays audible
-        #expect(h.transport.sentSignals.isEmpty)
+        #expect(h.transport.sentSignals == [.connected])
         #expect(h.engine.state == state)
         #expect(h.delegate.cues == cues)
         #expect(h.delegate.transitions == transitions)
@@ -70,7 +72,7 @@ struct MicWithholdTests {
         #expect(!h.engine.isMuted)
         #expect(h.provider.muteStates.isEmpty)
         #expect(h.transport.isAudioAttached)
-        #expect(h.transport.sentSignals.isEmpty)
+        #expect(h.transport.sentSignals == [.connected]) // not sent again
         #expect(h.delegate.cues == cues)
         #expect(h.delegate.transitions == transitions)
     }

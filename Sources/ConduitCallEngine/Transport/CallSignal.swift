@@ -4,7 +4,8 @@
 //
 //  Call-control messages the engine sends to the remote agent through
 //  `CallTransport.send(_:)`, so the agent can tell what the user's side of the
-//  call is doing (on hold, back from hold) without inferring it from silence.
+//  call is doing (on the line, on hold, back from hold) without inferring it
+//  from the session or from silence.
 //
 
 import Foundation
@@ -14,22 +15,33 @@ import Foundation
 /// The `rawValue` is the message's name on the wire. The bundled adapters are to
 /// carry it as the `t` field of the same RTVI client message as the end-call
 /// signal: `{"id": "<8 characters>", "label": "rtvi-ai", "type": "client-message",
-/// "data": {"t": "call-held"}}`. Delivery is best effort and a signal may arrive
+/// "data": {"t": "call-connected"}}`. Delivery is best effort and a signal may arrive
 /// more than once (the engine repeats `held` after every reconnect of a held
 /// call, and sends the call's state again when a send did not leave the device;
 /// see `CallSignalDelivery`), so an agent must treat each one as a statement of the
 /// current state, not as a toggle. Agents must ignore names they do not know.
 ///
+/// A server can only rely on a signal from a client that says it sends it. A host
+/// whose transport delivers signals says so by sending the raw values of
+/// `CallSignal.allCases` to its server as `call_signals`, with each credential
+/// request and with its VoIP push registration (the Integration Guide's "When your
+/// agent should start speaking" has the convention and the server's fallback).
+///
 /// Open: later versions may add cases. End a `switch` over it with `@unknown default`,
 /// which keeps it compiling, with a warning that names the new case, when one is added. A transport sends
 /// `rawValue` and need not switch at all.
 public enum CallSignal: String, CaseIterable, Sendable {
-    /// The user answered an incoming call whose push carried `preconnect`, CallKit
-    /// has activated its audio, and the transport is connected: the agent may
-    /// start speaking. Sent once all three hold, whichever comes last, again after
-    /// every reconnect of the call, and at the resume when they come to hold while
-    /// the call is on hold. An agent that joined during the ring must stay silent
-    /// until it arrives.
+    /// The user is on the line: the call is connected, CallKit has activated its
+    /// audio, it is not on hold, and the host is not withholding the mic
+    /// (`CallEngine.setMicWithheld(_:)`, typically while its "connected" sound
+    /// plays), whichever comes last. An agent should start speaking (greet) when
+    /// this arrives, not when the session connects. Sent on every call, placed or
+    /// answered, pre-connected or not, again on every new connection after a
+    /// reconnect, and again if it could not leave the device. A muted user or one
+    /// in push-to-talk mode is on the line too: they hear the agent. A call that
+    /// connects while held gets it after the resume, following `resumed`. It
+    /// follows the attach and mic commands issued before it, so the mic the host
+    /// released is open by then.
     case connected = "call-connected"
     /// The user's side put the call on hold (for example to take a phone call).
     /// The user cannot hear the agent and the mic is closed until `resumed`; the

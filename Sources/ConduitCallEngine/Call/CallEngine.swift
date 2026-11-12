@@ -236,11 +236,8 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     /// A transport made for a `.media` ring that cannot connect while ringing. It
     /// is neither connected nor subscribed during the ring; the answer uses it.
     private var transportForAnswer: CallTransport?
-    /// Whether the ring's push carried `preconnect`: its agent may be waiting for
-    /// `CallSignal.connected` before it speaks.
-    private var signalsAnswer = false
     /// Whether `CallSignal.connected` has been sent on the current connection.
-    private var isAnswerSignalSent = false
+    private var isConnectedSignalSent = false
     /// The answered call's first connect is using what the ring prepared (its
     /// credentials, or its transport's join) and has not reached `.connected`. If
     /// that fails, the call connects as it would have without pre-connect, once.
@@ -570,7 +567,6 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         // Receipts go only to a server ringing a target the host knows: for any
         // other, the push-supplied URL is untrusted and has no bearer.
         ringStatusURL = target == nil ? nil : payload.statusURL
-        signalsAnswer = payload.preparation != .none
         transition(to: .incomingRinging)
         interruptionObserver.startObserving()
         if let timeout = ringTimeout(requestedSeconds: payload.ringTimeoutSeconds) {
@@ -737,8 +733,8 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
             transition(to: .connected(since: start))
             applyMic()
             startSignalConnection()
-            sendAnswerSignalIfDue()
             syncHoldSignal()
+            sendConnectedSignalIfDue()
             scheduleAudioDeviceUpdate()
             Log.info(.call, "Connected (prepared during the ring)")
 
@@ -1182,8 +1178,8 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
             // The transport may have ignored a mic set before it joined.
             applyMic()
             startSignalConnection()
-            sendAnswerSignalIfDue()
             syncHoldSignal()
+            sendConnectedSignalIfDue()
             scheduleAudioDeviceUpdate()
             Log.info(.call, "Connected")
 
@@ -1194,11 +1190,12 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
             cancelSelfHealDeadline()
             transition(to: .connected(since: firstConnectedAt ?? now()))
             applyMic()
-            // A new connection may be a new agent session: tell it again.
+            // A new connection may be a new agent session: tell it again, the
+            // hold state first, so `call-connected` arrives as the latest word.
             startSignalConnection()
-            isAnswerSignalSent = false
-            sendAnswerSignalIfDue()
+            isConnectedSignalSent = false
             syncHoldSignal()
+            sendConnectedSignalIfDue()
             Log.info(.call, "Reconnected")
 
         default:
@@ -1573,9 +1570,9 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         // join), this is a no-op and the mic is (re)enabled in `handleConnected`.
         await applyMic()?.value
         guard self.transport === transport else { return }
-        // After the attach and the mic, so an agent waiting for the answer starts
+        // After the attach and the mic, so an agent that waits for it starts
         // speaking into a running audio engine.
-        sendAnswerSignalIfDue()
+        sendConnectedSignalIfDue()
         // Route work waited for this activation; a call already connected gets the
         // hands-free default now, one still connecting gets it when it connects.
         if case .connected = state {
@@ -1695,7 +1692,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         if isAudioActivated { enqueueMedia { await $0.attachAudioSession() } }
         applyMic()
         syncHoldSignal()
-        sendAnswerSignalIfDue()
+        sendConnectedSignalIfDue()
         delegate?.callEngine(self, cue: .moment(.resumed))
         markConnectedIfDue()
         if case .reconnecting = state, !isOutageMarked {
@@ -1771,7 +1768,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
             self.signalRetryTask = nil
             guard case .connected = self.state else { return }
             self.syncHoldSignal()
-            self.sendAnswerSignalIfDue()
+            self.sendConnectedSignalIfDue()
         }
     }
 
@@ -1803,25 +1800,25 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         }
     }
 
-    /// Tell an agent that may be waiting for the answer (the push carried
-    /// `preconnect`) that it can speak, once the user has answered, CallKit has
-    /// activated the audio and the transport is connected, whichever comes last;
-    /// again on every new connection; and not while held (the resume sends it). It
-    /// follows the attach and mic commands issued so far.
-    private func sendAnswerSignalIfDue() {
-        guard signalsAnswer, callDirection == .incoming, !isAnswerSignalSent,
-              case .connected = state, isAudioActivated, !isOnHold
+    /// Tell the agent the user is on the line, on every call: once the call is
+    /// connected, CallKit has activated its audio, it is not held and the host is not
+    /// withholding the mic, whichever comes last; again on every new connection. Mute
+    /// and push-to-talk do not delay it: the user can hear the agent. It follows the
+    /// attach and mic commands issued so far, so the mic the host released is open
+    /// when the agent starts speaking.
+    private func sendConnectedSignalIfDue() {
+        guard !isConnectedSignalSent, case .connected = state, isAudioActivated, !isOnHold, !isMicWithheld
         else { return }
-        isAnswerSignalSent = true
+        isConnectedSignalSent = true
         let connection = connectionGeneration
         send(.connected, after: mediaTask) { [weak self] delivery in
-            guard let self, connection == self.connectionGeneration, self.isAnswerSignalSent else { return }
+            guard let self, connection == self.connectionGeneration, self.isConnectedSignalSent else { return }
             switch delivery {
             case .sent: self.signalRetryCount = 0
             case .unsupported: break
             case .failed:
                 Log.warning(.call, "Signal \(CallSignal.connected.rawValue) did not leave the device; sending it again")
-                self.isAnswerSignalSent = false
+                self.isConnectedSignalSent = false
                 self.scheduleSignalRetry()
             }
         }
@@ -1985,6 +1982,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
             cancelMicWithholdTimeout()
         }
         applyMic()
+        if !withheld { sendConnectedSignalIfDue() }
     }
 
     /// Bound a withhold once the call is connected with its audio activated,
@@ -1998,6 +1996,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
             Log.warning(.call, "The mic was still withheld \(timeout) after the call connected; releasing it")
             self.isMicWithheld = false
             self.applyMic()
+            self.sendConnectedSignalIfDue()
         }
     }
 
@@ -2208,7 +2207,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         isOnHold = false
         isAgentToldHeld = false
         isReconnectionPaused = false
-        isAnswerSignalSent = false
+        isConnectedSignalSent = false
         isAwaitingAgent = false
         isPreparedConnect = false
         freshConnectID = nil
@@ -2251,8 +2250,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         isPushToTalkHeld = false
         endedByUser = false
         isAnswerRequested = false
-        signalsAnswer = false
-        isAnswerSignalSent = false
+        isConnectedSignalSent = false
         cancelRingPreparation()
         cancelRingTimer()
         transition(to: .idle)
@@ -2346,9 +2344,9 @@ extension CallEngine {
     /// devices that list it: `"ring_timeout"` (a ring push may carry
     /// `ring_timeout`), `"cancel"` (the server may send a cancel push,
     /// `{"action": "cancel", "call_id": ...}` with no `target_id`, to withdraw a
-    /// ring) and `"preconnect"` (a ring push may carry `preconnect`, and the engine
-    /// sends `CallSignal.connected`; see `RingPreparation`). An engine that lacks a feature ignores its key, or, for a cancel,
-    /// shows it as a brief incoming call that ends at once. Later versions add
+    /// ring) and `"preconnect"` (a ring push may carry `preconnect`; see
+    /// `RingPreparation`). An engine that lacks a feature ignores its key, or, for a
+    /// cancel, shows it as a brief incoming call that ends at once. Later versions add
     /// features to this set; servers must ignore names they do not know.
     nonisolated public static let supportedPushFeatures: Set<String> = ["cancel", "ring_timeout", "preconnect"]
 }

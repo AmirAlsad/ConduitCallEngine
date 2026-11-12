@@ -121,6 +121,23 @@ struct DailyUnderEngineTests {
         #expect(rig.engine.state.isConnected)
     }
 
+    // MARK: - The agent hears that the user is on the line
+
+    @Test(.timeLimit(.minutes(1)))
+    func anOutgoingCallSendsCallConnectedOnceTheBotIsReady() async throws {
+        let rig = DailyEngineRig()
+        _ = try await rig.placeActivatedCall()
+        let pipecat = try #require(rig.pipecat)
+        await rig.system.awaitPendingWork()
+        #expect(signals(pipecat).isEmpty) // connecting: nobody to tell yet
+
+        pipecat.botJoins()
+        await waitUntil { rig.engine.state.isConnected }
+        await rig.system.awaitPendingWork()
+
+        #expect(signals(pipecat) == ["call-connected"])
+    }
+
     // MARK: - Signals that do not leave the device
 
     /// Daily refuses the app message carrying `call-resumed`: before, the agent that
@@ -144,7 +161,7 @@ struct DailyUnderEngineTests {
         rig.sleeper.wakeAll()
         await waitUntil { signals(pipecat).last == "call-resumed" }
 
-        #expect(signals(pipecat) == ["call-held", "call-resumed"])
+        #expect(signals(pipecat) == ["call-connected", "call-held", "call-resumed"])
     }
 
     private func signals(_ pipecat: FakePipecatTransport) -> [String] {
@@ -165,12 +182,13 @@ struct DailyUnderEngineTests {
         await waitUntil { rig.engine.state.isConnected }
         rig.sleeper.wakeAll() // the first connect's bound, stale once connected
         await drain()
+        #expect(first.calls == ["connect", "send client-message"]) // call-connected
 
         first.setState(state: .disconnected) // Daily left the call: a drop
         await waitUntil { rig.sleeper.pendingCount == 1 }
         rig.sleeper.wakeAll() // attempt 1's backoff
         await waitUntil { rig.requests.count == 2 && rig.sleeper.pendingCount == 1 }
-        #expect(first.calls == ["connect", "connect"]) // the same client rejoined
+        #expect(first.calls == ["connect", "send client-message", "connect"]) // the same client rejoined
         #expect(rig.engine.state == .reconnecting(attempt: 1))
         return first
     }
@@ -193,7 +211,7 @@ struct DailyUnderEngineTests {
 
         #expect(rig.engine.state.isConnected)
         #expect(rig.requests.map(\.purpose) == [.outgoing, .reconnect(attempt: 1), .reconnect(attempt: 2)])
-        #expect(first.calls == ["connect", "connect", "disconnect", "release"]) // no end-call: the call goes on
+        #expect(first.calls == ["connect", "send client-message", "connect", "disconnect", "release"]) // no end-call: the call goes on
         #expect(second.calls.prefix(1) == ["connect"])
         #expect(rig.host.records.isEmpty)
     }
@@ -241,9 +259,11 @@ struct DailyUnderEngineTests {
         await waitUntil { rig.engine.state == .reconnecting(attempt: 2) }
         monitor.deliver(true) // Daily healed
         await waitUntil { rig.engine.state.isConnected }
+        await rig.system.awaitPendingWork()
 
         #expect(rig.engine.state.isConnected)
         #expect(rig.pipecats.count == 1)
-        #expect(pipecat.calls == ["connect"])
+        // No second join; call-connected again for the healed connection.
+        #expect(pipecat.calls == ["connect", "send client-message", "send client-message"])
     }
 }

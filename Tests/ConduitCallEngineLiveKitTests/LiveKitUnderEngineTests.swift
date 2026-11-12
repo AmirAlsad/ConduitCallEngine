@@ -16,6 +16,23 @@ import ConduitCallEngineTesting
 @MainActor
 struct LiveKitUnderEngineTests {
 
+    // MARK: - The agent hears that the user is on the line
+
+    @Test(.timeLimit(.minutes(1)))
+    func anOutgoingCallPublishesCallConnectedOnceTheUserCanTalk() async throws {
+        let rig = LiveKitEngineRig()
+        await rig.engine.placeCall(rig.target)
+        await waitUntil { rig.engine.state.isConnected }
+        await rig.system.awaitPendingWork()
+        let room = try #require(rig.room)
+        #expect(room.published.isEmpty) // CallKit has not activated the audio
+
+        await rig.system.activateAudioSession()
+        await rig.system.awaitPendingWork()
+
+        #expect(room.published == ["call-connected"])
+    }
+
     // MARK: - A disconnect while the room is still setting up
 
     /// The user declines a pre-connected ring just as the transport starts joining:

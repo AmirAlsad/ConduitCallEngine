@@ -116,7 +116,7 @@ struct DeterministicHostTests {
         #expect(made.transports.count == 1)
         #expect(made.last.isAudioAttached)
         #expect(made.last.isMicEnabled)
-        #expect(made.last.sentSignals == (tier == .none ? [] : [.connected]))
+        #expect(made.last.sentSignals == [.connected])
         #expect(system.ringReceipts.map(\.status) == ["answered"])
     }
 
@@ -180,13 +180,13 @@ struct DeterministicHostTests {
         #expect(engine.isOnHold)
         #expect(!transport.isMicEnabled)
         #expect(!transport.isAudioAttached)
-        #expect(transport.sentSignals == [.held])
+        #expect(transport.sentSignals == [.connected, .held])
 
         #expect(await system.setHeldFromSystem(callID, onHold: false))
         #expect(!engine.isOnHold)
         #expect(transport.isMicEnabled)
         #expect(transport.isAudioAttached)
-        #expect(transport.sentSignals == [.held, .resumed])
+        #expect(transport.sentSignals == [.connected, .held, .resumed])
         #expect(Array(host.cues.suffix(2)) == [.moment(.held), .moment(.resumed)])
     }
 
@@ -298,11 +298,11 @@ struct DeterministicHostTests {
 
         await engine.setOnHold(true)
         await system.awaitPendingWork()
-        #expect(transport.sentSignals == [.held])
+        #expect(transport.sentSignals == [.connected, .held])
 
         #expect(system.fireTimer(.signalRetry))
         await system.awaitPendingWork()
-        #expect(transport.sentSignals == [.held, .held])
+        #expect(transport.sentSignals == [.connected, .held, .held])
         #expect(!system.fireTimer(.signalRetry))
     }
 
