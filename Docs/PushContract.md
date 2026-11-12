@@ -69,7 +69,7 @@ Only `target_id` is required, but the smallest useful ring is `{"target_id": "..
 
 1. Reports the incoming call to CallKit immediately, inside the PushKit callback, under the push's own `display_name` and `handle` (or their fallbacks). iOS terminates any app that receives a VoIP push without reporting a call, so this happens before the app is consulted.
 2. Asks the app to resolve `target_id` to one of its targets. Once CallKit accepts the report, if the target's name or handle differ from what the ring showed, the ring is updated in place.
-3. If the app does not know the target, the call is ended as failed. No receipt is sent.
+3. If the app does not know the target, the call is ended as failed and recorded as a failed incoming call. No receipt is sent.
 4. If the device is already in a call (ringing, dialing, connecting, connected or reconnecting), the new ring is reported and ended at once as unanswered. The live call is not touched, the engine reports a missed call to the app, and a `busy` receipt is sent.
 5. If Focus or Do Not Disturb filters the ring, the phone never rings. The engine reports a missed call to the app and a `suppressed_by_focus` receipt is sent.
 6. When the user answers, the engine joins the room: `room_url` and `token` from the push if both were present, otherwise whatever the app's own credential code returns. The call then behaves like an outgoing call, including reconnection.

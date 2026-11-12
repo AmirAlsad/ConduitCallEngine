@@ -127,7 +127,7 @@ struct CallInboundTests {
         #expect(h.ringStatusReporter.reports.map(\.status) == [.answered]) // no declined receipt
     }
 
-    @Test func unknownAgentReportsThenFails() async throws {
+    @Test func unknownAgentReportsThenEnds() async throws {
         let h = CallEngineHarness()
         let unknownID = UUID()
         h.ring(targetID: unknownID)
@@ -137,12 +137,45 @@ struct CallInboundTests {
         #expect(h.provider.reportedIncoming.first?.displayName == "Agent")
         #expect(h.provider.updatedCalls.isEmpty) // nothing to correct it to
         #expect(h.provider.reportedEnded.first?.reason == .failed)
-        #expect(h.engine.state.failureReason == .unknown)
-        #expect(h.engine.activeCall?.targetID == unknownID) // the push's own identity
+        #expect(h.engine.state == .idle)
         #expect(h.pushCompletions == 1)
         // Recorded against the pushed id; the host finds no agent and writes no row.
         #expect(h.delegate.records.map(\.targetID) == [unknownID])
         #expect(h.delegate.records.first?.failureReason == .unknown)
+    }
+
+    enum DeadRing: String, CaseIterable, Sendable {
+        case unknownTarget, reportFailed
+    }
+
+    /// A ring the user never answered must not put a call screen up: it returns to
+    /// idle without passing through an active state, and is still recorded.
+    @Test(arguments: DeadRing.allCases)
+    func ringThatCannotProceedReturnsToIdleWithoutBecomingActive(ring: DeadRing) async throws {
+        let h = CallEngineHarness()
+        let callID = UUID()
+        let targetID = ring == .unknownTarget ? UUID() : h.target.id
+        if ring == .reportFailed { h.provider.reportIncomingError = .failed("boom") }
+
+        h.ring(targetID: targetID, callID: callID, statusURL: statusEndpoint)
+
+        #expect(h.engine.state == .idle)
+        #expect(h.engine.activeCall == nil)
+        #expect(h.delegate.transitions == ["idle→incomingRinging", "incomingRinging→idle"])
+        let record = try #require(h.delegate.records.first)
+        #expect(h.delegate.records.count == 1)
+        #expect(record.targetID == targetID)
+        #expect(record.direction == .incoming)
+        #expect(record.outcome == .failed)
+        #expect(record.failureReason == .unknown)
+        #expect(!h.interruption.isObserving)
+        #expect(h.ringStatusReporter.reports.isEmpty)
+        #expect(h.pushCompletions == 1)
+
+        // The next ring for a known target rings normally.
+        h.provider.reportIncomingError = nil
+        h.ring()
+        #expect(h.engine.state == .incomingRinging)
     }
 
     @Test func receiveCallWhileBusyReportsAndImmediatelyEnds() async throws {

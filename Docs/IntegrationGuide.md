@@ -58,7 +58,7 @@ idle -> incomingRinging -> connecting -> ...   (after the user answers)
 | `.ended(CallOutcome)` | Finished. | true | true |
 | `.failed(CallFailureReason)` | Could not be established or could not recover. | true | true |
 
-Terminal states stay until you call `reset()` (typically when your call screen is dismissed), or until the next `placeCall` or incoming ring, which reset first. A Focus-filtered ring and a CallKit provider reset go straight back to `.idle` without a terminal state.
+Terminal states stay until you call `reset()` (typically when your call screen is dismissed), or until the next `placeCall` or incoming ring, which reset first. A ring that ends before the user could take it (Focus filtered it, its target is unknown, or CallKit refused it) and a CallKit provider reset go straight back to `.idle` without a terminal state.
 
 ### Outcomes and failure reasons
 
@@ -77,7 +77,7 @@ A call that reaches `.ended(outcome)` is recorded with the same outcome, so a ho
 | `.badToken` | `TransportError.authenticationFailed` thrown by the target's `connect` closure or by `transport.connect` on the first connect; a `.disconnected(reason: .authFailed)` event at any time; an `.error(.authenticationFailed)` event while connecting. |
 | `.transportError` | Any other error from the first connect; any other `.error` event while connecting; a drop before the call ever connected. |
 | `.lostConnection` | The reconnection budget ran out. |
-| `.unknown` | CallKit refused to start an outgoing call or to report an incoming one (other than Focus filtering), or a ring arrived for a target your delegate did not resolve. |
+| `.unknown` | CallKit refused to start an outgoing call. In a `CallRecord` only (the state goes from `.incomingRinging` back to `.idle`): CallKit refused to report an incoming call (other than Focus filtering), or a ring arrived for a target your delegate did not resolve. |
 | `.agentUnreachable` | Declared but not produced by the engine in this version. |
 
 `CallOutcome`, `CallDirection` and `CallFailureReason` have stable string raw values and are `Codable`, so you can persist them.
@@ -107,7 +107,7 @@ Every callback is synchronous and on the main actor, made in the order the engin
 
 | Callback | When | Default |
 |---|---|---|
-| `callEngine(_:targetForIncomingCall:)` | Once per push, after the CallKit report is issued: inside the push handling for a ring, or after CallKit accepts the report for a push that arrives during another call. Return the `CallTarget`, or nil for an unknown target (the ring then fails). | nil, so every ring fails. Implement it if you take incoming calls. |
+| `callEngine(_:targetForIncomingCall:)` | Once per push, after the CallKit report is issued: inside the push handling for a ring, or after CallKit accepts the report for a push that arrives during another call. Return the `CallTarget`, or nil for an unknown target (the ring is then ended and recorded as failed, and the engine returns to idle). | nil, so every ring is ended. Implement it if you take incoming calls. |
 | `callEngine(_:didChangeStateFrom:to:)` | On every real state change, after the engine has set the transition's other fields, so `activeCall` and the rest are consistent when you read them. Not called when the state is set to the value it already has. | nothing |
 | `callEngine(_:didFinish:)` | Once per call, when it reaches its end: ended, failed, busy ring, Focus-filtered ring. Not for a malformed push or a provider reset. | nothing |
 | `callEngine(_:ringStatusBearerForTarget:)` | When a receipt is about to be sent, only for pushes that carried `status_url`. Return the bearer for the `Authorization` header, or nil for none. | nil |
@@ -206,14 +206,14 @@ The engine guarantees the report on every path. It reports first, synchronously 
 | Malformed (no valid `target_id` or `agent_id`) | Reports under a fresh id and the unknown-caller name, then ends it as failed. No state change, no delegate call, no record. |
 | During another call (ringing, dialing, connecting, connected, reconnecting) | Reports, then ends it at once as unanswered; the live call is untouched. Your delegate gets a `CallRecord` with `missedReason: .busy`, and a `busy` receipt is sent if requested. |
 | After a finished call that is still in a terminal state | Resets to idle and rings normally. |
-| For a target your delegate does not resolve | Reports, then fails the call with `.unknown` once CallKit accepts the report. |
+| For a target your delegate does not resolve | Reports, then, once CallKit accepts the report, ends it as failed, records it (`outcome: .failed`, `failureReason: .unknown`) and returns to idle. |
 | Filtered by Focus or Do Not Disturb | Records a missed call (`missedReason: .filteredByFocus`) and returns to idle. |
-| Refused by CallKit for another reason | Fails the call with `.unknown`. |
+| Refused by CallKit for another reason | Records it as failed with `.unknown` and returns to idle. |
 
 What your code must do to keep the guarantee:
 
 - **Keep the engine alive for the whole process once `startPushRegistration()` has run.** The PushKit callbacks hold the engine weakly; if the engine has been deallocated when a push arrives, PushKit's completion is called without any call being reported, which is the case iOS punishes.
-- **Set `delegate` before `startPushRegistration()`.** A push waiting at launch can be delivered as soon as the registry exists (on the main queue, right after the current turn). The delegate is weak and has no default target, so a push handled before it is set resolves to no target and the ring fails with `.unknown`.
+- **Set `delegate` before `startPushRegistration()`.** A push waiting at launch can be delivered as soon as the registry exists (on the main queue, right after the current turn). The delegate is weak and has no default target, so a push handled before it is set resolves to no target and the ring is ended as an unknown target.
 - **Resolve targets from memory.** `targetForIncomingCall` runs during push handling. Look the target up synchronously; do not start network or disk work there.
 - **Do not create your own `PKPushRegistry` for VoIP.** The engine owns PushKit for the app.
 
@@ -288,7 +288,7 @@ Here `agents` and `callTarget(inline:)` are your own: the latter builds a `CallT
 
 **History.** Write history from `callEngine(_:didFinish:)`. A `CallRecord` has `targetID`, `direction`, `startedAt`, `duration` (connected seconds, 0 if it never connected), `outcome`, `failureReason` and `missedReason`. Check `targetID` against your targets: a ring for an unknown target is recorded against the pushed id, which may match nothing of yours. `missedReason` has no raw value, so map it yourself if you persist it. Record only from `didFinish`, not also from state transitions, or you will write two rows per call.
 
-**In-call UI.** Present your call screen while `engine.state.isActive` is true. That excludes `.incomingRinging`, where CallKit's ring is the interface, and includes terminal states, so a failed call can stay on screen with its reason until the user closes it; call `reset()` on dismiss. When the user taps End, call `markEndedByUser()` and dismiss in the same transaction, then `await engine.endCall()`; `endedByUser` lets you tell a call your user ended in-app (dismiss at once) from a remote end or failure (show a result). It is set only by `markEndedByUser()` and `endCall()`: a call ended from the system UI, such as the lock screen, leaves it false. Note that a ring for an unknown target ends in `.failed(.unknown)`, which is active: check `activeCall?.targetID` before presenting a call screen for it. Name the call from `activeCall?.displayName`.
+**In-call UI.** Present your call screen while `engine.state.isActive` is true. That excludes `.incomingRinging`, where CallKit's ring is the interface, and includes terminal states, so a failed call can stay on screen with its reason until the user closes it; call `reset()` on dismiss. When the user taps End, call `markEndedByUser()` and dismiss in the same transaction, then `await engine.endCall()`; `endedByUser` lets you tell a call your user ended in-app (dismiss at once) from a remote end or failure (show a result). It is set only by `markEndedByUser()` and `endCall()`: a call ended from the system UI, such as the lock screen, leaves it false. A ring that ends before the user takes it, including one for an unknown target, never makes the state active. Name the call from `activeCall?.displayName`.
 
 **Cues from transitions.** `didChangeStateFrom:to:` is synchronous and ordered, so it is the place for spoken or audible cues and anything else that must match the state exactly. A typical outgoing call delivers `idle -> dialing`, `dialing -> connecting`, `connecting -> connected`, then `connected -> ended(.completed)`. A drop delivers `connected -> reconnecting(attempt: 1)` and, on recovery, `reconnecting -> connected`. `reconnecting(attempt: 0)` means the transport is healing itself and the engine has spent no retry: a short interruption delivers `connected -> reconnecting(attempt: 0)` and then `reconnecting -> connected`, or, if the transport gives up, `reconnecting(attempt: 0) -> reconnecting(attempt: 1)` and the engine's own retries. Both adapters report short interruptions this way. A ring that arrives while a finished call is still terminal delivers `ended -> idle -> incomingRinging`.
 
@@ -614,10 +614,6 @@ Fix: dispatch the agent when you mint credentials; let the user end the call mea
 Cause: the Daily adapter maps every connect error to `.connectionFailed`; only `TransportError.authenticationFailed` produces `.badToken`.
 Fix: throw `TransportError.authenticationFailed` from your `connect` closure when your credential endpoint rejects the request.
 
-**A ring for an unknown target pops up a failed call screen.**
-Cause: the engine fails such a ring with `.failed(.unknown)`, which counts as active.
-Fix: check `activeCall?.targetID` against your targets before presenting, or ignore `.failed(.unknown)` for incoming calls with no matching target.
-
 **Every ring fails, even for known targets.**
 Cause: `targetForIncomingCall` is not implemented (the default returns nil), or the delegate was nil or not yet set when the push was handled.
 Fix: implement it, and set the delegate before `startPushRegistration()`.
@@ -652,7 +648,6 @@ Fix: record only from `didFinish`; the engine already makes the end of a call id
 - **No call-hold handling.** CallKit's hold action is not handled, so the engine's call cannot be held. When the user places a cellular call during an engine call, iOS ends the engine's call (observed on iOS 27; the engine tears down normally and sends the end-call signal). Other audio interruptions pause the mic and resume it afterwards.
 - **No timeout for an unanswered ring**, and no way for the server to cancel one. It rings until the user answers or declines, or iOS ends it.
 - **No timeout while connecting.** If the agent never becomes ready, the call stays in `.connecting` until the user ends it.
-- **A ring for an unknown target, or one CallKit refuses for a reason other than Focus, ends in `.failed(.unknown)`** (an active, terminal state) and sends no receipt.
 - **The native CallKit route button cannot move audio on the Daily adapter.** Use an in-app picker.
 - **Daily's short interruptions are inferred from the device's network path, not Daily's media state.** A path that stays satisfied while media stops is not reported until Daily disconnects, and recovery is announced when the path returns, possibly a moment before audio does.
 - **Daily never reports bad credentials itself.** Only your `connect` closure can produce `.badToken` on Daily.

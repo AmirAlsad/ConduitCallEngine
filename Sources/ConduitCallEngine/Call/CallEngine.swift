@@ -318,16 +318,26 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
 
         case .failed(let message):
             Log.error(.callkit, "reportIncomingCall failed: \(message)")
-            fail(.unknown)
+            endRingThatCannotProceed()
 
         case nil:
             guard let target else {
                 Log.error(.call, "Incoming call for unknown target \(incoming.targetID)")
-                fail(.unknown)
+                endRingThatCannotProceed()
                 return
             }
             correctRingIfNeeded(incoming, to: target)
         }
+    }
+
+    /// A ring that cannot become a call (its target is unknown, or CallKit refused
+    /// the report) is over before the user could take it. Like a ring Focus filtered,
+    /// it is recorded and the engine returns to idle, never entering an active state.
+    private func endRingThatCannotProceed() {
+        if let id = activeCallID { callProvider.reportCallEnded(id, reason: .failed) }
+        interruptionObserver.stopObserving()
+        finish(outcome: .failed, failureReason: .unknown)
+        resetState()
     }
 
     private func completeBusyRing(_ incoming: IncomingCall, payload: IncomingCallPayload, result: IncomingCallReportError?) {

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- A ring for a target the delegate does not resolve, or one CallKit refuses for a reason other than Focus, now returns from `.incomingRinging` to `.idle` instead of entering `.failed(.unknown)`, an active state that put a failure screen up for a ring the user never answered. It is still ended in CallKit and recorded (`outcome: .failed`, `failureReason: .unknown`). (#4)
+
 - A call the remote party leaves before it connects now ends in `.ended(.noAnswer)`, matching its `CallRecord`; it was `.ended(.completed)`. An incoming call the user answers and then ends before it connects is now `.canceled` in both state and record; it was `.declined`, which is now kept for a ring the user declines. The outcome in `.ended(_)` is always the record's outcome. (#1)
 
 ## 0.1.1 - 2026-11-11

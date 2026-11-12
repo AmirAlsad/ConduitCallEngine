@@ -124,7 +124,7 @@ struct IncomingPushTests {
         #expect(h.pushCompletions == 1)
     }
 
-    @Test func answerForAnUnknownTargetDoesNothingAndTheVerdictFailsIt() async throws {
+    @Test func answerForAnUnknownTargetDoesNothingAndTheVerdictEndsIt() async throws {
         let h = CallEngineHarness()
         h.provider.completesIncomingReportsLater = true
         h.ring(targetID: UUID())
@@ -134,7 +134,8 @@ struct IncomingPushTests {
         #expect(h.target.makeTransportCount == 0)
 
         h.provider.completeIncomingReports()
-        #expect(h.engine.state.failureReason == .unknown)
+        #expect(h.engine.state == .idle)
+        #expect(h.delegate.records.first?.failureReason == .unknown)
         #expect(h.pushCompletions == 1)
     }
 
@@ -293,12 +294,12 @@ struct IncomingPushTests {
 
     // MARK: - Report results
 
-    @Test func reportErrorFailsTheRingWithoutAReceipt() async throws {
+    @Test func reportErrorEndsTheRingWithoutAReceipt() async throws {
         let h = CallEngineHarness()
         h.provider.reportIncomingError = .failed("boom")
         h.ring(statusURL: statusEndpoint)
 
-        #expect(h.engine.state.failureReason == .unknown)
+        #expect(h.engine.state == .idle)
         #expect(h.provider.updatedCalls.isEmpty) // never accepted, so never corrected
         #expect(h.delegate.records.map(\.outcome) == [.failed])
         #expect(h.ringStatusReporter.reports.isEmpty)
@@ -309,7 +310,7 @@ struct IncomingPushTests {
         let h = CallEngineHarness()
         h.ring(targetID: UUID(), statusURL: statusEndpoint)
 
-        #expect(h.engine.state.failureReason == .unknown)
+        #expect(h.engine.state == .idle)
         #expect(h.ringStatusReporter.reports.isEmpty)
     }
 
