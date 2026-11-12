@@ -408,7 +408,7 @@ struct MinimumConnectingTests {
         await h.engine.awaitPendingWork()
         #expect(h.engine.state.isConnected)
         #expect(Array(h.delegate.cues.suffix(2)) == [.stop, .moment(.connected)])
-        #expect(h.transport.sentSignals == [.connected])
+        #expect(h.transport.sentSignals == [.held, .resumed, .connected]) // the agent in the room heard of the hold
         #expect(h.delegate.cueViolations.isEmpty)
     }
 

@@ -45,8 +45,11 @@ public enum CallSignal: String, CaseIterable, Sendable {
     case connected = "call-connected"
     /// The user's side put the call on hold (for example to take a phone call).
     /// The user cannot hear the agent and the mic is closed until `resumed`; the
-    /// agent should stop speaking and wait, and keep the session longer than its
-    /// usual drop grace window if the connection goes while held.
+    /// agent should stop speaking and wait, greet no one (a fallback greeting
+    /// included), and keep the session longer than its usual drop grace window if
+    /// the connection goes while held. Sent as soon as the device has joined, also
+    /// while the call still shows connecting, so an agent can get it before
+    /// `connected`; a hold before the join is sent at the join.
     case held = "call-held"
     /// The call is back from hold: the user can hear and speak to the agent again.
     case resumed = "call-resumed"

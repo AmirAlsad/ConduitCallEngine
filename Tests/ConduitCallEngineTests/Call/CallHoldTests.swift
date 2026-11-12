@@ -745,13 +745,18 @@ struct CallHoldTests {
         #expect(h.transport.sentSignals == [.connected, .held, .resumed, .connected])
     }
 
-    @Test func aHoldBeforeConnectingReachesTheAgentOnceConnected() async throws {
+    /// The device is in the room once its connect returns, and an agent there may
+    /// already be counting down to a greeting: a hold while the call still shows
+    /// connecting reaches it at once, and the call showing connected later tells it
+    /// nothing twice.
+    @Test func aHoldWhileConnectingReachesTheAgentAtOnce() async throws {
         let h = CallEngineHarness()
         await h.placeCall()
         await h.engine.activate(FakeAudioSession())
 
         await setHeld(h, true)
-        #expect(h.transport.sentSignals.isEmpty)
+        #expect(h.engine.state.isConnecting)
+        #expect(h.transport.sentSignals == [.held])
         #expect(h.delegate.cues == [.start(.connecting), .stop, .moment(.held)])
 
         h.engine.handle(.connected)
@@ -768,6 +773,69 @@ struct CallHoldTests {
         #expect(h.transport.isMicEnabled)
         #expect(Array(h.delegate.cues.suffix(2)) == [.moment(.resumed), .moment(.connected)])
         #expect(h.delegate.cueViolations.isEmpty)
+    }
+
+    /// A placed call whose agent is ready shows connecting for the rest of the
+    /// minimum; a hold then reaches the agent, which is in the room, at once.
+    @Test func aHoldDuringTheOutgoingMinimumReachesTheAgentAtOnce() async throws {
+        let sleeper = ManualSleeper()
+        let h = CallEngineHarness(
+            minimumOutgoingConnectingDuration: .seconds(3), sleep: { await sleeper.sleep($0) }
+        )
+        await h.placeCall()
+        await h.engine.activate(FakeAudioSession())
+        h.engine.handle(.connected)
+        #expect(h.engine.isTimerRunning(.minimumOutgoingConnecting))
+
+        await setHeld(h, true)
+        #expect(h.engine.state.isConnecting)
+        #expect(h.transport.sentSignals == [.held])
+
+        await setHeld(h, false)
+        #expect(h.transport.sentSignals == [.held, .resumed])
+        #expect(h.engine.state.isConnecting) // the minimum runs again from the resume
+
+        #expect(h.engine.fireTimer(.minimumOutgoingConnecting))
+        await h.engine.awaitPendingWork()
+        #expect(h.engine.state.isConnected)
+        #expect(h.transport.sentSignals == [.held, .resumed, .connected])
+    }
+
+    /// Before the join there is nothing to tell the agent over; the join tells it.
+    @Test func aHoldBeforeTheJoinReachesTheAgentAtTheJoin() async throws {
+        let h = CallEngineHarness()
+        h.target.suspend = true
+        let placing = Task { await h.placeCall() }
+        await waitUntil { h.target.pendingCount == 1 }
+        await h.engine.activate(FakeAudioSession())
+
+        await setHeld(h, true)
+        #expect(h.transport.sentSignals.isEmpty)
+
+        h.target.release()
+        await placing.value
+        await h.engine.awaitPendingSignals()
+        #expect(h.engine.state.isConnecting)
+        #expect(h.transport.sentSignals == [.held])
+    }
+
+    /// An answered ring still connecting: the agent the ring started is told too.
+    @Test func aHoldOfAnAnsweredCallStillConnectingReachesTheAgentAtOnce() async throws {
+        let h = CallEngineHarness()
+        h.ring(callID: h.callID)
+        await h.engine.answer()
+        await h.engine.activate(FakeAudioSession())
+
+        await setHeld(h, true)
+        #expect(h.engine.state.isConnecting)
+        #expect(h.transport.sentSignals == [.held])
+
+        h.engine.handle(.connected) // the agent became ready during the hold
+        await h.engine.awaitPendingSignals()
+        #expect(h.transport.sentSignals == [.held])
+
+        await setHeld(h, false)
+        #expect(h.transport.sentSignals == [.held, .resumed, .connected])
     }
 
     @Test func aHeldSignalStillQueuedWhenTheCallEndsDoesNotReachTheNextCall() async throws {

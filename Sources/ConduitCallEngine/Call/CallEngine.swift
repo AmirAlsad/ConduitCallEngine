@@ -95,7 +95,8 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     /// Whether the call is on hold: iOS held it (typically so the user can take
     /// or place a phone call) or the host did with `setOnHold(_:)`. The state does
     /// not change on hold. While held the mic is closed, media is stopped, the
-    /// agent has been sent `CallSignal.held`, no cues are delivered, and a dropped
+    /// agent has been sent `CallSignal.held` once the transport has joined (also
+    /// while the call shows connecting), no cues are delivered, and a dropped
     /// connection waits for the resume before reconnecting. Cleared when the call ends.
     public private(set) var isOnHold = false
     /// Where the preparation of the ringing call stands (pre-connect; see
@@ -158,6 +159,12 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     private var isAgentToldHeld = false
     /// Counts the hold signals queued; only the latest one's delivery result counts.
     private var holdSignalGeneration = 0
+    /// The latest hold signal queued on the current connection, so a connection is
+    /// told each change once; nil on a new connection and after a send that failed.
+    private var lastHoldSignal: CallSignal?
+    /// Whether the current connection's signalling has started: at the call's first
+    /// join, before the agent is ready and before the call shows connected.
+    private var isSignalConnectionOpen = false
     /// Counts the transport's connections, so a delivery result from an earlier one
     /// changes nothing.
     private var connectionGeneration = 0
@@ -779,7 +786,10 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
             adopt(transport, isSubscribed: true)
             isPreparedConnect = true
             transition(to: .connecting)
-            if hasJoined { isAwaitingAgent = true }
+            if hasJoined {
+                isAwaitingAgent = true
+                openSignalConnectionIfNeeded()
+            }
 
         case .fetching(let fetch, let transport, let isSubscribed):
             isPreparedConnect = true
@@ -1100,6 +1110,8 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         Log.warning(.call, "The ring's preparation failed after the answer (\(reason)); connecting as without pre-connect")
         isPreparedConnect = false
         isAwaitingAgent = false
+        // The fresh credentials may name another session, told again once joined.
+        isSignalConnectionOpen = false
         cancelJoinDeadline()
         let id = UUID()
         freshConnectID = id
@@ -1207,6 +1219,8 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
             freshConnectID = nil
             cancelJoinDeadline()
             isConnectionPending = true
+            openSignalConnectionIfNeeded()
+            syncHoldSignal()
             completeConnectionWhenDue()
 
         case .reconnecting:
@@ -1283,7 +1297,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         transition(to: .connected(since: start))
         // The transport may have ignored a mic set before it joined.
         applyMic()
-        startSignalConnection()
+        openSignalConnectionIfNeeded()
         syncHoldSignal()
         sendConnectedSignalIfDue()
         scheduleAudioDeviceUpdate()
@@ -1506,6 +1520,9 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     private func awaitAgent(on transport: CallTransport) {
         guard !isConnectionPending else { return }
         isAwaitingAgent = true
+        // The device is in the room: an agent there can be told of a hold now.
+        openSignalConnectionIfNeeded()
+        syncHoldSignal()
         guard !isOnHold else { return }
         startJoinDeadline(for: transport)
     }
@@ -2012,17 +2029,32 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         Set(callProvider.observedCalls.filter { $0.id != activeCallID && !$0.hasEnded }.map(\.id))
     }
 
-    /// Tell the agent whether the call is held, whenever it can be told: on hold
-    /// and resume while connected, on every connection (a reconnect may reach a new
-    /// agent session, or the same one, which may have missed a resume), and on a
-    /// retry after a signal failed to leave the device.
+    /// Tell the agent whether the call is held, whenever there is a connection to
+    /// tell it over (`canSignal`): on hold and resume, on every connection (a
+    /// reconnect may reach a new agent session, or the same one, which may have
+    /// missed a resume), and on a retry after a signal failed to leave the device.
+    /// Each connection is told each change once.
     private func syncHoldSignal() {
-        guard case .connected = state else { return }
+        guard canSignal else { return }
         if isOnHold {
             isAgentToldHeld = true
+            guard lastHoldSignal != .held else { return }
             sendHoldSignal(.held)
         } else if isAgentToldHeld {
+            guard lastHoldSignal != .resumed else { return }
             sendHoldSignal(.resumed)
+        }
+    }
+
+    /// Whether the call has a connection a signal can travel over: it is connected,
+    /// or still connecting with its transport joined (the agent may not be ready
+    /// yet, or the call is held for the outgoing minimum). An agent in the room
+    /// then hears of a hold even while the user still hears the call connecting.
+    private var canSignal: Bool {
+        switch state {
+        case .connected: true
+        case .connecting: isAwaitingAgent || isConnectionPending
+        default: false
         }
     }
 
@@ -2030,6 +2062,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     /// and mic commands issued so far; `held` goes at once.
     private func sendHoldSignal(_ signal: CallSignal) {
         holdSignalGeneration += 1
+        lastHoldSignal = signal
         let generation = holdSignalGeneration
         send(signal, after: signal == .resumed ? mediaTask : nil) { [weak self] delivery in
             guard let self, generation == self.holdSignalGeneration else { return }
@@ -2040,6 +2073,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
                 if delivery == .sent { self.signalRetryCount = 0 }
             case .failed:
                 Log.warning(.call, "Signal \(signal.rawValue) did not leave the device; sending the call's state again")
+                self.lastHoldSignal = nil
                 self.scheduleSignalRetry()
             }
         }
@@ -2050,6 +2084,15 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     private func startSignalConnection() {
         connectionGeneration += 1
         signalRetryCount = 0
+        lastHoldSignal = nil
+        isSignalConnectionOpen = true
+    }
+
+    /// The call's first connection (or the one after a failed preparation) starts
+    /// at its join, and is the same connection when the call then shows connected.
+    private func openSignalConnectionIfNeeded() {
+        guard !isSignalConnectionOpen else { return }
+        startSignalConnection()
     }
 
     /// Send the call's state again after a short wait that grows with each retry. A
@@ -2066,7 +2109,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         signalRetryTask = startTimer(.signalRetry, after: delay) { [weak self] in
             guard let self else { return }
             self.signalRetryTask = nil
-            guard case .connected = self.state else { return }
+            guard self.canSignal else { return }
             self.syncHoldSignal()
             self.sendConnectedSignalIfDue()
         }
@@ -2526,6 +2569,8 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         callsSeenDuringSystemHold = []
         isOnHold = false
         isAgentToldHeld = false
+        lastHoldSignal = nil
+        isSignalConnectionOpen = false
         isReconnectionPaused = false
         isConnectedSignalSent = false
         isAwaitingAgent = false
@@ -2558,6 +2603,8 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         interruption = .none
         isOnHold = false
         isAgentToldHeld = false
+        lastHoldSignal = nil
+        isSignalConnectionOpen = false
         isReconnectionPaused = false
         isAwaitingAgent = false
         isPreparedConnect = false
