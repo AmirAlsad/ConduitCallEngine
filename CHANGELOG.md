@@ -90,6 +90,7 @@ Beyond the breaking changes above, these change what a host can observe:
 - A CallKit provider reset ends the call the way any other failure does, so transition-driven sounds stop (above). (#5)
 - A ring that cannot proceed (unknown target, or refused by CallKit for a reason other than Focus) no longer puts a failure screen up for a ring the user never answered (above). (#4)
 - A call's `.ended(outcome)` always matches its record (above). (#1)
+- An event a ring's transport had already sent when the ring ended straight back to `.idle` (timed out, withdrawn, a provider reset) no longer reaches the live-call path, where the agent leaving or rejected credentials produced an `.ended` or `.failed` state with no call behind it. Events from a transport that is no longer the call's, and any event with no call in progress, are ignored.
 
 **Transport adapters**
 

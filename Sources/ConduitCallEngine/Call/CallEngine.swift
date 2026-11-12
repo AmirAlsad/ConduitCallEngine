@@ -1158,7 +1158,15 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         let events = transport.events
         eventTask = Task { [weak self] in
             for await event in events {
-                self?.handle(event)
+                // An event the stream had already yielded when the call moved on
+                // (the ring ended, the call was torn down or replaced) is not this
+                // call's.
+                guard let self else { return }
+                guard self.transport === transport || self.ringTransport === transport else {
+                    Log.info(.call, "Event \(event) from a transport that is no longer the call's; ignored")
+                    continue
+                }
+                self.handle(event)
             }
         }
     }
@@ -1174,6 +1182,11 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         }
         // A ring has no live transport; nothing may end or change it from here.
         guard state != .incomingRinging else { return }
+        // No call: a ring that ended straight back to idle leaves nothing to end.
+        guard state != .idle else {
+            Log.info(.call, "Event \(event) with no call in progress; ignored")
+            return
+        }
         completeConnectionBefore(event)
         switch event {
         case .connecting:
