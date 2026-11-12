@@ -153,18 +153,43 @@ struct CallCredentialResolutionTests {
         #expect(h.transport.connectCount == 1)
     }
 
+    /// CallKit activates the session once the answer action is fulfilled, which can
+    /// be before the engine's hop to `answer()` has created the transport.
     @Test func activationBeforeAnswerAttachesTheTransportWhenItIsCreated() async throws {
+        let h = CallEngineHarness()
+        let callID = UUID()
+        h.ring(callID: callID)
+        h.provider.simulateAnswerCall(callID)
+        await h.engine.activate(FakeAudioSession())
+        #expect(h.engine.isAudioActivated)
+        #expect(h.target.makeTransportCount == 0)
+
+        await waitUntil { h.transport.connectCount == 1 }
+
+        #expect(h.transport.isAudioAttached)
+        #expect(h.transport.connectCount == 1)
+    }
+
+    /// CallKit never activates a ringing call's session before it is answered, so
+    /// an activation then belongs to an earlier call, delivered late.
+    @Test func anActivationDuringARingNobodyAnsweredIsIgnored() async throws {
         let h = CallEngineHarness()
         h.ring()
         h.provider.simulateActivate(FakeAudioSession())
         await h.engine.awaitPendingActivation()
-        #expect(h.engine.isAudioActivated)
-        #expect(h.target.makeTransportCount == 0)
+        #expect(h.engine.isAudioActivated == false)
 
         await h.engine.answer()
+        await h.engine.awaitPendingMediaWork()
 
-        #expect(h.transport.isAudioAttached)
         #expect(h.transport.connectCount == 1)
+        #expect(h.transport.isAudioAttached == false)
+        #expect(h.transport.isMicEnabled == false)
+
+        h.provider.simulateActivate(FakeAudioSession()) // the answered call's own activation
+        await h.engine.awaitPendingActivation()
+        #expect(h.transport.isAudioAttached)
+        #expect(h.transport.isMicEnabled)
     }
 
     @Test func endDuringTheActivationReplayNeverFetchesCredentials() async throws {

@@ -593,6 +593,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     /// resolved target's credentials (the push's inline room, or the host's own).
     package func answer() async {
         guard case .incomingRinging = state, let target = currentTarget else { return }
+        isAnswerRequested = true
         cancelRingTimer()
         // Answering is the ring's terminal status — the receipt fires here whether
         // or not the transport subsequently connects, and before the ringback starts.
@@ -952,6 +953,12 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         // before CallKit activates that one.
         guard state != .idle, !state.isTerminal else {
             Log.warning(.callkit, "Audio session activated with no call in progress; ignored")
+            return
+        }
+        // CallKit activates an incoming call's session only once its answer action
+        // is fulfilled, so during a ring nobody answered it belongs to an earlier call.
+        guard state != .incomingRinging || isAnswerRequested else {
+            Log.warning(.callkit, "Audio session activated during an unanswered ring; ignored")
             return
         }
         isAudioActivated = true

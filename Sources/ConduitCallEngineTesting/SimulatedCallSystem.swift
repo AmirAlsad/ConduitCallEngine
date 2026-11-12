@@ -151,7 +151,9 @@ public final class SimulatedCallSystem {
 
     /// CallKit activated the call's audio session; returns once the engine has
     /// attached the live call's transport and applied its mic state. CallKit does
-    /// this once a started call is accepted, or once an incoming call is answered.
+    /// this once a started call is accepted, or once an incoming call is answered;
+    /// the engine ignores an activation during a ring that has not been answered
+    /// (`answerIncomingCall()`), as one left over from an earlier call.
     public func activateAudioSession() async {
         provider.simulateActivate(FakeAudioSession())
         await engine?.awaitPendingActivation()
