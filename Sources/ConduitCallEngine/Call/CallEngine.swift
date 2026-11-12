@@ -1711,8 +1711,10 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         // closes it and `handleConnected` opens it.
         await applyMic()?.value
         guard self.transport === transport else { return }
-        // After the attach and the mic, so an agent that waits for it starts
-        // speaking into a running audio engine.
+        // After the attach and the mic, so an agent that waits for them starts
+        // speaking into a running audio engine: a resume that came before this
+        // activation is the agent's news now, then the user being on the line.
+        syncHoldSignal()
         sendConnectedSignalIfDue()
         // Route work waited for this activation; a call already connected gets the
         // hands-free default now, one still connecting gets it when it connects.
@@ -2042,7 +2044,9 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
             isAgentToldHeld = true
             guard lastHoldSignal != .held else { return }
             sendHoldSignal(.held)
-        } else if isAgentToldHeld {
+        } else if isAgentToldHeld, isAudioActivated {
+            // The user can hear and speak again only once CallKit has activated
+            // the resumed call's audio; `activate(_:)` sends it then.
             guard lastHoldSignal != .resumed else { return }
             sendHoldSignal(.resumed)
         }
@@ -2060,8 +2064,9 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         }
     }
 
-    /// `resumed` says the user can hear the agent again, so it follows the attach
-    /// and mic commands issued so far; `held` goes at once.
+    /// `resumed` says the user can hear the agent again, so it waits for CallKit's
+    /// activation of the resumed call (`syncHoldSignal`) and follows the attach and
+    /// mic commands issued so far; `held` goes at once.
     private func sendHoldSignal(_ signal: CallSignal) {
         holdSignalGeneration += 1
         lastHoldSignal = signal

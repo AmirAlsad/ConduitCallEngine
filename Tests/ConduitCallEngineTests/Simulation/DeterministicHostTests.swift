@@ -244,7 +244,7 @@ struct DeterministicHostTests {
 
         #expect(!engine.isOnHold)
         #expect(system.holdRequests == [.init(callID: callID, onHold: false)])
-        #expect(transport.sentSignals == [.connected, .held, .resumed])
+        #expect(transport.sentSignals == [.connected, .held]) // nobody can hear the agent yet
         #expect(!transport.isAudioAttached) // CallKit has not activated the audio
         #expect(system.otherCallIDs.isEmpty)
 

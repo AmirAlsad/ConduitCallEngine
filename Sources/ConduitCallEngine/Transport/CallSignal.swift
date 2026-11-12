@@ -52,6 +52,9 @@ public enum CallSignal: String, CaseIterable, Sendable {
     /// `connected`; a hold before the join is sent at the join.
     case held = "call-held"
     /// The call is back from hold: the user can hear and speak to the agent again.
+    /// Sent once the call is resumed and CallKit has activated its audio, which can
+    /// come a moment after the resume, or seconds later when CallKit has to be
+    /// asked again for it.
     case resumed = "call-resumed"
 }
 

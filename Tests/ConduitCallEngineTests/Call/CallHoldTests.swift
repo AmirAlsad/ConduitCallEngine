@@ -377,13 +377,15 @@ struct CallHoldTests {
         #expect(h.provider.heldRequests.map(\.onHold) == [false])
         #expect(h.provider.heldRequests.allSatisfy { $0.id == h.callID })
         #expect(!h.engine.isOnHold)
-        #expect(h.transport.sentSignals == [.connected, .held, .resumed])
+        #expect(h.transport.sentSignals == [.connected, .held]) // the user cannot hear yet
         #expect(Array(h.delegate.cues.suffix(2)) == [.moment(.held), .moment(.resumed)])
         #expect(h.engine.isTimerRunning(.activationRecovery)) // the audio is still to come
 
         await activate(h)
+        await h.engine.awaitPendingSignals()
         #expect(h.transport.isAudioAttached)
         #expect(h.transport.isMicEnabled)
+        #expect(h.transport.sentSignals == [.connected, .held, .resumed])
         #expect(h.delegate.cueViolations.isEmpty)
     }
 
@@ -713,6 +715,54 @@ struct CallHoldTests {
         await h.engine.awaitPendingMediaWork()
         await h.engine.awaitPendingSignals()
         #expect(h.transport.sentSignals == [.connected, .held, .resumed])
+    }
+
+    /// `call-resumed` says the user can hear and speak again, which is true only
+    /// once CallKit has activated the resumed call's audio.
+    @Test func aResumeBeforeTheActivationTellsTheAgentAtTheActivation() async throws {
+        let h = CallEngineHarness()
+        await liveCall(h)
+        await setHeld(h, true)
+        h.provider.simulateDeactivate(FakeAudioSession())
+
+        await setHeld(h, false)
+        #expect(h.transport.sentSignals == [.connected, .held])
+
+        await activate(h)
+        await h.engine.awaitPendingSignals()
+        #expect(h.transport.isAudioAttached)
+        #expect(h.transport.sentSignals == [.connected, .held, .resumed])
+    }
+
+    /// Asking CallKit again for the audio tells the agent nothing; the activation
+    /// it brings does.
+    @Test func aResumeWhoseActivationIsAskedForAgainTellsTheAgentAtTheActivation() async throws {
+        let h = timedHarness()
+        await liveCall(h)
+        await setHeld(h, true)
+        h.provider.simulateDeactivate(FakeAudioSession())
+        await setHeld(h, false)
+        #expect(h.engine.fireTimer(.activationRecovery))
+        await h.engine.awaitPendingWork()
+        #expect(h.transport.sentSignals == [.connected, .held])
+
+        await activate(h)
+        await h.engine.awaitPendingSignals()
+        #expect(h.transport.sentSignals == [.connected, .held, .resumed])
+    }
+
+    /// A call held again before the activation came never says it was back.
+    @Test func aResumeHeldAgainBeforeTheActivationTellsTheAgentNothing() async throws {
+        let h = CallEngineHarness()
+        await liveCall(h)
+        await setHeld(h, true)
+        h.provider.simulateDeactivate(FakeAudioSession())
+        await setHeld(h, false)
+        await setHeld(h, true)
+        await activate(h)
+        await h.engine.awaitPendingSignals()
+
+        #expect(h.transport.sentSignals == [.connected, .held])
     }
 
     @Test func aHeldCallTellsTheAgentAgainAfterEveryReconnect() async throws {
