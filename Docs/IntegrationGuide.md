@@ -28,14 +28,14 @@ Contents:
 - **PushKit.** Registers for VoIP pushes, reports every push as a call (iOS requires it), and passes you the VoIP token. Ends a ring nobody answers after a timeout, and honours a server's cancel push.
 - **The call state machine.** One call at a time, with the states below, and a `CallRecord` when each call finishes.
 - **Audio-session policy.** Configures the session for voice chat, lets CallKit activate it, attaches the transport only after activation, keeps the mic off until then, pauses the mic during interruptions (Siri, a phone call), stops media while the call is on hold, and routes to the loudspeaker by default when no headset or car is connected.
-- **Reconnection.** After a mid-call network drop it retries with exponential backoff (six attempts, waiting 1, 2, 4, 8, 16 and 30 seconds) while CallKit keeps showing the call, and fails with `.lostConnection` when the budget runs out. A transport that says it is healing itself is given 30 seconds before the engine treats it as dropped and starts those retries, and an attempt whose transport joins but does not report `.connected` within 30 seconds counts as failed.
+- **Reconnection.** After a mid-call network drop it retries with exponential backoff (six attempts, waiting 1, 2, 4, 8, 16 and 30 seconds) while CallKit keeps showing the call, and fails with `.lostConnection` when the budget runs out. A transport that says it is healing itself is given 30 seconds before the engine treats it as dropped and starts those retries, and an attempt whose transport joins but does not report `.connected` within 30 seconds counts as failed. A call whose agent is not ready within 30 seconds of its first join fails as `.agentUnreachable`.
 - **Ring-status receipts.** When a push asks for them, it POSTs the ring's outcome to your server.
 
 It does not: show any in-app UI, store anything, know what an agent or account is, fetch credentials, deliver the VoIP token to your server, or send pushes. Those are yours.
 
 ### What "connected" means
 
-`.connected` means the transport is up **and** the agent is ready to hear the user, not merely that a WebRTC connection exists. Each adapter decides that from its SDK (Daily: the Pipecat client reaches its ready state or the bot reports ready; LiveKit: the room is connected and a remote participant is present; see [section 11](#11-what-the-server-side-must-do)). For an outgoing call, this is also the moment the engine tells CallKit the call connected, which starts the system call timer. If the agent never becomes ready, the call stays in `.connecting`; the engine has no timeout for that.
+`.connected` means the transport is up **and** the agent is ready to hear the user, not merely that a WebRTC connection exists. Each adapter decides that from its SDK (Daily: the Pipecat client reaches its ready state or the bot reports ready; LiveKit: the room is connected and a remote participant is present; see [section 11](#11-what-the-server-side-must-do)). For an outgoing call, this is also the moment the engine tells CallKit the call connected, which starts the system call timer. If the agent is not ready within `joinTimeout` (30 seconds by default) of the transport's `connect(_:)` returning, the call fails as `.agentUnreachable`.
 
 ### States
 
@@ -78,7 +78,7 @@ A call that reaches `.ended(outcome)` is recorded with the same outcome, so a ho
 | `.transportError` | Any other error from the first connect; any other `.error` event while connecting; a drop before the call ever connected. |
 | `.lostConnection` | The reconnection budget ran out. |
 | `.unknown` | CallKit refused to start an outgoing call, or reset its provider during a call. In a `CallRecord` only (the state goes from `.incomingRinging` back to `.idle`): CallKit refused to report an incoming call (other than Focus filtering) or reset its provider while it rang, or a ring arrived for a target your delegate did not resolve. |
-| `.agentUnreachable` | Declared but not produced by the engine in this version. |
+| `.agentUnreachable` | The transport's first `connect(_:)` returned, but it did not report `.connected` within `joinTimeout` (30 seconds by default): the room was joined and the agent never became ready. |
 
 `CallOutcome`, `CallDirection` and `CallFailureReason` have stable string raw values and are `Codable`, so you can persist them.
 
@@ -101,7 +101,7 @@ A call that reaches `.ended(outcome)` is recorded with the same outcome, so a ho
 | `state`, `activeCall`, `isMuted`, `isOnHold`, `isBotSpeaking`, `isAudioActivated`, `isInterrupted`, `audioDevices`, `selectedAudioDeviceID`, `endedByUser` | Observable state for your UI. `activeCall` carries the target id, display name and direction of the current call. |
 | `repeatingCue` | The looping cue that should be playing now (`.connecting`, `.retrying`, or nil), for a UI that attaches mid-call. See [Cues](#cues). |
 
-`CallEngineConfiguration` has five settings: `unknownCallerName` (default `"Unknown"`), the name a ring shows when the push carries none; `isPushToTalkEnabled`, a closure read at each mic decision, so a settings change mid-call takes effect on the next one; `ringTimeout` (default 60 seconds), how long an incoming call rings before the engine ends it as unanswered; `supportsHolding` (default true), whether calls are reported to CallKit as holdable; and `joinTimeout` (default 30 seconds), how long the engine waits for `.connected` after a reconnect attempt's `connect(_:)` has returned before it counts the attempt as failed (`nil` waits indefinitely). A push's `ring_timeout` can shorten the ring timeout (to no less than 10 seconds) but not lengthen it. `nil` sets no limit of the engine's own; a push's `ring_timeout` still applies then. With `supportsHolding` off, CallKit offers no hold for the call, and a phone call the user takes during it ends it.
+`CallEngineConfiguration` has five settings: `unknownCallerName` (default `"Unknown"`), the name a ring shows when the push carries none; `isPushToTalkEnabled`, a closure read at each mic decision, so a settings change mid-call takes effect on the next one; `ringTimeout` (default 60 seconds), how long an incoming call rings before the engine ends it as unanswered; `supportsHolding` (default true), whether calls are reported to CallKit as holdable; and `joinTimeout` (default 30 seconds), how long the engine waits for `.connected` after a transport's `connect(_:)` has returned: on a call's first connect it then fails the call as `.agentUnreachable`, and on a reconnect attempt it counts the attempt as failed (`nil` waits indefinitely, as 0.1 did). A push's `ring_timeout` can shorten the ring timeout (to no less than 10 seconds) but not lengthen it. `nil` sets no limit of the engine's own; a push's `ring_timeout` still applies then. With `supportsHolding` off, CallKit offers no hold for the call, and a phone call the user takes during it ends it.
 
 `CallEngine.supportedPushFeatures` (`["cancel", "ring_timeout"]`) is the set of optional push features this engine understands; send it to your server with the VoIP token ([section 7](#7-delivering-the-voip-token-to-your-server)).
 
@@ -467,7 +467,7 @@ The engine joins whatever room `connect` returns. Your server must put an agent 
 ### Daily (`PipecatDailyTransport`)
 
 - **Joining.** The Pipecat iOS client joins `connection.url` (a Daily room URL) with `connection.token` (a Daily meeting token).
-- **Readiness.** The call becomes `.connected` when the Pipecat client reaches its ready state or the bot reports ready, so the room needs a bot that speaks RTVI and sends bot-ready. A Pipecat pipeline with an RTVI processor does this. With no bot, the call stays in `.connecting`.
+- **Readiness.** The call becomes `.connected` when the Pipecat client reaches its ready state or the bot reports ready, so the room needs a bot that speaks RTVI and sends bot-ready. A Pipecat pipeline with an RTVI processor does this. With no bot, the call stays in `.connecting` until `joinTimeout` fails it as `.agentUnreachable`.
 - **End-call signal.** On a deliberate hangup the client sends an RTVI client message of type `end-call`, waits 200 ms for it to flush, then leaves. A Pipecat server sees it in the RTVI processor's client-message event. It is only sent once the bot is ready.
 - **Agent hangup.** When the bot leaves the room, the call ends as `.completed`.
 - **Teardown.** After the end-call signal and the leave, `disconnect()` releases the Pipecat client, which is what frees Pipecat's Daily transport and Daily's call client. A `PipecatDailyTransport` can still be connected again after `disconnect()`; it builds a new client for that.
@@ -478,7 +478,7 @@ The engine joins whatever room `connect` returns. Your server must put an agent 
 ### LiveKit (`LiveKitTransport`)
 
 - **Joining.** `connection.url` is the LiveKit server URL (`wss://...`) and `connection.token` an access token with a join grant for the room.
-- **Readiness.** The call becomes `.connected` once the room is connected **and** at least one remote participant is present. Any remote participant counts as the agent, so dispatch the agent to the room when you mint the token. With no agent, the call stays in `.connecting`.
+- **Readiness.** The call becomes `.connected` once the room is connected **and** at least one remote participant is present. Any remote participant counts as the agent, so dispatch the agent to the room when you mint the token. With no agent, the call stays in `.connecting` until `joinTimeout` fails it as `.agentUnreachable`.
 - **End-call signal.** On a deliberate hangup, unless the room is already disconnected or disconnecting, the client publishes this JSON on the room's data channel, then disconnects. A room that is still connecting (the host called `disconnect()` right after starting a connect) is given time to finish first, and a reconnecting room gets the signal once LiveKit's data channel is back; `disconnect()` waits at most 2 seconds for all of this before it leaves anyway:
 
   ```json
@@ -623,7 +623,7 @@ final class TestHost: CallEngineDelegate {
 }
 ```
 
-Pass `now:` and `sleep:` to `simulated` to control time: a clock you advance makes `CallRecord.duration` deterministic, and a `sleep` that returns at once makes reconnect backoff instant. The ring timeout uses the same `sleep`, so with one that returns at once every ring times out on the next suspension; pass `configuration: CallEngineConfiguration(ringTimeout: nil)` in tests that ring with such a sleep, or a sleep you end by hand to test the timeout. The default `sleep` is real time.
+Pass `now:` and `sleep:` to `simulated` to control time: a clock you advance makes `CallRecord.duration` deterministic, and a `sleep` that returns at once makes reconnect backoff instant. The ring timeout and `joinTimeout` use the same `sleep`, so with one that returns at once every ring times out, and every call waiting for its agent after the transport's `connect(_:)` returned fails as `.agentUnreachable`, on the engine's next suspension; pass `configuration: CallEngineConfiguration(ringTimeout: nil, joinTimeout: nil)` in tests that use such a sleep, or a sleep you end by hand to test the timeouts. The default `sleep` is real time.
 
 A simulated engine activates the audio session only when you call `activateAudioSession()`. Until then `isAudioActivated` stays false and the engine never attaches the transport, so in an app running the simulated engine, a `FakeTransport` is never attached unless you drive activation yourself. The simulation tests the engine's logic against your host code; it cannot tell you how a real SDK behaves under CallKit, which only a device shows.
 
@@ -707,9 +707,9 @@ Fix: provide an in-app route picker over `engine.audioDevices` and `engine.selec
 Cause: the server does not act on the end-call signal, so it waits out its drop grace window. On LiveKit with Pipecat, the signal does not reach the RTVI processor.
 Fix: [section 11](#11-what-the-server-side-must-do). Check your server logs for an immediate teardown after a clean hangup.
 
-**The call sits at "connecting" and never connects.**
-Cause: no agent joined (LiveKit: no remote participant in the room; Daily: no bot sent bot-ready). The engine has no timeout for this.
-Fix: dispatch the agent when you mint credentials; let the user end the call meanwhile.
+**The call sits at "connecting", then fails as `.agentUnreachable`.**
+Cause: no agent joined (LiveKit: no remote participant in the room; Daily: no bot sent bot-ready). The engine waits `joinTimeout` (30 seconds by default) after the transport's `connect(_:)` returns.
+Fix: dispatch the agent when you mint credentials. If your agent legitimately takes longer to start, raise `joinTimeout`.
 
 **Bad credentials show as a generic transport error.**
 Cause: the Daily adapter maps every connect error to `.connectionFailed`; only `TransportError.authenticationFailed` produces `.badToken`.
@@ -749,13 +749,11 @@ Fix: record only from `didFinish`; the engine already makes the end of a call id
 - **Call hold is verified in unit tests only.** How iOS sequences the hold action with audio-session deactivation, activation and interruptions, whether it resumes the engine call by itself when the phone call ends, and whether a hold is offered with the provider's one-call-group configuration have not been confirmed on a device; the engine is written to handle any order. Hold is not configurable beyond on or off, and calls cannot be grouped or swapped beyond what holding allows.
 - **The bundled adapters do not deliver call-control signals yet.** `PipecatDailyTransport` and `LiveKitTransport` use the default `send(_:)`, which drops the signal, so their agents are not told about a hold. `PipecatDailyTransport`'s `detachAudioSession()` does nothing, so on Daily a held call may still play the agent's audio unless CallKit's deactivation silences it.
 - **A cancel push for a ring the device no longer has flashes.** iOS requires every VoIP push to be reported as a call, so a cancel for an unknown or finished ring shows a brief incoming call that ends at once. Whether iOS counts a cancel CallKit refuses as a duplicate as properly reported (and keeps delivering pushes) is assumed from the PushKit rules and has not yet been confirmed on a device.
-- **No timeout while connecting.** If the agent never becomes ready, the call stays in `.connecting` until the user ends it.
 - **The native CallKit route button cannot move audio on the Daily adapter.** Use an in-app picker.
 - **Daily's short interruptions are inferred from the device's network path, not Daily's media state.** A path that stays satisfied while media stops is not reported until Daily disconnects, and recovery is announced when the path returns, possibly a moment before audio does.
 - **Daily never reports bad credentials itself.** Only your `connect` closure can produce `.badToken` on Daily.
 - **Fixed policies.** The reconnection budget and backoff, the loudspeaker default, and the CallKit provider configuration (email handles, calls in the Phone app's Recents, no ringtone or icon customization) are not configurable.
 - **No programmatic answer.** Incoming calls are answered from the system UI only.
 - **Not exposed:** the remote audio level, user-speaking events, and PushKit token invalidation (logged only).
-- **`CallFailureReason.agentUnreachable`** exists but is never produced.
 - **An engine that has started push registration is never deallocated.** It keeps itself alive so every push is reported.
 - **The delegate must be set before `startPushRegistration()`.** A push waiting at launch can be delivered as soon as the registry exists, and a push handled with no delegate fails as an unknown target.

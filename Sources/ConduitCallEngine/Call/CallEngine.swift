@@ -631,6 +631,8 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
             // The call may have ended while credentials were in flight.
             guard self.transport === transport else { return }
             try await transport.connect(connection)
+            guard self.transport === transport, state == .connecting else { return }
+            startJoinDeadline(for: transport)
         } catch {
             Log.error(.transport, "connect failed: \(error)")
             // `connect` can resolve LATE — after an event already failed this call and
@@ -869,7 +871,8 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     }
 
     /// Bound the wait for `.connected` after `transport`'s connect returned without
-    /// throwing: a transport can join and then never report the agent ready. When
+    /// throwing, on the first connect and on every reconnect attempt: a transport
+    /// can join and then never report the agent ready. When
     /// `CallEngineConfiguration.joinTimeout` runs out with the call still waiting in
     /// the same state, the wait is over (`joinTimedOut`).
     private func startJoinDeadline(for transport: CallTransport) {
@@ -893,10 +896,19 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         joinDeadlineTask = nil
     }
 
+    /// A call that never connected has nothing to retry: the agent never became
+    /// ready. A reconnect attempt counts as failed.
     private func joinTimedOut(after timeout: Duration) {
-        guard case .reconnecting(let attempt) = state, attempt >= 1 else { return }
-        Log.warning(.call, "Reconnect attempt \(attempt) joined but reported no connection within \(timeout)")
-        scheduleReconnect()
+        switch state {
+        case .connecting:
+            Log.warning(.call, "Transport joined but the agent was not ready within \(timeout)")
+            fail(.agentUnreachable)
+        case .reconnecting(let attempt) where attempt >= 1:
+            Log.warning(.call, "Reconnect attempt \(attempt) joined but reported no connection within \(timeout)")
+            scheduleReconnect()
+        default:
+            break
+        }
     }
 
     /// Test hook: await the in-flight reconnection attempt.

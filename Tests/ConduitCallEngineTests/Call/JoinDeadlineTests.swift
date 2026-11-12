@@ -29,13 +29,123 @@ struct JoinDeadlineTests {
         #expect(CallEngineConfiguration().joinTimeout == .seconds(30))
     }
 
+    // MARK: - The first connect
+
+    enum Direction: String, CaseIterable, Sendable {
+        case outgoing, incoming
+    }
+
+    /// A call whose transport joined, waiting for the agent: the bound is sleeping.
+    private func firstConnectWaitingForTheAgent(_ h: CallEngineHarness, _ direction: Direction) async {
+        switch direction {
+        case .outgoing:
+            await h.placeCall()
+        case .incoming:
+            h.ring()
+            await h.engine.answer()
+        }
+        await waitUntil { sleeper.pendingCount == 1 }
+    }
+
+    @Test(arguments: Direction.allCases)
+    func aCallWhoseAgentNeverJoinsFailsAsAgentUnreachable(direction: Direction) async throws {
+        let h = harness()
+        await firstConnectWaitingForTheAgent(h, direction)
+        #expect(sleeper.requested == [.seconds(30)])
+        #expect(h.engine.state == .connecting)
+
+        sleeper.wakeFirst()
+
+        await waitUntil { h.engine.state.isTerminal }
+        #expect(h.engine.state == .failed(.agentUnreachable))
+        let record = try #require(h.delegate.records.first)
+        #expect(h.delegate.records.count == 1)
+        #expect(record.outcome == .failed)
+        #expect(record.failureReason == .agentUnreachable)
+        #expect(h.provider.reportedEnded.map(\.reason) == [.failed])
+        await waitUntil { h.transport.disconnectCount == 1 }
+        #expect(h.transport.disconnectCount == 1) // the end-call signal, for an agent that turns up late
+        #expect(h.delegate.cues == [.start(.connecting), .stop])
+        #expect(h.delegate.cueViolations.isEmpty)
+    }
+
+    @Test(arguments: Direction.allCases)
+    func anAgentThatJoinsInTimeConnectsTheCall(direction: Direction) async throws {
+        let h = harness()
+        await firstConnectWaitingForTheAgent(h, direction)
+
+        h.engine.handle(.connected)
+        sleeper.wakeAll()
+        await settle()
+
+        #expect(h.engine.state.isConnected)
+        #expect(h.delegate.records.isEmpty)
+    }
+
+    @Test func endingTheCallWhileWaitingForTheAgentStopsTheBound() async throws {
+        let h = harness()
+        await firstConnectWaitingForTheAgent(h, .outgoing)
+
+        await h.engine.endCall()
+        sleeper.wakeAll()
+        await settle()
+
+        #expect(h.engine.state == .ended(.canceled))
+        #expect(h.delegate.records.map(\.outcome) == [.canceled])
+    }
+
+    @Test func aConnectThatReportsConnectedBeforeItReturnsStartsNoBound() async throws {
+        let h = harness()
+        h.transport.suspendConnect = true
+        let place = Task { await h.placeCall() }
+        await waitUntil { h.transport.connectCount == 1 }
+        h.engine.handle(.connected)
+        h.transport.releaseConnect()
+        await place.value
+        await settle()
+
+        #expect(h.engine.state.isConnected)
+        #expect(sleeper.requested.isEmpty)
+    }
+
+    @Test func aFirstConnectThatThrowsFailsAsBeforeWithoutABound() async throws {
+        let h = harness()
+        h.transport.connectError = .connectionFailed("refused")
+
+        await h.placeCall()
+        await settle()
+
+        #expect(h.engine.state == .failed(.transportError))
+        #expect(sleeper.requested.isEmpty)
+    }
+
+    @Test func noBoundConfiguredLeavesTheCallConnecting() async throws {
+        let h = harness(joinTimeout: nil)
+        await h.placeCall()
+        await settle()
+
+        #expect(h.engine.state == .connecting)
+        #expect(sleeper.requested.isEmpty)
+    }
+
     // MARK: - Reconnect attempts
+
+    /// A placed call that connected in time. The first connect's bound is cancelled
+    /// but still asleep in the `ManualSleeper`; it is woken, and stays inert.
+    private func connectedCall(_ h: CallEngineHarness) async {
+        await h.placeCall()
+        if h.engine.state == .connecting, sleeper.pendingCount == 0 {
+            await waitUntil { sleeper.pendingCount == 1 }
+        }
+        h.engine.handle(.connected)
+        sleeper.wakeAll()
+        await settle()
+    }
 
     /// A connected call that dropped, with the engine's first attempt joined and
     /// waiting for the agent: the backoff has run and the bound is sleeping.
     private func attemptWaitingForTheAgent(_ h: CallEngineHarness) async {
-        await h.placeCall()
-        h.engine.handle(.connected)
+        await connectedCall(h)
         h.engine.handle(.disconnected(reason: .networkDropped))
         await waitUntil { sleeper.pendingCount == 1 }
         sleeper.wakeFirst() // the backoff before attempt 1
@@ -45,7 +155,7 @@ struct JoinDeadlineTests {
     @Test func anAttemptThatJoinsButNeverReportsCountsAsFailed() async throws {
         let h = harness()
         await attemptWaitingForTheAgent(h)
-        #expect(sleeper.requested == [.seconds(1), .seconds(30)])
+        #expect(sleeper.requested == [.seconds(30), .seconds(1), .seconds(30)])
         #expect(h.engine.state == .reconnecting(attempt: 1))
 
         sleeper.wakeFirst() // 30 seconds with no `.connected`
@@ -53,7 +163,7 @@ struct JoinDeadlineTests {
         await waitUntil { h.engine.state == .reconnecting(attempt: 2) }
         #expect(h.engine.state == .reconnecting(attempt: 2))
         await waitUntil { sleeper.pendingCount == 1 }
-        #expect(sleeper.requested == [.seconds(1), .seconds(30), .seconds(2)]) // the next backoff
+        #expect(sleeper.requested == [.seconds(30), .seconds(1), .seconds(30), .seconds(2)]) // the next backoff
         sleeper.wakeFirst()
         await waitUntil { h.transport.connectCount == 3 }
         #expect(h.target.connectCount == 3) // fresh credentials for the next attempt
@@ -117,8 +227,7 @@ struct JoinDeadlineTests {
 
     @Test func anAttemptThatThrowsStartsNoBound() async throws {
         let h = harness()
-        await h.placeCall()
-        h.engine.handle(.connected)
+        await connectedCall(h)
         h.transport.connectError = .connectionFailed("refused")
         h.engine.handle(.disconnected(reason: .networkDropped))
         await waitUntil { sleeper.pendingCount == 1 }
@@ -126,13 +235,12 @@ struct JoinDeadlineTests {
 
         await waitUntil { h.engine.state == .reconnecting(attempt: 2) }
         await waitUntil { sleeper.pendingCount == 1 }
-        #expect(sleeper.requested == [.seconds(1), .seconds(2)]) // backoffs only
+        #expect(sleeper.requested == [.seconds(30), .seconds(1), .seconds(2)]) // the first connect's bound, then backoffs only
     }
 
     @Test func noBoundConfiguredWaitsForTheTransport() async throws {
         let h = harness(joinTimeout: nil)
-        await h.placeCall()
-        h.engine.handle(.connected)
+        await connectedCall(h)
         h.engine.handle(.disconnected(reason: .networkDropped))
         await waitUntil { sleeper.pendingCount == 1 }
         sleeper.wakeFirst()

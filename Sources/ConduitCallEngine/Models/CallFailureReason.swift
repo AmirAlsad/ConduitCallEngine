@@ -12,6 +12,8 @@ import Foundation
 
 public enum CallFailureReason: String, Equatable, Sendable, Codable {
     case badToken
+    /// The transport joined, but the agent was not ready within
+    /// `CallEngineConfiguration.joinTimeout` on the call's first connect.
     case agentUnreachable
     case lostConnection
     case transportError

@@ -27,12 +27,14 @@ public struct CallEngineConfiguration {
     /// `CallEngine.isOnHold`. When false, CallKit offers no hold for the call, and a
     /// phone call that starts during it ends it.
     public var supportsHolding: Bool
-    /// How long the engine waits for the transport to report `.connected` after an
-    /// engine reconnect attempt's `CallTransport.connect(_:)` has returned. When it
-    /// runs out, the attempt counts as failed: the next one is scheduled with its
-    /// backoff, or the call fails as `.lostConnection` once the retry budget is
-    /// spent. Measured with the engine's injected sleep. nil waits indefinitely,
-    /// as 0.1 did. Default 30 seconds.
+    /// How long the engine waits for the transport to report `.connected` once a
+    /// `CallTransport.connect(_:)` has returned without throwing: the transport has
+    /// joined, and the agent has that long to be ready. When it runs out on a
+    /// call's first connect, the call fails as `.agentUnreachable`; on an engine
+    /// reconnect attempt, the attempt counts as failed, and the next one is
+    /// scheduled with its backoff or the call fails as `.lostConnection` once the
+    /// retry budget is spent. Measured with the engine's injected sleep. nil waits
+    /// indefinitely, as 0.1 did. Default 30 seconds.
     public var joinTimeout: Duration?
 
     public init(

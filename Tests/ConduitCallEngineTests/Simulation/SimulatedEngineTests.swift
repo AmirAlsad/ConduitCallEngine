@@ -57,10 +57,11 @@ struct SimulatedEngineTests {
 
     init() {
         let now = now
-        // A sleep that returns at once would also end every ring at once, so this
-        // suite runs without a ring timeout; the timeout tests bring their own sleep.
+        // A sleep that returns at once would also end every ring, and every wait for
+        // the agent after a connect, at once, so this suite runs without those
+        // timeouts; the timeout tests bring their own sleep.
         engine = CallEngine.simulated(
-            configuration: CallEngineConfiguration(ringTimeout: nil),
+            configuration: CallEngineConfiguration(ringTimeout: nil, joinTimeout: nil),
             system: system,
             now: { now },
             sleep: { _ in }
@@ -367,7 +368,7 @@ struct SimulatedEngineTests {
     @Test func holdingCanBeTurnedOff() async throws {
         let system = SimulatedCallSystem()
         let engine = CallEngine.simulated(
-            configuration: CallEngineConfiguration(ringTimeout: nil, supportsHolding: false),
+            configuration: CallEngineConfiguration(ringTimeout: nil, supportsHolding: false, joinTimeout: nil),
             system: system,
             sleep: { _ in }
         )
