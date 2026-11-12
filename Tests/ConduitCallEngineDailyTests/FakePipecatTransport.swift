@@ -6,13 +6,17 @@
 //  audio unit and aborts in the simulator. It records what the real Pipecat client
 //  asks of its transport, so `PipecatDailyTransport`'s teardown can be checked.
 //
+//  It holds its delegate strongly, unlike Pipecat's Daily transport, the way an
+//  SDK object with a callback still in flight does: a delegate the adapter did not
+//  detach stays reachable, so tests can tell whether it was detached.
+//
 
 import PipecatClientIOS
 
 @MainActor
 final class FakePipecatTransport: Transport {
     private(set) var calls: [String] = []
-    weak var delegate: PipecatClientDelegate?
+    var delegate: PipecatClientDelegate?
     var onMessage: ((RTVIMessageInbound) -> Void)?
     private var currentState: TransportState = .disconnected
 

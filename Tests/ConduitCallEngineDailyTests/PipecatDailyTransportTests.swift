@@ -110,14 +110,23 @@ struct PipecatDailyTransportTests {
         #expect(fake.calls == ["connect", "disconnect", "release"])
     }
 
-    @Test func aReleasedClientNoLongerReachesTheTransport() async throws {
+    @Test(.timeLimit(.minutes(1)))
+    func aReleasedClientNoLongerReachesTheTransport() async throws {
         let transport = makeTransport()
+        let log = record(transport)
         try await transport.connect(connection)
         let fake = try #require(clients.made.first)
-
+        fake.becomeReady()
         await transport.disconnect()
+        await drain()
+        let eventsAtDisconnect = log.events.count
+
+        fake.delegate?.onBotStartedSpeaking()
+        fake.delegate?.onTransportStateChanged(state: .ready)
+        await drain()
 
         #expect(fake.delegate == nil)
+        #expect(log.events.count == eventsAtDisconnect)
     }
 
     @Test func aConnectAfterDisconnectUsesAFreshClient() async throws {
