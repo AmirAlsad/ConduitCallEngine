@@ -20,6 +20,14 @@
 //  never detached, and was not joined while ringing, keeps Daily's default
 //  subscription.
 //
+//  Route: Daily configures the session itself and, with no preferred device, for
+//  video chat, which iOS plays on the loudspeaker; it reapplies that at the join and
+//  after each of its input changes. So at the first attach, once CallKit has
+//  activated the session, the transport asks Daily to prefer the route the session
+//  is on; every new Daily client is given it before its join, and every join's
+//  microphone input names it, so Daily's own reconfigurations keep the call there.
+//  The engine's `setAudioDevice` wins over it. See `DailyAudioRouteGate`.
+//
 //  Interruptions: Daily heals short network outages inside its SDK without changing
 //  the Pipecat transport state, so nothing in the client's callbacks reports them.
 //  Once connected, the transport watches the device's network path instead
@@ -54,6 +62,7 @@
 //  builds a new client; the old one's late callbacks no longer reach the transport.
 //
 
+import AVFoundation
 import Foundation
 import ConduitCallEngine
 import PipecatClientIOS
@@ -73,7 +82,9 @@ public final class PipecatDailyTransport: CallTransport {
     private let makePipecatTransport: @MainActor () -> Transport
     private let makePathMonitor: @MainActor () -> NetworkPathMonitoring
     private let makeCallControl: @MainActor (any Transport) -> DailyCallControlling?
+    private let readOutputPort: @MainActor () -> AVAudioSession.Port?
     private var remoteAudio = DailyRemoteAudioGate()
+    private var routes = DailyAudioRouteGate()
 
     /// A Pipecat client and the mapper that is its delegate. `disconnect()` takes the
     /// session away and releases its client, so a later `connect` builds a new one.
@@ -104,7 +115,10 @@ public final class PipecatDailyTransport: CallTransport {
     init(
         makePipecatTransport: @escaping @MainActor () -> Transport,
         makePathMonitor: @escaping @MainActor () -> NetworkPathMonitoring = { SystemNetworkPathMonitor() },
-        makeCallControl: @escaping @MainActor (any Transport) -> DailyCallControlling? = DailyCallClientControl.make(for:)
+        makeCallControl: @escaping @MainActor (any Transport) -> DailyCallControlling? = DailyCallClientControl.make(for:),
+        readOutputPort: @escaping @MainActor () -> AVAudioSession.Port? = {
+            AVAudioSession.sharedInstance().currentRoute.outputs.first?.portType
+        }
     ) {
         let (stream, continuation) = AsyncStream.makeStream(of: TransportEvent.self)
         self.events = stream
@@ -112,6 +126,7 @@ public final class PipecatDailyTransport: CallTransport {
         self.makePipecatTransport = makePipecatTransport
         self.makePathMonitor = makePathMonitor
         self.makeCallControl = makeCallControl
+        self.readOutputPort = readOutputPort
         self.session = makeSession()
     }
 
@@ -130,7 +145,8 @@ public final class PipecatDailyTransport: CallTransport {
         let events = PipecatEventMapper(
             continuation: continuation,
             pathMonitor: makePathMonitor(),
-            isRemotePresent: { [weak callControl] in callControl?.hasRemoteParticipant ?? false }
+            isRemotePresent: { [weak callControl] in callControl?.hasRemoteParticipant ?? false },
+            micsDidChange: { [weak self] ids in self?.audioDevicesDidChange(ids) }
         )
         client.delegate = events
         return Session(client: client, events: events, callControl: callControl)
@@ -144,6 +160,7 @@ public final class PipecatDailyTransport: CallTransport {
     /// attach (the bot cannot report ready while its audio is unsubscribed).
     public func connectWhileRinging(_ connection: CallConnection) async throws {
         remoteAudio.holdAgentBackUntilFirstAttach()
+        routes.holdUntilFirstAttach()
         try await connect(connection)
     }
 
@@ -169,6 +186,7 @@ public final class PipecatDailyTransport: CallTransport {
             let stale = session
             session = makeSession()
             self.session = session
+            routes.sessionDidReset()
             await Self.retire(stale)
             // The host's disconnect() may have ended the new session meanwhile.
             guard self.session?.client === session.client else {
@@ -184,10 +202,12 @@ public final class PipecatDailyTransport: CallTransport {
         }
         // Before the join, so a held call that reconnects joins with the agent silent.
         await applyRemoteAudio().value
+        // Before the join too, so Daily starts managing the session on the call's route.
+        await applyRoute().value
+        let joinRoute = routes.wanted
+        Log.info(.audio, "Daily join: preferred audio device \(Self.describe(joinRoute))")
         do {
-            let params = DailyTransportConnectionParams(
-                roomUrl: connection.url.absoluteString, token: connection.token
-            )
+            let params = DailyCallClientControl.connectionParams(for: connection, preferring: joinRoute)
             try await session.client.connect(transportParams: params)
         } catch {
             session.events.gate.connectDidFail()
@@ -198,6 +218,11 @@ public final class PipecatDailyTransport: CallTransport {
         // Daily may not take a subscription change before the join; it does now.
         remoteAudio.joinDidComplete()
         await applyRemoteAudio().value
+        if let callControl = session.callControl {
+            Log.info(.audio, "Daily joined: \(callControl.audioRouteDescription)")
+            routes.joinDidComplete(reported: callControl.preferredAudioRoute)
+        }
+        await applyRoute().value
     }
 
     /// The client states in which `PipecatClient.connect` throws `BotAlreadyStartedError`.
@@ -207,6 +232,7 @@ public final class PipecatDailyTransport: CallTransport {
         guard let session else { return }
         self.session = nil
         remoteAudio.sessionDidReset()
+        routes.sessionDidReset()
         session.events.gate.userDidRequestDisconnect()
         session.events.interruptions.userDidRequestDisconnect()
         let client = session.client
@@ -305,8 +331,8 @@ public final class PipecatDailyTransport: CallTransport {
     }
 
     // Daily models the iOS audio routes (speaker / receiver / Bluetooth / wired) as
-    // its "mic" devices and honors `updateMic` — unlike a manual AVAudioSession
-    // override, which Daily's own session management would re-assert.
+    // its "mic" devices and honors its own preferred device, unlike a manual
+    // AVAudioSession override, which Daily's own session management would re-assert.
     public func availableAudioDevices() async -> [AudioDeviceInfo] {
         session?.client.getAllMics().map { AudioDeviceInfo(id: $0.id.id, name: $0.name) } ?? []
     }
@@ -315,10 +341,16 @@ public final class PipecatDailyTransport: CallTransport {
         session?.client.selectedMic.map { AudioDeviceInfo(id: $0.id.id, name: $0.name) }
     }
 
+    /// Asks Daily to prefer the device, at once and for every later session of this
+    /// transport, over the route the call started on.
     public func setAudioDevice(_ id: String) async {
-        guard let client = session?.client else { return }
-        do { try await client.updateMic(micId: MediaDeviceId(id: id)) }
-        catch { Log.error(.audio, "Daily setAudioDevice(\(id)) error: \(error)") }
+        guard let route = DailyAudioRoute(deviceID: id) else {
+            Log.warning(.audio, "Daily setAudioDevice(\(id)) ignored: not a Daily audio device")
+            return
+        }
+        routes.engineDidRequest(route)
+        Log.info(.audio, "Daily engine request: audio device \(route)")
+        await applyRoute().value
     }
 
     /// Daily owns the AVAudioSession, so attaching only lets the agent be heard again
@@ -329,7 +361,17 @@ public final class PipecatDailyTransport: CallTransport {
     public func attachAudioSession() async {
         remoteAudio.attach()
         Log.info(.audio, "Daily attach: agent audio wanted \(Self.describe(remoteAudio.wanted))")
-        await Self.wait(for: applyRemoteAudio(), atMost: Self.attachBound)
+        if !routes.hasAttached {
+            let port = readOutputPort()
+            let devices = Set((session?.client.getAllMics() ?? []).compactMap { DailyAudioRoute(deviceID: $0.id.id) })
+            routes.attach(activeRoute: port.flatMap(DailyAudioRoute.init(outputPort:)), devices: devices)
+            Log.info(.audio, "Daily route at activation: \(port?.rawValue ?? "no output") -> keep \(Self.describe(routes.followed)); preferred audio device \(Self.describe(routes.wanted)) (\(routes.wantedReason))")
+        } else {
+            routes.attach(activeRoute: nil, devices: [])
+        }
+        let route = applyRoute()
+        let audio = applyRemoteAudio()
+        await Self.wait(for: Task { await route.value; await audio.value }, atMost: Self.attachBound)
     }
 
     /// Stops the agent's playout by unsubscribing from its audio (the engine closes the
@@ -377,6 +419,51 @@ public final class PipecatDailyTransport: CallTransport {
         report.finish()
     }
 
+    /// The application of preferred-device changes in progress.
+    private var routeApplication: Task<Void, Never>?
+
+    /// Gives Daily the gate's wanted route until it has it, one change at a time and
+    /// always toward the latest wanted route, as `applyRemoteAudio()` does.
+    @discardableResult
+    private func applyRoute() -> Task<Void, Never> {
+        if let routeApplication { return routeApplication }
+        let task = Task { [weak self] in
+            await self?.applyRouteChanges()
+            self?.routeApplication = nil
+        }
+        routeApplication = task
+        return task
+    }
+
+    private func applyRouteChanges() async {
+        while let application = routes.beginApplying() {
+            guard let callControl = session?.callControl else {
+                routes.applyDidFail(application)
+                Log.info(.audio, "Daily preferred audio device not set to \(application.route): no Daily call client")
+                return
+            }
+            Log.info(.audio, "Daily preferred audio device -> \(application.route) (\(routes.wantedReason))")
+            do {
+                try await callControl.setPreferredAudioRoute(application.route)
+                routes.applyDidSucceed(application)
+                Log.info(.audio, "Daily preferred audio device is \(application.route): \(callControl.audioRouteDescription)")
+            } catch {
+                routes.applyDidFail(application)
+                Log.warning(.audio, "Daily preferred audio device -> \(application.route) refused: \(error)")
+            }
+        }
+    }
+
+    /// Daily reported its device list: a Bluetooth or wired device that came or went
+    /// may move the route the transport keeps the call on.
+    private func audioDevicesDidChange(_ ids: [String]) {
+        let before = routes.wanted
+        routes.devicesDidChange(Set(ids.compactMap(DailyAudioRoute.init(deviceID:))))
+        guard routes.wanted != before else { return }
+        Log.info(.audio, "Daily devices now \(ids): preferred audio device \(Self.describe(before)) -> \(Self.describe(routes.wanted)) (\(routes.wantedReason))")
+        applyRoute()
+    }
+
     private func applyRemoteAudioChanges() async {
         while let application = remoteAudio.beginApplying() {
             guard let callControl = session?.callControl else {
@@ -400,6 +487,10 @@ public final class PipecatDailyTransport: CallTransport {
         state.map { "\($0)" } ?? "unchanged (Daily default)"
     }
 
+    private static func describe(_ route: DailyAudioRoute?) -> String {
+        route.map { "\($0)" } ?? "none (Daily default)"
+    }
+
     private static func playoutEffect(of state: DailyRemoteAudio) -> String {
         state == .subscribed ? "playout restored" : "playout stopped"
     }
@@ -413,16 +504,19 @@ private final class PipecatEventMapper: PipecatClientDelegate {
     let interruptions: DailyInterruptionReporter
     var gate: DailyConnectionGate
     private let isRemotePresent: @MainActor () -> Bool
+    private let micsDidChange: @MainActor ([String]) -> Void
 
     init(
         continuation: AsyncStream<TransportEvent>.Continuation,
         pathMonitor: NetworkPathMonitoring,
-        isRemotePresent: @escaping @MainActor () -> Bool
+        isRemotePresent: @escaping @MainActor () -> Bool,
+        micsDidChange: @escaping @MainActor ([String]) -> Void
     ) {
         self.continuation = continuation
         self.interruptions = DailyInterruptionReporter(pathMonitor: pathMonitor) { continuation.yield($0) }
         self.gate = DailyConnectionGate()
         self.isRemotePresent = isRemotePresent
+        self.micsDidChange = micsDidChange
     }
 
     nonisolated func onTransportStateChanged(state: TransportState) {
@@ -505,6 +599,8 @@ private final class PipecatEventMapper: PipecatClientDelegate {
     }
 
     nonisolated func onAvailableMicsUpdated(mics: [MediaDeviceInfo]) {
+        let ids = mics.map(\.id.id)
+        Task { @MainActor in self.micsDidChange(ids) }
         continuation.yield(.audioDevicesChanged)
     }
 

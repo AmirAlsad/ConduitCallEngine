@@ -52,7 +52,8 @@ struct PipecatDailyTransportTests {
                 control.refusesBeforeJoin = clients.refusesBeforeJoin
                 clients.controls.append(control)
                 return control
-            }
+            },
+            readOutputPort: { nil }
         )
     }
 

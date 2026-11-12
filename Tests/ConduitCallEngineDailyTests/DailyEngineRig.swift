@@ -9,6 +9,7 @@
 //  and the Pipecat client then do.
 //
 
+import AVFoundation
 import Foundation
 import ConduitCallEngine
 import ConduitCallEngineTesting
@@ -70,17 +71,26 @@ final class DailyEngineRig {
     private(set) var requests: [ConnectRequest] = []
     /// What the target allows a ring to prepare.
     var ringPreparation: RingPreparation = .none
+    /// The output port the session reports, as iOS's route; nil reports none.
+    var outputPort: AVAudioSession.Port?
+    /// The audio devices each new Daily session lists.
+    var mics: [String] = []
+    /// While true, the target's credential fetch waits for `releaseCredentials()`.
+    var holdsCredentials = false
+    private var pendingCredentials: CheckedContinuation<Void, Never>?
 
     init(
         joinTimeout: Duration? = .seconds(30),
-        minimumOutgoingConnecting: Duration = .zero
+        minimumOutgoingConnecting: Duration = .zero,
+        defaultsToSpeaker: Bool = false
     ) {
         let sleeper = sleeper
         engine = CallEngine.simulated(
             configuration: CallEngineConfiguration(
                 ringTimeout: nil,
                 joinTimeout: joinTimeout,
-                minimumOutgoingConnectingDuration: minimumOutgoingConnecting
+                minimumOutgoingConnectingDuration: minimumOutgoingConnecting,
+                defaultsToSpeaker: defaultsToSpeaker
             ),
             system: system,
             sleep: { await sleeper.sleep($0) }
@@ -98,6 +108,7 @@ final class DailyEngineRig {
             makeTransport: { [unowned self] in makeTransport() },
             connect: { [unowned self] request in
                 requests.append(request)
+                if holdsCredentials { await withCheckedContinuation { pendingCredentials = $0 } }
                 return Self.room(requests.count)
             }
         )
@@ -111,6 +122,7 @@ final class DailyEngineRig {
         let transport = PipecatDailyTransport(
             makePipecatTransport: { [unowned self] in
                 let fake = FakePipecatTransport()
+                fake.mics = mics
                 pipecats.append(fake)
                 return fake
             },
@@ -123,11 +135,22 @@ final class DailyEngineRig {
                 let control = FakeDailyCallControl(transport: transport as! FakePipecatTransport)
                 controls.append(control)
                 return control
-            }
+            },
+            readOutputPort: { [unowned self] in outputPort }
         )
         transports.append(transport)
         return transport
     }
+
+    /// Lets a held credential fetch return.
+    func releaseCredentials() {
+        holdsCredentials = false
+        pendingCredentials?.resume()
+        pendingCredentials = nil
+    }
+
+    /// Whether a credential fetch is waiting for `releaseCredentials()`.
+    var isHoldingCredentials: Bool { pendingCredentials != nil }
 
     /// The Pipecat transport of the adapter's current session.
     var pipecat: FakePipecatTransport? { pipecats.last }

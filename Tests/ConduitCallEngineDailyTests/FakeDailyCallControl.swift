@@ -3,8 +3,9 @@
 //  ConduitCallEngineDailyTests
 //
 //  Stands in for the Daily call client behind a session's Pipecat transport. Each
-//  subscription change is recorded in the fake Pipecat transport's call log
-//  ("agent audio <state>"), so tests see it in order with the join and the leave.
+//  subscription change and preferred-device request is recorded in the fake Pipecat
+//  transport's call log ("agent audio <state>", "prefer <route>"), so tests see it
+//  in order with the join and the leave.
 //
 
 import Foundation
@@ -45,4 +46,21 @@ final class FakeDailyCallControl: DailyCallControlling {
     }
 
     var remoteAudioDescription: String { "fake" }
+
+    /// What Daily reports as its preferred device: the last route it accepted, until
+    /// a test makes Daily drop it.
+    var preferredAudioRoute: DailyAudioRoute?
+    /// Preferred-device requests are refused while set.
+    var refusesRoutes = false
+    /// Each preferred-device request suspends this many times before completing.
+    var routeSuspensions = 0
+
+    func setPreferredAudioRoute(_ route: DailyAudioRoute) async throws {
+        for _ in 0..<routeSuspensions { await Task.yield() }
+        if refusesRoutes { throw Refused() }
+        transport.record("prefer \(route)")
+        preferredAudioRoute = route
+    }
+
+    var audioRouteDescription: String { "fake" }
 }

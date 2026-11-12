@@ -47,6 +47,10 @@ final class FakePipecatTransport: Transport {
     private(set) var remoteAudio: DailyRemoteAudio?
     /// Whether this join sent client-ready (Pipecat resets it when the call is left).
     private(set) var sentClientReady = false
+    /// The ids of the audio devices Daily lists (`earpiece`, `speakerphone`, ...).
+    var mics: [String] = []
+    /// Runs inside each join, as Daily's own work at the join does.
+    var onJoin: (() -> Void)?
 
     required init() {}
 
@@ -88,19 +92,45 @@ final class FakePipecatTransport: Transport {
     }
 
     func initialize(options: PipecatClientOptions) {}
-    func initDevices() async throws {}
+
+    /// Reports the device list, as Pipecat's Daily transport does when it initializes
+    /// its devices, the first connect's first step.
+    func initDevices() async throws {
+        if !mics.isEmpty { delegate?.onAvailableMicsUpdated(mics: getAllMics()) }
+    }
+
+    /// Daily's device list changed to `ids`.
+    func announceMics(_ ids: [String]) {
+        mics = ids
+        delegate?.onAvailableMicsUpdated(mics: getAllMics())
+    }
 
     func release() {
         calls.append("release")
     }
 
     func connect(transportParams: TransportConnectionParams?) async throws {
-        calls.append("connect")
+        calls.append(Self.joinDevice(transportParams).map { "connect preferring \($0)" } ?? "connect")
+        onJoin?()
         setState(state: joinsOnConnect ? .connected : .connecting)
         if joinsOnConnect, isBotPresent {
             delegate?.onBotConnected(participant: Participant(id: ParticipantId(id: "bot"), name: "bot", local: false))
         }
         sendClientReadyIfPlayable()
+    }
+
+    /// The device the join's microphone input names: the only string in the join
+    /// settings `PipecatDailyTransport` builds (Pipecat keeps them private).
+    private static func joinDevice(_ params: TransportConnectionParams?) -> String? {
+        guard let params,
+              let settings = Mirror(reflecting: params).children.first(where: { $0.label == "joinSettings" })?.value
+        else { return nil }
+        return strings(in: settings).first
+    }
+
+    private static func strings(in value: Any) -> [String] {
+        if let string = value as? String { return [string] }
+        return Mirror(reflecting: value).children.flatMap { strings(in: $0.value) }
     }
 
     /// The pending join completes (for a fake made with `joinsOnConnect` false).
@@ -125,7 +155,9 @@ final class FakePipecatTransport: Transport {
         setState(state: .disconnected)
     }
 
-    func getAllMics() -> [MediaDeviceInfo] { [] }
+    func getAllMics() -> [MediaDeviceInfo] {
+        mics.map { MediaDeviceInfo(id: MediaDeviceId(id: $0), name: $0) }
+    }
     func getAllCams() -> [MediaDeviceInfo] { [] }
     func updateMic(micId: MediaDeviceId) async throws {}
     func updateCam(camId: MediaDeviceId) async throws {}
