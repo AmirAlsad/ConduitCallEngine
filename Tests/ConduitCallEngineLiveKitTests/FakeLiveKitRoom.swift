@@ -43,6 +43,9 @@ final class FakeLiveKitRoom: LiveKitRoomControlling {
     var holdsSetUp = false
     /// Whether `connect` waits while `.connecting` until `completeJoin()`.
     var holdsJoin = false
+    /// Whether a held join ignores its task's cancellation until `completeJoin()`,
+    /// as a join deep in LiveKit's connect sequence can for a while.
+    var holdsJoinThroughCancellation = false
     /// Whether the agent is in the room a join enters.
     var agentWaitsInRoom = true
     /// When set, publishing fails with it.
@@ -73,7 +76,9 @@ final class FakeLiveKitRoom: LiveKitRoomControlling {
             await withTaskCancellationHandler {
                 await withCheckedContinuation { joinWaiter = $0 }
             } onCancel: {
-                Task { @MainActor in self.completeJoin() }
+                Task { @MainActor in
+                    if !self.holdsJoinThroughCancellation { self.completeJoin() }
+                }
             }
         }
         do {

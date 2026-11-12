@@ -58,6 +58,9 @@ public final class LiveKitTransport: CallTransport {
     /// Counts `disconnect()` calls, so a connect that waited for an earlier join to
     /// end can tell the host left meanwhile.
     private var disconnectCount = 0
+    /// Counts `connect(_:)` calls, so of two connects waiting for the same earlier
+    /// join to end, only the newer one joins.
+    private var connectCount = 0
 
     public convenience init() {
         // Manual audio: CallKit owns the AVAudioSession; the engine starts only
@@ -99,6 +102,8 @@ public final class LiveKitTransport: CallTransport {
 
     public func connect(_ connection: CallConnection) async throws {
         let disconnects = disconnectCount
+        connectCount += 1
+        let generation = connectCount
         if let previous = join {
             Log.info(.transport, "LiveKit connect: superseding the join still in flight")
             // The cancelled join's cleanup reports its room's participants leaving; that
@@ -108,6 +113,9 @@ public final class LiveKitTransport: CallTransport {
             _ = await previous.task.result
             guard disconnectCount == disconnects else {
                 throw TransportError.connectionFailed("LiveKit transport was disconnected")
+            }
+            guard connectCount == generation else {
+                throw TransportError.connectionFailed("LiveKit connect superseded by a newer one")
             }
         }
         let plan = roomEvents.gate.planConnect(
