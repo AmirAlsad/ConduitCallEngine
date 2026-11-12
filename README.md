@@ -161,7 +161,7 @@ struct CallScreen: View {
 - **An agent that joins the room.** The engine reports a call as connected only once the agent is present and ready. See [Integration Guide, section 11](Docs/IntegrationGuide.md#11-what-the-server-side-must-do).
 - **VoIP token delivery.** The engine hands you the PushKit token; getting it to your server is your code.
 - **The server that rings the app.** It sends APNs VoIP pushes in the shape described in [Docs/PushContract.md](Docs/PushContract.md).
-- **Any in-app UI, call history, and missed-call notifications.** Drive them from `CallEngine`'s observable state and the delegate callbacks.
+- **Any in-app UI, call history, missed-call notifications and call sounds.** Drive them from `CallEngine`'s observable state and the delegate callbacks. The engine plays nothing, but tells you when a ringback, a "retrying" loop or a "connected" sound belongs through `callEngine(_:cue:)` (see [Integration Guide, section 9](Docs/IntegrationGuide.md#cues)).
 - **Project configuration.** Capabilities, background modes and usage descriptions; see [Integration Guide, section 3](Docs/IntegrationGuide.md#3-project-setup).
 
 ## Device-only reality

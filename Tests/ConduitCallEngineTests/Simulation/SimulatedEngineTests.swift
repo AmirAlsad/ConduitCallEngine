@@ -19,6 +19,7 @@ private final class RecordingHost: CallEngineDelegate {
     var bearer: String?
     private(set) var states: [CallState] = []
     private(set) var records: [CallRecord] = []
+    private(set) var cues: [CallCue] = []
 
     func callEngine(_ engine: CallEngine, targetForIncomingCall call: IncomingCall) -> CallTarget? {
         targets[call.targetID]
@@ -26,6 +27,10 @@ private final class RecordingHost: CallEngineDelegate {
 
     func callEngine(_ engine: CallEngine, didChangeStateFrom old: CallState, to new: CallState) {
         states.append(new)
+    }
+
+    func callEngine(_ engine: CallEngine, cue: CallCue) {
+        cues.append(cue)
     }
 
     func callEngine(_ engine: CallEngine, didFinish record: CallRecord) {
@@ -109,6 +114,21 @@ struct SimulatedEngineTests {
         #expect(engine.state == .connected(since: now))
         #expect(system.startedCallIDs.count == 1)
         #expect(host.states == [.dialing, .connecting, .connected(since: now)])
+    }
+
+    @Test func cuesReachTheHost() async throws {
+        await engine.placeCall(target)
+        #expect(engine.repeatingCue == .connecting)
+        #expect(system.deliverTransportEvent(.connected))
+        #expect(system.deliverTransportEvent(.disconnected(reason: .networkDropped)))
+        #expect(engine.repeatingCue == .retrying)
+        await engine.endCall()
+
+        #expect(host.cues == [
+            .start(.connecting), .stop, .moment(.connected),
+            .moment(.connectionLost), .start(.retrying), .stop,
+        ])
+        #expect(engine.repeatingCue == nil)
     }
 
     @Test func rejectedOutgoingStartFailsTheCall() async {

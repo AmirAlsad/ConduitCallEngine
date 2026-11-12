@@ -3,7 +3,7 @@
 //  ConduitCallEngine
 //
 //  The host's side of the call engine: it resolves incoming targets, observes
-//  state transitions, records finished calls, and
+//  state transitions and cues, records finished calls, and
 //  supplies the bearer for ring-status receipts. Every call is synchronous and on
 //  the main actor, in the order the engine makes the change, so a host sees each
 //  transition in the same turn as the state assignment.
@@ -26,6 +26,10 @@ public protocol CallEngineDelegate: AnyObject {
     func callEngine(_ engine: CallEngine, targetForIncomingCall call: IncomingCall) -> CallTarget?
     /// Only on real assignments, after the engine's own field batch for that transition.
     func callEngine(_ engine: CallEngine, didChangeStateFrom old: CallState, to new: CallState)
+    /// A moment to mark with the host's own sound or speech; see `CallCue` for the
+    /// guarantees. Called right after the `didChangeStateFrom:to:` of the change
+    /// that caused it, with `engine.repeatingCue` already updated.
+    func callEngine(_ engine: CallEngine, cue: CallCue)
     func callEngine(_ engine: CallEngine, didFinish record: CallRecord)
     /// Asked at send time, only when the push carried a `status_url`.
     func callEngine(_ engine: CallEngine, ringStatusBearerForTarget id: UUID) -> String?
@@ -35,6 +39,7 @@ public protocol CallEngineDelegate: AnyObject {
 extension CallEngineDelegate {
     public func callEngine(_ engine: CallEngine, targetForIncomingCall call: IncomingCall) -> CallTarget? { nil }
     public func callEngine(_ engine: CallEngine, didChangeStateFrom old: CallState, to new: CallState) {}
+    public func callEngine(_ engine: CallEngine, cue: CallCue) {}
     public func callEngine(_ engine: CallEngine, didFinish record: CallRecord) {}
     public func callEngine(_ engine: CallEngine, ringStatusBearerForTarget id: UUID) -> String? { nil }
     public func callEngine(_ engine: CallEngine, didUpdateVoIPPushToken token: Data) {}

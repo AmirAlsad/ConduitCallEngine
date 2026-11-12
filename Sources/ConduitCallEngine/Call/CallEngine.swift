@@ -43,6 +43,10 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     /// host dismiss a call its user ended at once while still showing other
     /// endings. Cleared on reset.
     public private(set) var endedByUser = false
+    /// The looping cue that should be playing now, if any: the last `CallCue.start`
+    /// not yet followed by a `stop`. Lets a UI that attaches mid-call pick the loop
+    /// up without having seen the cue. Updated before the cue is delivered.
+    public private(set) var repeatingCue: RepeatingCue?
 
     // MARK: - Dependencies
 
@@ -975,6 +979,36 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         state = new
         guard old != new else { return }
         delegate?.callEngine(self, didChangeStateFrom: old, to: new)
+        deliverCues(from: old, to: new)
+    }
+
+    /// Cues are a function of the transition: the loop each state wants, and the
+    /// moments its edges mark. Stopping first and starting last keeps every
+    /// moment outside a loop and at most one loop running.
+    private func deliverCues(from old: CallState, to new: CallState) {
+        let loop: RepeatingCue?
+        switch new {
+        case .connecting: loop = .connecting
+        case .reconnecting: loop = .retrying
+        default: loop = nil
+        }
+        let moment: CallMoment?
+        switch (old, new) {
+        case (.connecting, .connected): moment = .connected
+        case (.reconnecting, .connected): moment = .reconnected
+        case (.connected, .reconnecting): moment = .connectionLost
+        default: moment = nil
+        }
+
+        if repeatingCue != nil, repeatingCue != loop {
+            repeatingCue = nil
+            delegate?.callEngine(self, cue: .stop)
+        }
+        if let moment { delegate?.callEngine(self, cue: .moment(moment)) }
+        if let loop, repeatingCue != loop {
+            repeatingCue = loop
+            delegate?.callEngine(self, cue: .start(loop))
+        }
     }
 
     private func finish(

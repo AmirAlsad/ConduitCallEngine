@@ -98,6 +98,7 @@ A call that reaches `.ended(outcome)` is recorded with the same outcome, so a ho
 | `selectAudioDevice(_:) async` | Route audio to one of `audioDevices`. |
 | `reset()` | Return to idle from a terminal state. |
 | `state`, `activeCall`, `isMuted`, `isBotSpeaking`, `isAudioActivated`, `isInterrupted`, `audioDevices`, `selectedAudioDeviceID`, `endedByUser` | Observable state for your UI. `activeCall` carries the target id, display name and direction of the current call. |
+| `repeatingCue` | The looping cue that should be playing now (`.connecting`, `.retrying`, or nil), for a UI that attaches mid-call. See [Cues](#cues). |
 
 `CallEngineConfiguration` has two settings: `unknownCallerName` (default `"Unknown"`), the name a ring shows when the push carries none, and `isPushToTalkEnabled`, a closure read at each mic decision, so a settings change mid-call takes effect on the next one.
 
@@ -109,6 +110,7 @@ Every callback is synchronous and on the main actor, made in the order the engin
 |---|---|---|
 | `callEngine(_:targetForIncomingCall:)` | Once per push (not for a duplicate of the call in progress), after the CallKit report is issued: inside the push handling for a ring, or once CallKit has answered the report for a push that arrives during another call. Return the `CallTarget`, or nil for an unknown target (the ring is then ended and recorded as failed, and the engine returns to idle). | nil, so every ring is ended. Implement it if you take incoming calls. |
 | `callEngine(_:didChangeStateFrom:to:)` | On every real state change, after the engine has set the transition's other fields, so `activeCall` and the rest are consistent when you read them. Not called when the state is set to the value it already has. | nothing |
+| `callEngine(_:cue:)` | A moment to mark with your own sound or speech, right after the state change that caused it. See [Cues](#cues). | nothing |
 | `callEngine(_:didFinish:)` | Once per call, when it reaches its end: ended, failed, busy ring, Focus-filtered ring, a ring that could not proceed, a CallKit provider reset. Not for a malformed push. | nothing |
 | `callEngine(_:ringStatusBearerForTarget:)` | When a receipt is about to be sent, only for pushes that carried `status_url` and whose target your delegate resolved. Return the bearer for the `Authorization` header, or nil for none. | nil |
 | `callEngine(_:didUpdateVoIPPushToken:)` | When PushKit issues or rotates the VoIP token. | nothing |
@@ -292,7 +294,43 @@ Here `agents` and `callTarget(inline:)` are your own: the latter builds a `CallT
 
 **In-call UI.** Present your call screen while `engine.state.isActive` is true. That excludes `.incomingRinging`, where CallKit's ring is the interface, and includes terminal states, so a failed call can stay on screen with its reason until the user closes it; call `reset()` on dismiss. When the user taps End, call `markEndedByUser()` and dismiss in the same transaction, then `await engine.endCall()`; `endedByUser` lets you tell a call your user ended in-app (dismiss at once) from a remote end or failure (show a result). It is set only by `markEndedByUser()` and `endCall()`: a call ended from the system UI, such as the lock screen, leaves it false. A ring that ends before the user takes it, including one for an unknown target, never makes the state active. Name the call from `activeCall?.displayName`.
 
-**Cues from transitions.** `didChangeStateFrom:to:` is synchronous and ordered, so it is the place for spoken or audible cues and anything else that must match the state exactly. A typical outgoing call delivers `idle -> dialing`, `dialing -> connecting`, `connecting -> connected`, then `connected -> ended(.completed)`. A drop delivers `connected -> reconnecting(attempt: 1)` and, on recovery, `reconnecting -> connected`. `reconnecting(attempt: 0)` means the transport is healing itself and the engine has spent no retry: a short interruption delivers `connected -> reconnecting(attempt: 0)` and then `reconnecting -> connected`, or, if the transport gives up or has not recovered within 30 seconds, `reconnecting(attempt: 0) -> reconnecting(attempt: 1)` and the engine's own retries. Both adapters report short interruptions this way. A ring that arrives while a finished call is still terminal delivers `ended -> idle -> incomingRinging`.
+**Transitions.** `didChangeStateFrom:to:` is synchronous and ordered, so it is the place for anything that must match the state exactly. A typical outgoing call delivers `idle -> dialing`, `dialing -> connecting`, `connecting -> connected`, then `connected -> ended(.completed)`. A drop delivers `connected -> reconnecting(attempt: 1)` and, on recovery, `reconnecting -> connected`. `reconnecting(attempt: 0)` means the transport is healing itself and the engine has spent no retry: a short interruption delivers `connected -> reconnecting(attempt: 0)` and then `reconnecting -> connected`, or, if the transport gives up or has not recovered within 30 seconds, `reconnecting(attempt: 0) -> reconnecting(attempt: 1)` and the engine's own retries. Both adapters report short interruptions this way. A ring that arrives while a finished call is still terminal delivers `ended -> idle -> incomingRinging`. For sounds, use cues instead of deriving them from these sequences.
+
+<a id="cues"></a>**Cues.** The engine plays no sound. It tells you the moments at which you would play your own, through `callEngine(_:cue:)`:
+
+| `CallCue` | When |
+|---|---|
+| `.start(.connecting)` | The call moved to `.connecting` (placed and accepted by CallKit, or answered). Loop a ringback until `.stop`. |
+| `.start(.retrying)` | The connection dropped (`.connected` to `.reconnecting`). Loop a "retrying" sound until `.stop`. |
+| `.stop` | End the loop that is running. |
+| `.moment(.connected)` | The call connected for the first time. |
+| `.moment(.reconnected)` | The call came back after an outage. |
+| `.moment(.connectionLost)` | The connection dropped. Once per outage, followed by `.start(.retrying)`. |
+| `.moment(.held)`, `.moment(.resumed)` | Reserved for call hold; not delivered in this version. |
+
+What the engine guarantees, so you need no bookkeeping of your own:
+
+- At most one loop runs at a time. Every `.start` is followed by exactly one `.stop` before the next `.start`, before `.moment(.connected)` or `.moment(.reconnected)`, and no later than the transition that ends the call, whatever ends it (a hangup, a failure, an exhausted retry budget, a CallKit provider reset).
+- `.moment(.connectionLost)` comes once per outage, also when a transport's own healing escalates to the engine's retries (`reconnecting(attempt: 0) -> reconnecting(attempt: 1)` is not a second outage).
+- A ring that is never answered (declined, timed out, cancelled, filtered by Focus, busy, or ended before it could proceed) produces no cues; CallKit's ringtone is the only sound.
+- Cues arrive synchronously on the main actor, right after the `didChangeStateFrom:to:` of the same change and after that change's ring-status receipt (so `answered` is sent before the ringback starts). `engine.repeatingCue` is already updated when a cue arrives.
+
+A host that speaks its cues:
+
+```swift
+func callEngine(_ engine: CallEngine, cue: CallCue) {
+    switch cue {
+    case .start(.connecting): announcer.startRepeating(.connecting)
+    case .start(.retrying): announcer.startRepeating(.retrying)
+    case .stop: announcer.stopRepeating()
+    case .moment(.connected), .moment(.reconnected): announcer.announce(.connected)
+    case .moment(.connectionLost): announcer.announce(.disconnected)
+    case .moment(.held), .moment(.resumed): break
+    }
+}
+```
+
+`announcer` is yours. Play cues into the session as CallKit configured it (see [section 4](#4-audio-session-ownership)); a call screen that appears mid-call can start the loop `engine.repeatingCue` names.
 
 **Missed calls.** The engine posts no notifications. A record with a non-nil `missedReason` is a ring the user never saw: `.busy` (another call was up) or `.filteredByFocus`. Post a local notification for it if you want the user to know. Provisional notification authorization lets you deliver these quietly without an upfront permission prompt.
 

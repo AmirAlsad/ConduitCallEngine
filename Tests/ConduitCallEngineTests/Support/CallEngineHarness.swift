@@ -132,9 +132,12 @@ final class RecordingCallEngineDelegate: CallEngineDelegate {
         case resolve(IncomingCall)
         case bearer(UUID)
         case pushToken(Data)
+        case cue(CallCue)
     }
 
     private(set) var events: [Event] = []
+    /// `engine.repeatingCue` as the delegate read it at each cue, in cue order.
+    private(set) var repeatingCueAtEachCue: [RepeatingCue?] = []
     var log: EventLog?
     var targets: [UUID: CallTarget] = [:]
     var bearers: [UUID: String] = [:]
@@ -155,6 +158,36 @@ final class RecordingCallEngineDelegate: CallEngineDelegate {
         events.compactMap { if case .resolve(let call) = $0 { return call } else { return nil } }
     }
 
+    var cues: [CallCue] {
+        events.compactMap { if case .cue(let cue) = $0 { return cue } else { return nil } }
+    }
+
+    /// Every way the cues delivered so far break `CallCue`'s guarantees: a start
+    /// while a loop runs, a stop with none running, a connected moment inside a
+    /// loop, or `repeatingCue` disagreeing with the last start or stop.
+    var cueViolations: [String] {
+        var violations: [String] = []
+        var running: RepeatingCue?
+        for (index, cue) in cues.enumerated() {
+            switch cue {
+            case .start(let loop):
+                if let running { violations.append("#\(index) start(\(loop)) while \(running) runs") }
+                running = loop
+            case .stop:
+                if running == nil { violations.append("#\(index) stop with no loop running") }
+                running = nil
+            case .moment(let moment):
+                if let running, moment == .connected || moment == .reconnected {
+                    violations.append("#\(index) \(moment) while \(running) runs")
+                }
+            }
+            if repeatingCueAtEachCue[index] != running {
+                violations.append("#\(index) repeatingCue was \(String(describing: repeatingCueAtEachCue[index]))")
+            }
+        }
+        return violations
+    }
+
     var bearerRequests: [UUID] {
         events.compactMap { if case .bearer(let id) = $0 { return id } else { return nil } }
     }
@@ -168,6 +201,12 @@ final class RecordingCallEngineDelegate: CallEngineDelegate {
     func callEngine(_ engine: CallEngine, didChangeStateFrom old: CallState, to new: CallState) {
         events.append(.transition(from: old, to: new))
         log?.append("T(\(old.label)→\(new.label))")
+    }
+
+    func callEngine(_ engine: CallEngine, cue: CallCue) {
+        events.append(.cue(cue))
+        repeatingCueAtEachCue.append(engine.repeatingCue)
+        log?.append("cue(\(cue.label))")
     }
 
     func callEngine(_ engine: CallEngine, didFinish record: CallRecord) {
@@ -306,6 +345,17 @@ extension CallState {
         case .reconnecting(let attempt): "reconnecting(\(attempt))"
         case .ended(let outcome): "ended(\(outcome.rawValue))"
         case .failed(let reason): "failed(\(reason.rawValue))"
+        }
+    }
+}
+
+extension CallCue {
+    /// A short label for event logs, e.g. `start(connecting)`, `stop`, `connected`.
+    var label: String {
+        switch self {
+        case .start(let loop): "start(\(loop))"
+        case .stop: "stop"
+        case .moment(let moment): "\(moment)"
         }
     }
 }

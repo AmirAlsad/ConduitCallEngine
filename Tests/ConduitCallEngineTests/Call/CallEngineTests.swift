@@ -51,7 +51,9 @@ struct CallEngineTests {
         h.engine.handle(.connected)
 
         // CallKit's timer starts before the host's "Connected" cue.
-        #expect(Array(h.log.entries.suffix(2)) == ["reported-connected", "T(connecting→connected)"])
+        #expect(Array(h.log.entries.suffix(4)) == [
+            "reported-connected", "T(connecting→connected)", "cue(stop)", "cue(connected)",
+        ])
     }
 
     @Test func connectedTransitionsAndReportsConnected() async throws {
