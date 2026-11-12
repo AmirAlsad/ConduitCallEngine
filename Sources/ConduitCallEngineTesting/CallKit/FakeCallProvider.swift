@@ -5,6 +5,8 @@
 //  Fake conforming to `CallProviding`, plus `FakeAudioSession` for driving
 //  the activation handshake. A test drives the system → engine direction
 //  (`simulateActivate`, `simulateEndCall`, …) and asserts on what was reported.
+//  Like CallKit, it holds the ids of the calls it has and refuses to report an
+//  incoming call under an id it already holds (`.duplicateCallID`).
 //
 
 import Foundation
@@ -25,10 +27,14 @@ package final class FakeCallProvider: CallProviding {
     package private(set) var endRequests: [UUID] = []
     package private(set) var reportedEnded: [(id: UUID, reason: CallEndReason)] = []
     package private(set) var muteStates: [UUID: Bool] = [:]
+    /// The calls CallKit holds: started or successfully reported, and not yet
+    /// ended by the engine, the system UI or a reset.
+    package private(set) var liveCallIDs: Set<UUID> = []
 
     /// When set, the next `startOutgoingCall` throws this.
     package var startError: Error?
-    /// When set, `reportIncomingCall` completes with this error.
+    /// When set, `reportIncomingCall` completes with this error. A report under an
+    /// id in `liveCallIDs` completes with `.duplicateCallID` regardless.
     package var reportIncomingError: IncomingCallReportError?
     /// When true, `reportIncomingCall` holds its completion until
     /// `completeIncomingReports()` (real CallKit completes later); when false it
@@ -68,6 +74,7 @@ package final class FakeCallProvider: CallProviding {
             await withCheckedContinuation { startContinuations.append($0) }
         }
         if let startError { throw startError }
+        liveCallIDs.insert(id)
         startedCalls.append(id)
         startedHandles.append(handle)
         return id
@@ -80,7 +87,8 @@ package final class FakeCallProvider: CallProviding {
         completion: @escaping @MainActor (IncomingCallReportError?) -> Void
     ) {
         onEvent?("report")
-        let error = reportIncomingError
+        let error: IncomingCallReportError? = liveCallIDs.contains(id) ? .duplicateCallID : reportIncomingError
+        if error == nil { liveCallIDs.insert(id) }
         reportedIncoming.append((id, handle, displayName))
         let complete: @MainActor () -> Void = { [weak self] in
             self?.onEvent?("report-completed")
@@ -113,11 +121,13 @@ package final class FakeCallProvider: CallProviding {
     package func endCall(_ id: UUID) async {
         onEvent?("end-request")
         endRequests.append(id)
+        liveCallIDs.remove(id)
     }
 
     package func reportCallEnded(_ id: UUID, reason: CallEndReason) {
         onEvent?("ended(\(reason))")
         reportedEnded.append((id, reason))
+        liveCallIDs.remove(id)
     }
     package func setMuted(_ id: UUID, muted: Bool) async { muteStates[id] = muted }
 
@@ -132,9 +142,15 @@ package final class FakeCallProvider: CallProviding {
     }
 
     package func simulateAnswerCall(_ id: UUID) { delegate?.providerPerformAnswerCall(id) }
-    package func simulateEndCall(_ id: UUID) { delegate?.providerPerformEndCall(id) }
+    package func simulateEndCall(_ id: UUID) {
+        liveCallIDs.remove(id)
+        delegate?.providerPerformEndCall(id)
+    }
     package func simulateSetMuted(_ id: UUID, muted: Bool) { delegate?.providerPerformSetMuted(id, muted: muted) }
-    package func simulateReset() { delegate?.providerWasReset() }
+    package func simulateReset() {
+        liveCallIDs.removeAll()
+        delegate?.providerWasReset()
+    }
 }
 
 @MainActor

@@ -57,7 +57,14 @@ struct SimulatedEngineTests {
 
     init() {
         let now = now
-        engine = CallEngine.simulated(system: system, now: { now }, sleep: { _ in })
+        // A sleep that returns at once would also end every ring at once, so this
+        // suite runs without a ring timeout; the timeout tests bring their own sleep.
+        engine = CallEngine.simulated(
+            configuration: CallEngineConfiguration(ringTimeout: nil),
+            system: system,
+            now: { now },
+            sleep: { _ in }
+        )
         engine.delegate = host
         host.targets[targetID] = target
         engine.startPushRegistration()
@@ -183,6 +190,50 @@ struct SimulatedEngineTests {
 
         #expect(system.deliverTransportEvent(.connected))
         #expect(engine.state == .connected(since: now))
+    }
+
+    @Test func anUnansweredRingTimesOutOnTheHostsClock() async throws {
+        let system = SimulatedCallSystem()
+        let sleeper = ManualSleeper()
+        let engine = CallEngine.simulated(system: system, sleep: { await sleeper.sleep($0) })
+        engine.delegate = host
+        engine.startPushRegistration()
+        let callID = UUID()
+        system.deliverPush([
+            "target_id": targetID.uuidString,
+            "call_id": callID.uuidString,
+            "status_url": statusURL.absoluteString,
+            "ring_timeout": "30",
+        ]) {}
+        await settle { sleeper.pendingCount == 1 }
+        #expect(sleeper.requested == [.seconds(30)])
+
+        sleeper.wakeAll()
+        await settle { engine.state == .idle }
+
+        #expect(engine.state == .idle)
+        #expect(host.records.map(\.missedReason) == [.ringTimedOut])
+        #expect(host.records.first?.missedReason?.reachedUser == true)
+        #expect(system.ringReceipts.map(\.status) == ["unanswered"])
+        #expect(host.cues.isEmpty)
+    }
+
+    @Test func aCancelPushEndsTheRing() async throws {
+        let callID = UUID()
+        #expect(ring(callID: callID))
+        var completed = false
+
+        system.deliverPush(["action": "cancel", "call_id": callID.uuidString]) { completed = true }
+
+        #expect(completed)
+        #expect(engine.state == .idle)
+        #expect(system.reportedIncomingCalls.map(\.id) == [callID, callID])
+        #expect(host.records.map(\.missedReason) == [.canceledByCaller])
+        #expect(system.ringReceipts.map(\.status) == ["canceled"])
+    }
+
+    @Test func theEngineAdvertisesItsPushFeatures() {
+        #expect(CallEngine.supportedPushFeatures.isSuperset(of: ["cancel", "ring_timeout"]))
     }
 
     @Test func ringFilteredByFocusIsRecordedAsMissed() {

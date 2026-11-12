@@ -32,6 +32,10 @@ public final class SimulatedCallSystem {
         case rings
         /// Focus / Do Not Disturb suppressed the ring.
         case filteredByFocus
+        /// CallKit already has a call with this id. The simulated system also
+        /// answers this on its own, whatever this property says, for an id it
+        /// holds: a call started or reported and not yet ended.
+        case duplicateCallID
         /// The report failed for another reason.
         case fails(String)
     }
@@ -41,6 +45,7 @@ public final class SimulatedCallSystem {
             switch provider.reportIncomingError {
             case nil: .rings
             case .filteredByFocus: .filteredByFocus
+            case .duplicateCallID: .duplicateCallID
             case .failed(let message): .fails(message)
             }
         }
@@ -48,6 +53,7 @@ public final class SimulatedCallSystem {
             switch newValue {
             case .rings: provider.reportIncomingError = nil
             case .filteredByFocus: provider.reportIncomingError = .filteredByFocus
+            case .duplicateCallID: provider.reportIncomingError = .duplicateCallID
             case .fails(let message): provider.reportIncomingError = .failed(message)
             }
         }
@@ -204,7 +210,7 @@ public final class SimulatedCallSystem {
 
     /// A ring-status receipt the engine sent.
     public struct RingReceipt: Equatable, Sendable {
-        /// `answered`, `declined`, `busy`, or `suppressed_by_focus`.
+        /// `answered`, `declined`, `busy`, `suppressed_by_focus`, `unanswered` or `canceled`.
         public let status: String
         public let callID: UUID
         public let endpoint: URL

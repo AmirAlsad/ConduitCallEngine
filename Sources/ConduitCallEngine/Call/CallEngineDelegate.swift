@@ -13,7 +13,8 @@ import Foundation
 
 @MainActor
 public protocol CallEngineDelegate: AnyObject {
-    /// Once per push (not for a duplicate of the call in progress), after its
+    /// Once per ring push (not for a duplicate of the call in progress, a cancel
+    /// push, or a ring whose cancel already arrived), after its
     /// CallKit report is issued: synchronously for a ring
     /// (CallKit may not have accepted the report yet), or once CallKit has answered
     /// the report for a push that arrives during another call. nil means the target is
@@ -30,6 +31,10 @@ public protocol CallEngineDelegate: AnyObject {
     /// guarantees. Called right after the `didChangeStateFrom:to:` of the change
     /// that caused it, with `engine.repeatingCue` already updated.
     func callEngine(_ engine: CallEngine, cue: CallCue)
+    /// Once per call that ends, and once per ring that ends without an answer
+    /// (declined, busy, filtered by Focus, timed out, cancelled by the caller, or
+    /// unable to proceed). Not for a malformed push, a cancel push, or a ring whose
+    /// cancel already arrived.
     func callEngine(_ engine: CallEngine, didFinish record: CallRecord)
     /// Asked at send time, only when the push carried a `status_url`.
     func callEngine(_ engine: CallEngine, ringStatusBearerForTarget id: UUID) -> String?

@@ -75,6 +75,9 @@ final class SystemCallProvider: NSObject, CallProviding, CXProviderDelegate {
             if let cxError = error as? CXErrorCodeIncomingCallError,
                cxError.code == .filteredByDoNotDisturb {
                 result = .filteredByFocus
+            } else if let cxError = error as? CXErrorCodeIncomingCallError,
+                      cxError.code == .callUUIDAlreadyExists {
+                result = .duplicateCallID
             } else if let error {
                 result = .failed(String(describing: error))
             } else {

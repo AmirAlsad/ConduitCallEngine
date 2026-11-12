@@ -18,6 +18,9 @@ package enum IncomingCallReportError: Error, Equatable, Sendable {
     /// The system suppressed the ring (Focus/DND). Not a failure: the caller
     /// records a missed call instead of entering a failed state.
     case filteredByFocus
+    /// CallKit already has a call with this id (`callUUIDAlreadyExists`), so the
+    /// report created nothing.
+    case duplicateCallID
     case failed(String)
 }
 

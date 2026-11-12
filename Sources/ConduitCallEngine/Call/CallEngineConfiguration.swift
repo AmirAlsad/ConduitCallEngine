@@ -12,12 +12,23 @@ public struct CallEngineConfiguration {
     /// The caller name a ring shows when the push carries none.
     public var unknownCallerName: String
     public var isPushToTalkEnabled: @MainActor () -> Bool
+    /// How long an incoming call rings before the engine ends it as unanswered:
+    /// CallKit is told `.unanswered`, the host gets a `CallRecord` with
+    /// `missedReason: .ringTimedOut`, and an `unanswered` receipt is sent when the
+    /// push asked for receipts. Measured from the push, with the engine's injected
+    /// sleep. A push's `ring_timeout` can shorten it (to no less than 10 seconds)
+    /// but never lengthen it. nil sets no limit of the engine's own: the ring then
+    /// lasts until it is answered, declined or cancelled, unless the push carries
+    /// `ring_timeout`, which still applies. Default 60 seconds.
+    public var ringTimeout: Duration?
 
     public init(
         unknownCallerName: String = "Unknown",
-        isPushToTalkEnabled: @escaping @MainActor () -> Bool = { false }
+        isPushToTalkEnabled: @escaping @MainActor () -> Bool = { false },
+        ringTimeout: Duration? = .seconds(60)
     ) {
         self.unknownCallerName = unknownCallerName
         self.isPushToTalkEnabled = isPushToTalkEnabled
+        self.ringTimeout = ringTimeout
     }
 }

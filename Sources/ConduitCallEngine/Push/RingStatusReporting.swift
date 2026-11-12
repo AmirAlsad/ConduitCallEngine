@@ -4,7 +4,8 @@
 //
 //  Reports an inbound ring's terminal status to the push's `status_url`, when it
 //  carried one, so the server that rang learns whether the ring was answered,
-//  declined, arrived mid-call, or was suppressed by Focus/DND. The receipt is a
+//  declined, arrived mid-call, was suppressed by Focus/DND, rang out, or was
+//  withdrawn by the caller. The receipt is a
 //  JSON POST of `call_id` and `status`, with the host's bearer when it supplies
 //  one. Fire-and-forget: a receipt never blocks or fails call handling. Receipts
 //  reveal Focus and busy state to that server.
@@ -17,6 +18,8 @@ package enum RingStatus: String, Sendable {
     case declined
     case busy
     case suppressedByFocus = "suppressed_by_focus"
+    case unanswered
+    case canceled
 }
 
 @MainActor

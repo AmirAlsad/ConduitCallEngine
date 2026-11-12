@@ -2,8 +2,9 @@
 //  IncomingCallPayloadTests.swift
 //  ConduitCallEngineTests
 //
-//  Parsing the VoIP push dictionary into a typed payload: required agent id, the
-//  optional call id, and the optional inline room credentials (the hybrid path).
+//  Parsing the VoIP push dictionary into a typed payload: what the push asks for
+//  (`action`), the required agent id, the optional call id, ring timeout and
+//  inline room credentials (the hybrid path).
 //
 
 import Foundation
@@ -107,5 +108,76 @@ struct IncomingCallPayloadTests {
         ]))
         #expect(empty.displayName == nil)
         #expect(empty.handle == nil)
+    }
+
+    // MARK: - ring_timeout
+
+    @Test(arguments: [("45", 45), ("10", 10), ("1", 1)])
+    func parsesRingTimeoutSeconds(raw: String, seconds: Int) throws {
+        let payload = try #require(IncomingCallPayload(dictionary: [
+            "target_id": UUID().uuidString, "ring_timeout": raw,
+        ]))
+        #expect(payload.ringTimeoutSeconds == seconds)
+    }
+
+    @Test(arguments: ["", "0", "-5", "12.5", "ten", " 30"])
+    func invalidRingTimeoutIsNil(raw: String) throws {
+        let payload = try #require(IncomingCallPayload(dictionary: [
+            "target_id": UUID().uuidString, "ring_timeout": raw,
+        ]))
+        #expect(payload.ringTimeoutSeconds == nil)
+    }
+
+    @Test func nonStringRingTimeoutIsNil() throws {
+        let payload = try #require(IncomingCallPayload(dictionary: [
+            "target_id": UUID().uuidString, "ring_timeout": 30,
+        ]))
+        #expect(payload.ringTimeoutSeconds == nil)
+    }
+
+    // MARK: - action
+
+    @Test(arguments: [nil, "", "ring"] as [String?])
+    func aRingActionOrNoneIsARing(action: String?) throws {
+        let targetID = UUID()
+        var push: [AnyHashable: Any] = ["target_id": targetID.uuidString]
+        push["action"] = action
+        guard case .ring(let payload) = VoIPPushRequest(dictionary: push) else {
+            Issue.record("expected a ring")
+            return
+        }
+        #expect(payload.targetID == targetID)
+    }
+
+    @Test func aRingWithoutATargetIsMalformed() {
+        #expect(VoIPPushRequest(dictionary: ["action": "ring", "call_id": UUID().uuidString]) == .malformed)
+    }
+
+    @Test func parsesACancel() {
+        let callID = UUID()
+        #expect(VoIPPushRequest(dictionary: [
+            "action": "cancel", "call_id": callID.uuidString, "display_name": "Assistant",
+        ]) == .cancel(CancelCallPayload(callID: callID, displayName: "Assistant")))
+    }
+
+    @Test func aCancelIgnoresAnyTarget() {
+        let callID = UUID()
+        #expect(VoIPPushRequest(dictionary: [
+            "action": "cancel", "call_id": callID.uuidString, "target_id": UUID().uuidString,
+        ]) == .cancel(CancelCallPayload(callID: callID, displayName: nil)))
+    }
+
+    @Test(arguments: [nil, "", "not-a-uuid"] as [String?])
+    func aCancelWithoutAValidCallIDIsMalformed(callID: String?) {
+        var push: [AnyHashable: Any] = ["action": "cancel"]
+        push["call_id"] = callID
+        #expect(VoIPPushRequest(dictionary: push) == .malformed)
+    }
+
+    @Test(arguments: ["Cancel", "hangup", "preconnect"])
+    func anUnknownActionIsMalformed(action: String) {
+        #expect(VoIPPushRequest(dictionary: [
+            "action": action, "target_id": UUID().uuidString, "call_id": UUID().uuidString,
+        ]) == .malformed)
     }
 }

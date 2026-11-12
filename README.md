@@ -160,7 +160,7 @@ struct CallScreen: View {
 - **Credentials.** The `connect` closure: a room URL and token for each call, from your backend or anywhere else. Throw `TransportError.authenticationFailed` for rejected credentials so the call fails as `.badToken` rather than a generic transport error.
 - **An agent that joins the room.** The engine reports a call as connected only once the agent is present and ready. See [Integration Guide, section 11](Docs/IntegrationGuide.md#11-what-the-server-side-must-do).
 - **VoIP token delivery.** The engine hands you the PushKit token; getting it to your server is your code.
-- **The server that rings the app.** It sends APNs VoIP pushes in the shape described in [Docs/PushContract.md](Docs/PushContract.md).
+- **The server that rings the app.** It sends APNs VoIP pushes in the shape described in [Docs/PushContract.md](Docs/PushContract.md), optionally bounds a ring with `ring_timeout` or withdraws it with a cancel push, and learns which of those a device understands from `CallEngine.supportedPushFeatures`, which your app sends it with the token. An unanswered ring ends by itself after 60 seconds unless you configure another `ringTimeout`.
 - **Any in-app UI, call history, missed-call notifications and call sounds.** Drive them from `CallEngine`'s observable state and the delegate callbacks. The engine plays nothing, but tells you when a ringback, a "retrying" loop or a "connected" sound belongs through `callEngine(_:cue:)` (see [Integration Guide, section 9](Docs/IntegrationGuide.md#cues)).
 - **Project configuration.** Capabilities, background modes and usage descriptions; see [Integration Guide, section 3](Docs/IntegrationGuide.md#3-project-setup).
 

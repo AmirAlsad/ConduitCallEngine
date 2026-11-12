@@ -8,8 +8,9 @@
 //  idle → dialing → connecting → connected → (reconnecting ⇄ connected) → ended
 //                                          ↘ failed
 //  incomingRinging → connecting → …  (inbound, after the user answers)
-//  incomingRinging → ended(declined), or → idle when the ring ends before the
-//  user could take it (Focus, an unknown target, a report CallKit refused)
+//  incomingRinging → ended(declined), or → idle when the ring ends without the
+//  user taking it (Focus, an unknown target, a report CallKit refused, a provider
+//  reset, the ring timing out, or the caller cancelling it)
 //
 
 import Foundation

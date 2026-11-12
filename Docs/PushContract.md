@@ -1,10 +1,21 @@
 # Push contract
 
-For whoever builds the server that rings the app. It covers the APNs request, the payload the engine parses, what the user sees, and the ring-status receipts the engine sends back.
+For whoever builds the server that rings the app. It covers the APNs request, the payload the engine parses, what the user sees, how to withdraw a ring, and the ring-status receipts the engine sends back.
 
 The flow: your server sends an APNs VoIP push to a device token the app gave you. The engine reports an incoming call to CallKit straight from the payload, so the phone rings on the lock screen, in the car, or wherever the user is. When the user answers, the engine joins a room, either from credentials in the push or from credentials the app fetches itself. If the push asked for receipts, the engine POSTs the ring's outcome back to you.
 
 How the token reaches your server, and how your server knows which target ids a device accepts, is defined by the app you are working with; see [Integration Guide, section 7](IntegrationGuide.md#7-delivering-the-voip-token-to-your-server).
+
+## Device capabilities
+
+Some payload features are optional and newer than others. An app sends its server the list the engine supports (`CallEngine.supportedPushFeatures`) along with the token. Use a feature only with a device that lists it:
+
+| Feature | Lets you |
+|---|---|
+| `ring_timeout` | Put `ring_timeout` in a ring push to shorten how long it rings. |
+| `cancel` | Send a cancel push to withdraw a ring ([Cancelling a ring](#cancelling-a-ring)). |
+
+Ignore feature names you do not know; later engines add more. Treat a device whose app sent no list as supporting none of them: an engine from before the list existed (0.1) ignores `ring_timeout`, and shows a cancel push as a brief incoming call that ends at once.
 
 ## The APNs request
 
@@ -48,6 +59,8 @@ All keys are at the top level of the JSON body, beside or instead of `aps`; the 
 | `room_url` | Optional, with `token` | Room to join on answer: a Daily room URL (`https://...`) or a LiveKit server URL (`wss://...`), matching the transport the app uses for this target. | No inline credentials; the app's own `connect` code runs on answer. |
 | `token` | Optional, with `room_url` | Join token for `room_url`. | Inline credentials need both keys and a non-empty token. With only one of the two, both are ignored. |
 | `status_url` | Optional | Where the engine POSTs the ring's outcome. See [Ring-status receipts](#ring-status-receipts). | No receipts are sent. |
+| `ring_timeout` | Optional | How long the phone may ring, in whole seconds, as a string of digits (`"30"`). It can only shorten the ring: the engine uses the smaller of this and the app's own timeout (60 seconds unless the app configures another), and raises a value below 10 to 10. When the ring times out, the engine ends it and sends `unanswered`. | The app's own timeout applies. Zero, negative, fractional or non-numeric values are treated as absent. |
+| `action` | Optional | `"ring"` for a ring. A cancel push uses `"cancel"`; see [Cancelling a ring](#cancelling-a-ring). | A ring. Any other value makes the push malformed. |
 
 A complete example:
 
@@ -70,9 +83,11 @@ Only `target_id` is required, but the smallest useful ring is `{"target_id": "..
 1. Reports the incoming call to CallKit immediately, inside the PushKit callback, under the push's own `display_name` and `handle` (or their fallbacks). iOS terminates any app that receives a VoIP push without reporting a call, so this happens before the app is consulted.
 2. Asks the app to resolve `target_id` to one of its targets. Once CallKit accepts the report, if the target's name or handle differ from what the ring showed, the ring is updated in place.
 3. If the app does not know the target, the call is ended as failed and recorded as a failed incoming call. No receipt is sent.
-4. If the device is already in a call (ringing, dialing, connecting, connected or reconnecting), the new ring is reported and ended at once as unanswered. The live call is not touched, the engine reports a missed call to the app, and a `busy` receipt is sent. A push whose `call_id` is the call already in progress (a second delivery of the same ring) is not a new ring: it is reported, because iOS requires it, and otherwise ignored, with no missed call and no receipt.
-5. If Focus or Do Not Disturb filters the ring, the phone never rings. The engine reports a missed call to the app and a `suppressed_by_focus` receipt is sent.
-6. When the user answers, the engine joins the room: `room_url` and `token` from the push if both were present, otherwise whatever the app's own credential code returns. The call then behaves like an outgoing call, including reconnection.
+4. If the sender already cancelled this `call_id` (the cancel push arrived first, see [Cancelling a ring](#cancelling-a-ring)), the call is reported, as iOS requires, and ended at once. Nothing else happens: no missed call, no receipt.
+5. If the device is already in a call (ringing, dialing, connecting, connected or reconnecting), the new ring is reported and ended at once as unanswered. The live call is not touched, the engine reports a missed call to the app, and a `busy` receipt is sent. A push whose `call_id` is the call already in progress (a second delivery of the same ring) is not a new ring: it is reported, because iOS requires it, and otherwise ignored, with no missed call and no receipt.
+6. If Focus or Do Not Disturb filters the ring, the phone never rings. The engine reports a missed call to the app and a `suppressed_by_focus` receipt is sent.
+7. If nobody answers or declines within the ring timeout (the app's, 60 seconds by default, or your shorter `ring_timeout`), the engine ends the ring as unanswered, reports a missed call to the app and sends `unanswered`. An answer the user gave before the timeout always wins, even if the call has not connected yet.
+8. When the user answers, the engine joins the room: `room_url` and `token` from the push if both were present, otherwise whatever the app's own credential code returns. The call then behaves like an outgoing call, including reconnection.
 
 ### What the user sees when name or handle are omitted
 
@@ -84,6 +99,33 @@ Putting `room_url` and `token` in the push lets the device join without a round 
 
 - The push sits in APNs and on the lock screen for as long as the phone rings, so use a short-lived token scoped to one room.
 - How the app reconnects after a drop is up to its `connect` code. A host that returns the push's credentials for every attempt, as the package's quick start does, reconnects with the same token, so it must stay valid for the length of the call.
+
+## Cancelling a ring
+
+To withdraw a ring before the user answers, send a cancel push to the same token, through the same APNs request:
+
+```json
+{"action": "cancel", "call_id": "0B9F3C1E-7A2D-4E58-B6C4-91D2E0F3A7B5"}
+```
+
+| Key | Required | Meaning |
+|---|---|---|
+| `action` | Yes | `"cancel"`. |
+| `call_id` | Yes | The `call_id` of the ring to withdraw. A cancel without a valid `call_id` is malformed. |
+| `target_id`, `agent_id` | **Must be omitted** | A 0.1 engine treats any push with a valid target as a ring, so a cancel that names the target would ring on it, or be ended as busy while the ring it meant to cancel keeps ringing. Without a target, a 0.1 engine treats the cancel as malformed instead: a brief incoming call that ends at once. A newer engine ignores a target in a cancel. |
+| `display_name` | Optional | The caller name iOS shows if the cancel has to appear as a call of its own (below). |
+
+Send a cancel only to devices that list `cancel` among their capabilities ([Device capabilities](#device-capabilities)). iOS requires every VoIP push to be reported as an incoming call, a cancel included, so the engine reports it under its `call_id` first and then:
+
+| The `call_id` names | What happens | Missed call | Receipt |
+|---|---|---|---|
+| The ring that is ringing, not yet answered | iOS refuses the report as a duplicate of the ringing call, so nothing new appears. The ring is ended as the caller hanging up. | Yes, `canceledByCaller` | `canceled`, to the ring's `status_url` |
+| The call in progress, already answered (connecting or connected), including a ring the user answered a moment before | Nothing. The call continues. | No | None: `answered` was already sent |
+| Nothing the device knows: the ring already ended, never arrived, or another call is in progress | The report rings, and the engine ends it at once. The user can see a brief flash of an incoming call; this is why Apple discourages cancel pushes. | No | None |
+
+The engine remembers each cancelled `call_id` for 10 minutes (the most recent 32), so if APNs delivers the ring after its cancel, or delivers it again, that ring is reported and ended at once, with no missed call and no receipt.
+
+A cancel that arrives after the user answered never ends the call; end a call in progress through your agent instead (Integration Guide, [section 11](IntegrationGuide.md#11-what-the-server-side-must-do)). Apple's guidance is not to cancel through pushes at all but over a connection the app already has; when your ring has not reached the device yet or you are unsure, prefer letting `ring_timeout` end it.
 
 ## Ring-status receipts
 
@@ -102,23 +144,25 @@ Authorization: Bearer <bearer>          (omitted when the app supplies none)
 | `answered` | The user answers. Sent at the moment of answering, before the transport connects, whether or not the call then connects. |
 | `declined` | The user declines the ringing call. |
 | `busy` | The push arrived while another call was in progress, so it was reported and ended at once. |
-
-Every status is sent only for a target the app knows; see "No receipt" below.
 | `suppressed_by_focus` | Focus or Do Not Disturb filtered the ring; the phone never rang. |
+| `unanswered` | The ring timed out: nobody answered or declined it within the ring timeout. |
+| `canceled` | A cancel push withdrew the ring while it was ringing. |
+
+Every status is sent only for a target the app knows; see "No receipt" below. **Accept statuses you do not know** (return 2xx and treat them as "ended, not answered"): later engines add statuses, and engines before 0.2 send only the first four.
 
 Details:
 
 - **`call_id`** is the call's UUID in uppercase canonical form (`UUID.uuidString`), which may differ in case from what you sent. Compare case-insensitively. If the push had no valid `call_id`, it is the id the engine minted.
 - **The bearer** comes from the app (`CallEngineDelegate.callEngine(_:ringStatusBearerForTarget:)`), asked for at send time. What it is, and how your server checks it, is between you and the app. When the app returns nil or an empty string, the request has no `Authorization` header.
 - **Fire-and-forget.** One attempt, no retry, the response is ignored, and a failure never affects the call. Return any 2xx. Treat a missing receipt as "unknown", not as "not answered".
-- **No receipt** is sent for a malformed push, a push for a target the app does not know (whatever happens to the ring: busy, Focus-filtered or declined included), a ring CallKit refused for a reason other than Focus (unless the device was busy, which still sends `busy`), or a ring torn down by a CallKit provider reset. After `answered`, nothing further is sent: the end of the conversation is not a ring status.
+- **No receipt** is sent for a malformed push, a push for a target the app does not know (whatever happens to the ring: busy, Focus-filtered, declined, timed out or cancelled included), a ring CallKit refused for a reason other than Focus (unless the device was busy, which still sends `busy`), a ring torn down by a CallKit provider reset, a cancel push itself, or a ring that arrived after its cancel. After `answered`, nothing further is sent: the end of the conversation is not a ring status.
 - **Plain HTTP** is subject to App Transport Security. Use HTTPS unless the app has an ATS exception.
-- **Privacy.** Receipts tell your server whether the user is on another call or has Focus on. Do not forward them anywhere the user did not agree to.
+- **Privacy.** Receipts tell your server whether the user is on another call, has Focus on, or let the phone ring out. Do not forward them anywhere the user did not agree to.
 
 ## Guidance
 
 - **Mint a fresh `call_id` for every ring** and keep it unique. It is the CallKit call id and the key in every receipt. A push that repeats the id of the call still ringing or in progress is treated as a second delivery of that ring and ignored, so it cannot be used to ring again.
 - **Do not ring again until the previous ring has resolved** (a receipt arrived, or enough time passed that it has clearly ended). A second ring while the first is still ringing is reported and ended immediately as busy, and the user may see it flash.
-- **There is no way to cancel a ring.** No payload stops a ring that is already showing, and the engine sets no timeout of its own; it rings until the user answers or declines, or iOS ends it. Do not rely on ringing for something time-critical that may be over before the user picks up.
+- **Bound the ring rather than cancel it.** A ring ends by itself after the app's ring timeout (60 seconds by default); send a shorter `ring_timeout` when the reason for the call expires sooner. To withdraw a ring that is still showing, send a cancel push, only to devices that list `cancel`, without `target_id`, and expect the flash described in [Cancelling a ring](#cancelling-a-ring) when the ring has already ended on the device. Do not send a cancel after an `answered` receipt.
 - **Always include `display_name`** when you have it, so the ring shows the right name from the first frame.
 - **Expect the token to change.** Reinstalling the app gives the device a new VoIP token, and APNs answers pushes to the old one with `410 Unregistered`. Drop tokens that return 410.

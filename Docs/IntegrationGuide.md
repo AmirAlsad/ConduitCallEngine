@@ -25,7 +25,7 @@ Contents:
 `CallEngine` is a `@MainActor`, `@Observable` class. You create one for the whole process, give it a delegate, and hand it a `CallTarget` for each call. It does:
 
 - **CallKit.** Reports outgoing and incoming calls, so they get the system call screen, the lock screen, Bluetooth and CarPlay routing, the system mute and end buttons, and entries in the Phone app's Recents. It handles CallKit's answer, end, mute and reset actions.
-- **PushKit.** Registers for VoIP pushes, reports every push as a call (iOS requires it), and passes you the VoIP token.
+- **PushKit.** Registers for VoIP pushes, reports every push as a call (iOS requires it), and passes you the VoIP token. Ends a ring nobody answers after a timeout, and honours a server's cancel push.
 - **The call state machine.** One call at a time, with the states below, and a `CallRecord` when each call finishes.
 - **Audio-session policy.** Configures the session for voice chat, lets CallKit activate it, attaches the transport only after activation, keeps the mic off until then, pauses the mic during interruptions (Siri, a phone call), and routes to the loudspeaker by default when no headset or car is connected.
 - **Reconnection.** After a mid-call network drop it retries with exponential backoff (six attempts, waiting 1, 2, 4, 8, 16 and 30 seconds) while CallKit keeps showing the call, and fails with `.lostConnection` when the budget runs out. A transport that says it is healing itself is given 30 seconds before the engine treats it as dropped and starts those retries.
@@ -58,7 +58,7 @@ idle -> incomingRinging -> connecting -> ...   (after the user answers)
 | `.ended(CallOutcome)` | Finished. | true | true |
 | `.failed(CallFailureReason)` | Could not be established or could not recover. | true | true |
 
-Terminal states stay until you call `reset()` (typically when your call screen is dismissed), or until the next `placeCall` or incoming ring, which reset first. A ring that ends before the user could take it (Focus filtered it, its target is unknown, CallKit refused it, or the CallKit provider reset) goes straight back to `.idle` without a terminal state. A provider reset during a call that is dialing, connecting, connected or reconnecting fails it with `.failed(.unknown)`.
+Terminal states stay until you call `reset()` (typically when your call screen is dismissed), or until the next `placeCall` or incoming ring, which reset first. A ring that ends without the user taking it, other than by declining (Focus filtered it, its target is unknown, CallKit refused it, the CallKit provider reset, it timed out, or the caller cancelled it), goes straight back to `.idle` without a terminal state. A provider reset during a call that is dialing, connecting, connected or reconnecting fails it with `.failed(.unknown)`.
 
 ### Outcomes and failure reasons
 
@@ -67,7 +67,7 @@ Terminal states stay until you call `reset()` (typically when your call screen i
 | `.completed` | The call connected, then ended by the user, the system UI, or the agent leaving. |
 | `.canceled` | The user ended the call (in-app or from the system UI) after placing or answering it, before it connected. |
 | `.declined` | The user declined an incoming call while it was still ringing. |
-| `.noAnswer` | The agent left before the call ever connected, or the ring never reached the user (busy, Focus). |
+| `.noAnswer` | The agent left before the call ever connected, or a ring was missed: it never reached the user (busy, Focus), timed out, or was cancelled by the caller. The record's `missedReason` says which. |
 | `.failed` | See the reason. |
 
 A call that reaches `.ended(outcome)` is recorded with the same outcome, so a host can switch on either and show the same thing.
@@ -100,7 +100,9 @@ A call that reaches `.ended(outcome)` is recorded with the same outcome, so a ho
 | `state`, `activeCall`, `isMuted`, `isBotSpeaking`, `isAudioActivated`, `isInterrupted`, `audioDevices`, `selectedAudioDeviceID`, `endedByUser` | Observable state for your UI. `activeCall` carries the target id, display name and direction of the current call. |
 | `repeatingCue` | The looping cue that should be playing now (`.connecting`, `.retrying`, or nil), for a UI that attaches mid-call. See [Cues](#cues). |
 
-`CallEngineConfiguration` has two settings: `unknownCallerName` (default `"Unknown"`), the name a ring shows when the push carries none, and `isPushToTalkEnabled`, a closure read at each mic decision, so a settings change mid-call takes effect on the next one.
+`CallEngineConfiguration` has three settings: `unknownCallerName` (default `"Unknown"`), the name a ring shows when the push carries none; `isPushToTalkEnabled`, a closure read at each mic decision, so a settings change mid-call takes effect on the next one; and `ringTimeout` (default 60 seconds), how long an incoming call rings before the engine ends it as unanswered. A push's `ring_timeout` can shorten that (to no less than 10 seconds) but not lengthen it. `nil` sets no limit of the engine's own; a push's `ring_timeout` still applies then.
+
+`CallEngine.supportedPushFeatures` (`["cancel", "ring_timeout"]`) is the set of optional push features this engine understands; send it to your server with the VoIP token ([section 7](#7-delivering-the-voip-token-to-your-server)).
 
 ### The delegate
 
@@ -108,10 +110,10 @@ Every callback is synchronous and on the main actor, made in the order the engin
 
 | Callback | When | Default |
 |---|---|---|
-| `callEngine(_:targetForIncomingCall:)` | Once per push (not for a duplicate of the call in progress), after the CallKit report is issued: inside the push handling for a ring, or once CallKit has answered the report for a push that arrives during another call. Return the `CallTarget`, or nil for an unknown target (the ring is then ended and recorded as failed, and the engine returns to idle). | nil, so every ring is ended. Implement it if you take incoming calls. |
+| `callEngine(_:targetForIncomingCall:)` | Once per ring push (not for a duplicate of the call in progress, a cancel push, or a ring whose cancel already arrived), after the CallKit report is issued: inside the push handling for a ring, or once CallKit has answered the report for a push that arrives during another call. Return the `CallTarget`, or nil for an unknown target (the ring is then ended and recorded as failed, and the engine returns to idle). | nil, so every ring is ended. Implement it if you take incoming calls. |
 | `callEngine(_:didChangeStateFrom:to:)` | On every real state change, after the engine has set the transition's other fields, so `activeCall` and the rest are consistent when you read them. Not called when the state is set to the value it already has. | nothing |
 | `callEngine(_:cue:)` | A moment to mark with your own sound or speech, right after the state change that caused it. See [Cues](#cues). | nothing |
-| `callEngine(_:didFinish:)` | Once per call, when it reaches its end: ended, failed, busy ring, Focus-filtered ring, a ring that could not proceed, a CallKit provider reset. Not for a malformed push. | nothing |
+| `callEngine(_:didFinish:)` | Once per call, when it reaches its end: ended, failed, busy ring, Focus-filtered ring, a ring that timed out or that the caller cancelled, a ring that could not proceed, a CallKit provider reset. Not for a malformed push, a cancel push, or a ring whose cancel already arrived. | nothing |
 | `callEngine(_:ringStatusBearerForTarget:)` | When a receipt is about to be sent, only for pushes that carried `status_url` and whose target your delegate resolved. Return the bearer for the `Authorization` header, or nil for none. | nil |
 | `callEngine(_:didUpdateVoIPPushToken:)` | When PushKit issues or rotates the VoIP token. | nothing |
 
@@ -212,7 +214,12 @@ The engine guarantees the report on every path. It reports first, synchronously 
 | After a finished call that is still in a terminal state | Resets to idle and rings normally. |
 | For a target your delegate does not resolve | Reports, then, once CallKit accepts the report, ends it as failed, records it (`outcome: .failed`, `failureReason: .unknown`) and returns to idle. |
 | Filtered by Focus or Do Not Disturb | Records a missed call (`missedReason: .filteredByFocus`) and returns to idle. |
-| Refused by CallKit for another reason | Records it as failed with `.unknown` and returns to idle. |
+| Refused by CallKit for another reason | Records it as failed with `.unknown` and returns to idle. If CallKit refused it because it already holds a call under that `call_id`, the engine does not end that id in CallKit. |
+| Nobody answers within the ring timeout | Ends it in CallKit as unanswered, records a missed call (`missedReason: .ringTimedOut`), sends `unanswered` if requested, and returns to idle. An answer CallKit delivered before the timeout always wins. |
+| A cancel push (`"action": "cancel"`) for the ringing call | Reports it under the ring's id (CallKit refuses the duplicate), ends the ring as the caller hanging up, records a missed call (`missedReason: .canceledByCaller`), sends `canceled` if requested, and returns to idle. |
+| A cancel push for the call in progress, already answered | Reports it; nothing else. |
+| A cancel push for an id the engine does not know | Reports it (it rings) and ends it at once. No state change, no delegate call, no record. |
+| A ring whose cancel already arrived (within 10 minutes) | Reports it and ends it at once. No state change, no delegate call, no record, no receipt. |
 
 What your code must do to keep the guarantee:
 
@@ -230,6 +237,8 @@ The full contract for server authors is in [PushContract.md](PushContract.md). I
 - Once CallKit accepts the report, if the target your delegate returned has a different `displayName`, or a different handle (`handle`, or the default handle for its id when `handle` is nil), the engine updates the ring in place. Your target's values win.
 - `room_url` and `token` together are inline credentials. Your delegate receives them as `IncomingCall.connection`; whether to use them is your choice. The usual pattern is a target whose `connect` closure returns the inline connection when there is one and fetches credentials otherwise, as in the README.
 - `status_url` asks for ring-status receipts; the bearer comes from `ringStatusBearerForTarget`. Receipts are sent only for targets your delegate resolves, so a push for a target you do not know never makes the engine contact the URL it carries.
+- `ring_timeout` shortens how long this ring may ring, within `CallEngineConfiguration.ringTimeout`.
+- `"action": "cancel"` with a `call_id` (and no `target_id`) withdraws a ring. Your delegate is not asked about a cancel; if it ends the ringing call, you get the missed-call record.
 
 `IncomingCall` carries `callID`, `targetID`, the `displayName` and `handle` the ring was reported under (after fallbacks), and `connection`.
 
@@ -244,7 +253,8 @@ The engine receives the token; sending it to the server that will ring the devic
 - the token, hex-encoded: `token.map { String(format: "%02x", $0) }.joined()`;
 - the bundle id, from which the server derives the APNs topic (`<bundle id>.voip`);
 - the APNs environment the build uses (sandbox for development-signed builds, production for TestFlight and the App Store), typically decided per build configuration;
-- the target ids this device accepts rings for, and for each, the display name and handle your app uses, so the push can carry them and ring under the right name from the first frame.
+- the target ids this device accepts rings for, and for each, the display name and handle your app uses, so the push can carry them and ring under the right name from the first frame;
+- `CallEngine.supportedPushFeatures`, so the server sends `ring_timeout` and cancel pushes only to devices that understand them. Send it again after an app update, since a newer engine may support more.
 
 The token belongs to the install, not to a target: every target gets the same token.
 
@@ -290,7 +300,7 @@ Here `agents` and `callTarget(inline:)` are your own: the latter builds a `CallT
 
 **Credentials per call.** `connect` runs for the first connection and again before every reconnect attempt, so it can mint fresh, short-lived credentials each time. Throw `TransportError.authenticationFailed` when your backend rejects the user's credentials (a 401 or 403) so the call fails as `.badToken`, which your UI can explain differently from a network failure.
 
-**History.** Write history from `callEngine(_:didFinish:)`. A `CallRecord` has `targetID`, `direction`, `startedAt`, `duration` (connected seconds, 0 if it never connected), `outcome`, `failureReason` and `missedReason`. Check `targetID` against your targets: a ring for an unknown target is recorded against the pushed id, which may match nothing of yours. `missedReason` has no raw value, so map it yourself if you persist it. Record only from `didFinish`, not also from state transitions, or you will write two rows per call.
+**History.** Write history from `callEngine(_:didFinish:)`. A `CallRecord` has `targetID`, `direction`, `startedAt`, `duration` (connected seconds, 0 if it never connected), `outcome`, `failureReason` and `missedReason`. Check `targetID` against your targets: a ring for an unknown target is recorded against the pushed id, which may match nothing of yours. `missedReason` has stable string raw values and is `Codable`, like `CallOutcome`. Record only from `didFinish`, not also from state transitions, or you will write two rows per call.
 
 **In-call UI.** Present your call screen while `engine.state.isActive` is true. That excludes `.incomingRinging`, where CallKit's ring is the interface, and includes terminal states, so a failed call can stay on screen with its reason until the user closes it; call `reset()` on dismiss. When the user taps End, call `markEndedByUser()` and dismiss in the same transaction, then `await engine.endCall()`; `endedByUser` lets you tell a call your user ended in-app (dismiss at once) from a remote end or failure (show a result). It is set only by `markEndedByUser()` and `endCall()`: a call ended from the system UI, such as the lock screen, leaves it false. A ring that ends before the user takes it, including one for an unknown target, never makes the state active. Name the call from `activeCall?.displayName`.
 
@@ -332,7 +342,7 @@ func callEngine(_ engine: CallEngine, cue: CallCue) {
 
 `announcer` is yours. Play cues into the session as CallKit configured it (see [section 4](#4-audio-session-ownership)); a call screen that appears mid-call can start the loop `engine.repeatingCue` names.
 
-**Missed calls.** The engine posts no notifications. A record with a non-nil `missedReason` is a ring the user never saw: `.busy` (another call was up) or `.filteredByFocus`. Post a local notification for it if you want the user to know. Provisional notification authorization lets you deliver these quietly without an upfront permission prompt.
+**Missed calls.** The engine posts no notifications. A record with a non-nil `missedReason` is a ring nobody answered or declined: `.busy` (another call was up) and `.filteredByFocus` never reached the user, while `.ringTimedOut` (it rang out) and `.canceledByCaller` (the server withdrew it) did; `missedReason.reachedUser` tells the two groups apart. Post a local notification for them if you want the user to know. Provisional notification authorization lets you deliver these quietly without an upfront permission prompt.
 
 ## 10. Writing your own transport
 
@@ -501,7 +511,7 @@ and in `makeTransport`, return a `FakeTransport()` in the simulator. `FakeTransp
 | `beginAudioInterruption()`, `endAudioInterruption(shouldResume:)` | Another audio session interrupts the call, and the interruption ends. The engine reacts on its next main-actor turn. |
 | `deliverTransportEvent(_:)` | The live transport emits an event, delivered synchronously. Delivered only while a call has a transport (the only time a real transport's events reach the engine); returns whether it was delivered. |
 | `awaitPendingReconnect() async` | Waits for an in-flight reconnect attempt. |
-| `incomingReportResult` | How CallKit answers incoming reports: `.rings`, `.filteredByFocus`, `.fails(_)`. |
+| `incomingReportResult` | How CallKit answers incoming reports: `.rings`, `.filteredByFocus`, `.duplicateCallID`, `.fails(_)`. Like CallKit, the simulated system also answers `.duplicateCallID` on its own for an id it holds (a call started or reported and not yet ended), which is what a cancel push for the ringing call meets. |
 | `completesIncomingReportsLater`, `completeIncomingReports()` | Hold CallKit's report completions and release them. By default reports complete before the report call returns, which real CallKit never does; set this to test the device's ordering, such as an answer that arrives before CallKit accepts the report. |
 | `suspendsOutgoingStarts`, `pendingOutgoingStartCount`, `releaseOutgoingStarts()` | Hold outgoing call starts, to test ending a call while it dials. |
 | `startedCallIDs`, `reportedIncomingCalls`, `updatedCalls`, `ringReceipts` | What the engine reported, in plain types. `ReportedCall` and `RingReceipt` have public initializers, so you can write expected values. |
@@ -570,7 +580,7 @@ final class TestHost: CallEngineDelegate {
 }
 ```
 
-Pass `now:` and `sleep:` to `simulated` to control time: a clock you advance makes `CallRecord.duration` deterministic, and a `sleep` that returns at once makes reconnect backoff instant.
+Pass `now:` and `sleep:` to `simulated` to control time: a clock you advance makes `CallRecord.duration` deterministic, and a `sleep` that returns at once makes reconnect backoff instant. The ring timeout uses the same `sleep`, so with one that returns at once every ring times out on the next suspension; pass `configuration: CallEngineConfiguration(ringTimeout: nil)` in tests that ring with such a sleep, or a sleep you end by hand to test the timeout. The default `sleep` is real time.
 
 A simulated engine activates the audio session only when you call `activateAudioSession()`. Until then `isAudioActivated` stays false and the engine never attaches the transport, so in an app running the simulated engine, a `FakeTransport` is never attached unless you drive activation yourself. The simulation tests the engine's logic against your host code; it cannot tell you how a real SDK behaves under CallKit, which only a device shows.
 
@@ -608,6 +618,8 @@ Incoming:
 - [ ] Decline: a `.declined` record and a `declined` receipt.
 - [ ] Ring during a call: the live call is unaffected; a busy record; a `busy` receipt.
 - [ ] Ring with Focus on: no ring, a `.filteredByFocus` record, a `suppressed_by_focus` receipt, your missed-call notification if you post one.
+- [ ] Let a ring ring out: it stops after the timeout (or the push's `ring_timeout`), a `.ringTimedOut` record, an `unanswered` receipt, and the Phone app's Recents lists it as missed.
+- [ ] Ring, then send a cancel push for it while it rings: it stops, a `.canceledByCaller` record, a `canceled` receipt, the app keeps running. Send the cancel again: a brief flash that ends at once, and later pushes still arrive.
 - [ ] Ring with an unknown `target_id`, and with no `target_id` at all: a brief ring that ends, and the app keeps running.
 - [ ] Inline credentials and app-fetched credentials both connect.
 - [ ] A TestFlight build ringed through the production APNs endpoint.
@@ -688,7 +700,7 @@ Fix: record only from `didFinish`; the engine already makes the end of a call id
 
 - **One call at a time.** A second call during a live one is reported and ended as busy.
 - **No call-hold handling.** CallKit's hold action is not handled, so the engine's call cannot be held. When the user places a cellular call during an engine call, iOS ends the engine's call (observed on iOS 27; the engine tears down normally and sends the end-call signal). Other audio interruptions pause the mic and resume it afterwards.
-- **No timeout for an unanswered ring**, and no way for the server to cancel one. It rings until the user answers or declines, or iOS ends it.
+- **A cancel push for a ring the device no longer has flashes.** iOS requires every VoIP push to be reported as a call, so a cancel for an unknown or finished ring shows a brief incoming call that ends at once. Whether iOS counts a cancel CallKit refuses as a duplicate as properly reported (and keeps delivering pushes) is assumed from the PushKit rules and has not yet been confirmed on a device.
 - **No timeout while connecting.** If the agent never becomes ready, the call stays in `.connecting` until the user ends it.
 - **The native CallKit route button cannot move audio on the Daily adapter.** Use an in-app picker.
 - **Daily's short interruptions are inferred from the device's network path, not Daily's media state.** A path that stays satisfied while media stops is not reported until Daily disconnects, and recovery is announced when the path returns, possibly a moment before audio does.

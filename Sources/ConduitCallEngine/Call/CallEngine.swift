@@ -90,6 +90,14 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     /// Ends the wait for a transport that is healing itself; see `enterReconnectingDisplay`.
     private var selfHealDeadlineTask: Task<Void, Never>?
     private var activationTask: Task<Void, Never>?
+    /// Ends the ring if nobody answers it in time; see `startRingTimer`.
+    private var ringTimerTask: Task<Void, Never>?
+    /// Set the moment CallKit delivers the answer action for the ringing call, before
+    /// `answer()` runs, so neither the ring timer nor a cancel ends an answered ring.
+    private var isAnswerRequested = false
+    /// Calls the sender cancelled, newest last, so a ring that arrives after its
+    /// own cancel is ended at once. Survives across calls.
+    private var canceledCallIDs: [(id: UUID, at: Date)] = []
     /// Identifies the outgoing call a suspended `placeCall` belongs to, so its
     /// continuation can tell it has been superseded (reset, or a newer call).
     private var dialToken = UUID()
@@ -216,27 +224,65 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     // MARK: - Receiving a call (via VoIP push)
 
     /// The PushKit entry point. iOS terminates the host if a VoIP push doesn't
-    /// report an incoming call before the push callback returns, so this reports
-    /// FIRST — synchronously, under the identity the push itself carries — and only
-    /// then touches state or the delegate. The target is resolved right after the
-    /// report is issued; once CallKit accepts it, the ring is corrected if the
-    /// target's name or handle differ. `completion` (PushKit's) runs after the report's completion, on
-    /// every path.
+    /// report an incoming call before the push callback returns, so every path
+    /// reports FIRST — synchronously, under the identity the push itself carries —
+    /// and only then touches state or the delegate. `completion` (PushKit's) runs
+    /// exactly once, after the report's completion, on every path.
     package func handleIncomingPush(_ dictionary: [AnyHashable: Any], completion: @escaping () -> Void) {
-        guard let payload = IncomingCallPayload(dictionary: dictionary) else {
-            let id = UUID()
-            Log.warning(.callkit, "Malformed VoIP push; reporting call \(id) and ending it")
-            callProvider.reportIncomingCall(
-                id: id,
-                handle: CallHandle(value: CallTarget.defaultHandle(for: id)),
-                displayName: unknownCallerName
-            ) { [self] _ in
-                callProvider.reportCallEnded(id, reason: .failed)
-                completion()
-            }
-            return
+        switch VoIPPushRequest(dictionary: dictionary) {
+        case .ring(let payload): handleRingPush(payload, completion: completion)
+        case .cancel(let cancel): handleCancelPush(cancel, completion: completion)
+        case .malformed: handleMalformedPush(completion: completion)
         }
+    }
 
+    /// Report a call to CallKit, run `setUp` at once, and then — once both the
+    /// report's completion has arrived and `setUp` has run, in that order whatever
+    /// order CallKit completes in — run `verdict` and PushKit's `completion`.
+    private func reportIncomingCall(
+        id: UUID,
+        handle: String,
+        displayName: String,
+        completion: @escaping () -> Void,
+        setUp: () -> Void,
+        verdict: @escaping (IncomingCallReportError?) -> Void
+    ) {
+        // The report's completion may arrive before this method finishes (a fake
+        // completes synchronously); hold it until `setUp` has run.
+        var isSetUp = false
+        var earlyResult: IncomingCallReportError??
+        let finish: (IncomingCallReportError?) -> Void = { result in
+            verdict(result)
+            completion()
+        }
+        callProvider.reportIncomingCall(
+            id: id,
+            handle: CallHandle(value: handle),
+            displayName: displayName
+        ) { result in
+            if isSetUp { finish(result) } else { earlyResult = .some(result) }
+        }
+        setUp()
+        isSetUp = true
+        if let earlyResult { finish(earlyResult) }
+    }
+
+    private func handleMalformedPush(completion: @escaping () -> Void) {
+        let id = UUID()
+        Log.warning(.callkit, "Malformed VoIP push; reporting call \(id) and ending it")
+        reportIncomingCall(
+            id: id,
+            handle: CallTarget.defaultHandle(for: id),
+            displayName: unknownCallerName,
+            completion: completion,
+            setUp: {},
+            verdict: { [self] _ in callProvider.reportCallEnded(id, reason: .failed) }
+        )
+    }
+
+    /// A ring. The target is resolved right after the report is issued; once
+    /// CallKit accepts it, the ring is corrected if the target's name or handle differ.
+    private func handleRingPush(_ payload: IncomingCallPayload, completion: @escaping () -> Void) {
         let incoming = IncomingCall(
             callID: payload.callID,
             targetID: payload.targetID,
@@ -255,39 +301,95 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         // ring. It is reported, because PushKit requires it, and nothing else: no
         // end (it would end the call in progress), no record, no receipt.
         let isDuplicate = isBusy && incoming.callID == activeCallID
+        // The sender already withdrew this ring (APNs delivered the cancel first,
+        // or delivered the ring again): end it at once, as nothing more than the
+        // flash PushKit forces.
+        let wasCanceled = !isDuplicate && isRememberedCancel(incoming.callID)
 
-        // The report's completion may arrive before this method finishes (a fake
-        // completes synchronously); hold it until the ring is set up.
-        var ringIsSetUp = false
-        var earlyResult: IncomingCallReportError??
         var ringTarget: CallTarget?
-        let finishRing: (IncomingCallReportError?) -> Void = { [self] result in
-            if isDuplicate {
-                Log.info(.call, "Duplicate push for call \(incoming.callID); report result: \(String(describing: result))")
-            } else if isBusy {
-                completeBusyRing(incoming, payload: payload, result: result)
-            } else {
-                completeRing(incoming, target: ringTarget, result: result)
-            }
-            completion()
-        }
-        callProvider.reportIncomingCall(
+        reportIncomingCall(
             id: incoming.callID,
-            handle: CallHandle(value: incoming.handle),
-            displayName: incoming.displayName
-        ) { result in
-            if ringIsSetUp { finishRing(result) } else { earlyResult = .some(result) }
-        }
+            handle: incoming.handle,
+            displayName: incoming.displayName,
+            completion: completion,
+            setUp: {
+                if isDuplicate {
+                    Log.warning(.call, "Duplicate VoIP push for the call in progress; reported call \(incoming.callID), ignoring it")
+                } else if wasCanceled {
+                    Log.info(.call, "VoIP push for cancelled call \(incoming.callID); reported it, ending it")
+                } else if isBusy {
+                    Log.warning(.call, "Busy on VoIP push; reported call \(incoming.callID), ending it")
+                } else {
+                    ringTarget = beginRing(incoming, payload: payload)
+                }
+            },
+            verdict: { [self] result in
+                if isDuplicate {
+                    Log.info(.call, "Duplicate push for call \(incoming.callID); report result: \(String(describing: result))")
+                } else if wasCanceled {
+                    // Only a call CallKit created can be ended.
+                    if result == nil { callProvider.reportCallEnded(incoming.callID, reason: .remoteEnded) }
+                } else if isBusy {
+                    completeBusyRing(incoming, payload: payload, result: result)
+                } else {
+                    completeRing(incoming, target: ringTarget, result: result)
+                }
+            }
+        )
+    }
 
-        if isDuplicate {
-            Log.warning(.call, "Duplicate VoIP push for the call in progress; reported call \(incoming.callID), ignoring it")
-        } else if isBusy {
-            Log.warning(.call, "Busy on VoIP push; reported call \(incoming.callID), ending it")
-        } else {
-            ringTarget = beginRing(incoming, payload: payload)
+    /// The sender withdraws a ring. Reported under its `call_id` first, like any
+    /// push: CallKit refuses that as a duplicate when it still holds the call. A
+    /// ring the user has not answered is then ended as the caller's hangup and
+    /// recorded as missed; the call in progress is left alone; for an id the engine
+    /// does not know, the report rang, so it is ended at once.
+    private func handleCancelPush(_ cancel: CancelCallPayload, completion: @escaping () -> Void) {
+        let id = cancel.callID
+        let isCallInProgress = activeCallID == id
+        let isUnansweredRing = isCallInProgress && state == .incomingRinging && !isAnswerRequested
+
+        reportIncomingCall(
+            id: id,
+            handle: CallTarget.defaultHandle(for: id),
+            displayName: cancel.displayName ?? (isCallInProgress ? activeCall?.displayName : nil) ?? unknownCallerName,
+            completion: completion,
+            setUp: { [self] in
+                rememberCancel(id)
+                if isUnansweredRing {
+                    Log.info(.call, "Caller cancelled ringing call \(id)")
+                    endMissedRing(.canceledByCaller, callKitReason: .remoteEnded, receipt: .canceled)
+                } else if isCallInProgress {
+                    Log.info(.call, "Cancel for call \(id), which is past ringing; ignored")
+                } else {
+                    Log.info(.call, "Cancel for unknown call \(id); reported it, ending it")
+                }
+            },
+            verdict: { [self] result in
+                // CallKit did not hold the id, so the report started a new call
+                // (the flash Apple warns about): end it.
+                if result == nil { callProvider.reportCallEnded(id, reason: .remoteEnded) }
+            }
+        )
+    }
+
+    /// Remember `id` as cancelled, keeping only the newest within the lifetime.
+    private func rememberCancel(_ id: UUID) {
+        pruneRememberedCancels()
+        canceledCallIDs.removeAll { $0.id == id }
+        canceledCallIDs.append((id, now()))
+        if canceledCallIDs.count > Self.rememberedCancelLimit {
+            canceledCallIDs.removeFirst(canceledCallIDs.count - Self.rememberedCancelLimit)
         }
-        ringIsSetUp = true
-        if let earlyResult { finishRing(earlyResult) }
+    }
+
+    private func isRememberedCancel(_ id: UUID) -> Bool {
+        pruneRememberedCancels()
+        return canceledCallIDs.contains { $0.id == id }
+    }
+
+    private func pruneRememberedCancels() {
+        let cutoff = now().addingTimeInterval(-Self.rememberedCancelLifetime)
+        canceledCallIDs.removeAll { $0.at < cutoff }
     }
 
     /// Set up the ring once its report is issued. The target is resolved here,
@@ -312,7 +414,57 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         ringStatusURL = target == nil ? nil : payload.statusURL
         transition(to: .incomingRinging)
         interruptionObserver.startObserving()
+        if let timeout = ringTimeout(requestedSeconds: payload.ringTimeoutSeconds) {
+            startRingTimer(for: incoming.callID, after: timeout)
+        }
         return target
+    }
+
+    /// The host's timeout, shortened (never lengthened) by the push's request,
+    /// which is raised to the minimum first. nil when neither sets one.
+    private func ringTimeout(requestedSeconds: Int?) -> Duration? {
+        let requested = requestedSeconds.map { max(Duration.seconds($0), Self.minimumPushedRingTimeout) }
+        switch (configuration.ringTimeout, requested) {
+        case let (configured?, requested?): return min(configured, requested)
+        case let (configured, requested): return configured ?? requested
+        }
+    }
+
+    private func startRingTimer(for id: UUID, after timeout: Duration) {
+        cancelRingTimer()
+        let sleep = self.sleep
+        ringTimerTask = Task { [weak self] in
+            try? await sleep(timeout)
+            guard let self, !Task.isCancelled else { return }
+            self.ringTimedOut(id)
+        }
+    }
+
+    private func cancelRingTimer() {
+        ringTimerTask?.cancel()
+        ringTimerTask = nil
+    }
+
+    /// Only the same ring, still ringing, with no answer action delivered, times out.
+    private func ringTimedOut(_ id: UUID) {
+        guard activeCallID == id, state == .incomingRinging, !isAnswerRequested else { return }
+        Log.info(.call, "Ring \(id) timed out unanswered")
+        endMissedRing(.ringTimedOut, callKitReason: .unanswered, receipt: .unanswered)
+    }
+
+    /// End a ring that reached the user but was never answered (it timed out, or the
+    /// caller withdrew it): ended in CallKit, recorded as missed, receipted, and
+    /// back to idle without an active state, like a ring Focus filtered.
+    private func endMissedRing(_ reason: MissedCallReason, callKitReason: CallEndReason, receipt: RingStatus) {
+        guard let id = activeCallID else { return }
+        cancelRingTimer()
+        callProvider.reportCallEnded(id, reason: callKitReason)
+        interruptionObserver.stopObserving()
+        finish(outcome: .noAnswer, missedReason: reason)
+        if let url = ringStatusURL {
+            reportRingStatus(receipt, callID: id, endpoint: url, targetID: recordTargetID)
+        }
+        resetState()
     }
 
     /// CallKit's verdict on the report. By now the call may already be answered;
@@ -342,6 +494,12 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         case .failed(let message):
             Log.error(.callkit, "reportIncomingCall failed: \(message)")
             endRingThatCannotProceed()
+
+        case .duplicateCallID:
+            // CallKit holds a call under this id that is not this ring, so the
+            // report created nothing to end, and ending the id would end that call.
+            Log.error(.callkit, "reportIncomingCall refused: call id \(incoming.callID) already exists")
+            endRingThatCannotProceed(reportToCallKit: false)
 
         case nil:
             guard let target else {
@@ -396,6 +554,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     /// resolved target's credentials (the push's inline room, or the host's own).
     package func answer() async {
         guard case .incomingRinging = state, let target = currentTarget else { return }
+        cancelRingTimer()
         // Answering is the ring's terminal status — the receipt fires here whether
         // or not the transport subsequently connects, and before the ringback starts.
         if let url = ringStatusURL, let id = activeCallID {
@@ -717,6 +876,10 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
             Log.warning(.callkit, "Answer for call \(id), which is not the ringing call; ignored")
             return
         }
+        // Before the hop to `answer()`: from here on the ring is the user's, and
+        // neither its timer nor a cancel push may end it.
+        isAnswerRequested = true
+        cancelRingTimer()
         Task { [weak self] in await self?.answer() }
     }
 
@@ -931,6 +1094,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     }
 
     private func teardownTransport() {
+        cancelRingTimer()
         interruptionObserver.stopObserving()
         isInterrupted = false
         // The session CallKit activated belonged to this call.
@@ -969,6 +1133,8 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         didApplyHandsFreeDefault = false
         isPushToTalkHeld = false
         endedByUser = false
+        isAnswerRequested = false
+        cancelRingTimer()
         transition(to: .idle)
     }
 
@@ -1029,4 +1195,26 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
             missedReason: missedReason
         ))
     }
+}
+
+extension CallEngine {
+    /// The optional push features this engine understands, for a host to send to
+    /// its server with the VoIP token, so the server uses a feature only with
+    /// devices that list it: `"ring_timeout"` (a ring push may carry
+    /// `ring_timeout`) and `"cancel"` (the server may send a cancel push,
+    /// `{"action": "cancel", "call_id": ...}` with no `target_id`, to withdraw a
+    /// ring). An engine that lacks a feature ignores its key, or, for a cancel,
+    /// shows it as a brief incoming call that ends at once. Later versions add
+    /// features to this set; servers must ignore names they do not know.
+    nonisolated public static let supportedPushFeatures: Set<String> = ["cancel", "ring_timeout"]
+}
+
+extension CallEngine {
+    /// How many cancelled call ids are remembered, newest first, so a ring that
+    /// APNs delivers after its own cancel is ended at once.
+    package nonisolated static let rememberedCancelLimit = 32
+    /// How long a cancelled call id is remembered.
+    package nonisolated static let rememberedCancelLifetime: TimeInterval = 10 * 60
+    /// The shortest ring a push's `ring_timeout` can ask for.
+    package nonisolated static let minimumPushedRingTimeout: Duration = .seconds(10)
 }

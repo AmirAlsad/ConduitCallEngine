@@ -17,7 +17,9 @@ public struct CallRecord: Equatable, Sendable {
     public let duration: TimeInterval
     public let outcome: CallOutcome
     public let failureReason: CallFailureReason?
-    /// Non-nil only when the ring never reached the user.
+    /// Non-nil for an incoming ring nobody answered or declined: one that never
+    /// reached the user (busy, Focus) or one that rang out or that the caller
+    /// withdrew. `MissedCallReason.reachedUser` tells them apart.
     public let missedReason: MissedCallReason?
 
     public init(
@@ -39,9 +41,25 @@ public struct CallRecord: Equatable, Sendable {
     }
 }
 
-public enum MissedCallReason: Sendable {
+/// Why an incoming ring was missed. Raw values are stable, so a host can persist them.
+public enum MissedCallReason: String, Sendable, Codable {
     /// Another call was live, so the ring was reported and ended at once.
     case busy
     /// Focus / Do Not Disturb suppressed the ring.
     case filteredByFocus
+    /// The ring reached its timeout (`CallEngineConfiguration.ringTimeout`, or the
+    /// push's shorter `ring_timeout`) without being answered or declined.
+    case ringTimedOut
+    /// The caller withdrew the ring with a cancel push while it was ringing.
+    case canceledByCaller
+
+    /// Whether the phone rang for the user before the ring was missed: true for a
+    /// ring that timed out or was cancelled, false for one that was busy or that
+    /// Focus filtered, which the user never saw.
+    public var reachedUser: Bool {
+        switch self {
+        case .busy, .filteredByFocus: false
+        case .ringTimedOut, .canceledByCaller: true
+        }
+    }
 }

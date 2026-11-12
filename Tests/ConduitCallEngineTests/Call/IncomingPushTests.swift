@@ -336,6 +336,26 @@ struct IncomingPushTests {
         #expect(h.pushCompletions == 1)
     }
 
+    /// CallKit still holds a call under the ring's id that the engine is not
+    /// tracking, so it refuses the report. Ending that id would end the call
+    /// CallKit holds, so the ring is dropped without touching CallKit.
+    @Test func aRingCallKitRefusesAsADuplicateIsNotEndedInCallKit() async throws {
+        let h = CallEngineHarness()
+        let callID = UUID()
+        h.ring(callID: callID, statusURL: statusEndpoint)
+        h.engine.providerPerformEndCall(callID) // the engine let go; the fake still holds it
+        h.engine.reset()
+        let ended = h.provider.reportedEnded.count
+
+        h.ring(callID: callID, statusURL: statusEndpoint)
+
+        #expect(h.engine.state == .idle)
+        #expect(h.provider.reportedEnded.count == ended)
+        #expect(h.delegate.records.last?.failureReason == .unknown)
+        #expect(h.ringStatusReporter.reports.map(\.status) == [.declined])
+        #expect(h.pushCompletions == 2)
+    }
+
     @Test func unknownTargetSendsNoReceipt() async throws {
         let h = CallEngineHarness()
         h.ring(targetID: UUID(), statusURL: statusEndpoint)

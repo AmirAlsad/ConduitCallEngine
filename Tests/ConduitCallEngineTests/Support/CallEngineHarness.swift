@@ -241,9 +241,13 @@ final class CallEngineHarness {
     /// How many times PushKit's completion has run, across every ring.
     private(set) var pushCompletions = 0
 
+    /// `ringTimeout` defaults to none, unlike the engine's, because the default
+    /// `sleep` returns at once and would time every ring out on the next yield.
+    /// Ring-timeout tests pass a timeout and a `ManualSleeper`.
     init(
         policy: ReconnectionPolicy = .default,
         pushToTalk: Bool = false,
+        ringTimeout: Duration? = nil,
         now: @escaping () -> Date = { Date() },
         sleep: @escaping (Duration) async throws -> Void = { _ in }
     ) {
@@ -257,7 +261,11 @@ final class CallEngineHarness {
         ringStatusReporter.onEvent = { log.append($0) }
 
         engine = CallEngine(
-            configuration: CallEngineConfiguration(unknownCallerName: "Agent", isPushToTalkEnabled: { pushToTalk }),
+            configuration: CallEngineConfiguration(
+                unknownCallerName: "Agent",
+                isPushToTalkEnabled: { pushToTalk },
+                ringTimeout: ringTimeout
+            ),
             callProvider: provider,
             interruptionObserver: interruption,
             ringStatusReporter: ringStatusReporter,
@@ -285,7 +293,8 @@ final class CallEngineHarness {
         handle: String? = nil,
         roomURL: URL? = nil,
         token: String? = nil,
-        statusURL: URL? = nil
+        statusURL: URL? = nil,
+        ringTimeout: String? = nil
     ) {
         var push: [AnyHashable: Any] = [
             "target_id": (targetID ?? target.id).uuidString,
@@ -296,6 +305,15 @@ final class CallEngineHarness {
         push["room_url"] = roomURL?.absoluteString
         push["token"] = token
         push["status_url"] = statusURL?.absoluteString
+        push["ring_timeout"] = ringTimeout
+        deliverPush(push)
+    }
+
+    /// Deliver a cancel push for `callID`, shaped as the push contract says: no
+    /// `target_id`.
+    func cancel(callID: UUID, displayName: String? = nil) {
+        var push: [AnyHashable: Any] = ["action": "cancel", "call_id": callID.uuidString]
+        push["display_name"] = displayName
         deliverPush(push)
     }
 
@@ -317,6 +335,13 @@ func waitUntil(ticks: Int = 500, _ condition: () -> Bool) async {
         if condition() { return }
         await Task.yield()
     }
+}
+
+/// Yield the main actor a fixed number of times, so work that should NOT happen
+/// (a timer that must stay inert) has had every chance to run.
+@MainActor
+func settle(ticks: Int = 200) async {
+    for _ in 0..<ticks { await Task.yield() }
 }
 
 extension CallState {
