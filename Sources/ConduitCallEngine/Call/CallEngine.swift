@@ -129,6 +129,10 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
 
     /// Start receiving VoIP pushes and request the token. Call once, early in
     /// launch — before the first push can arrive; later calls do nothing.
+    ///
+    /// From here on the engine keeps itself alive for the rest of the process,
+    /// even if the host releases it: iOS terminates an app that receives a VoIP
+    /// push without reporting a call, and only the engine can report one.
     public func startPushRegistration() {
         guard !isPushRegistrationStarted else { return }
         isPushRegistrationStarted = true
@@ -137,9 +141,9 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
                 guard let self else { return }
                 delegate?.callEngine(self, didUpdateVoIPPushToken: token)
             },
-            onIncomingPush: { [weak self] payload, completion in
-                guard let self else { return completion() }
-                handleIncomingPush(payload, completion: completion)
+            // Strong on purpose: the registry this engine owns now holds the engine.
+            onIncomingPush: { payload, completion in
+                self.handleIncomingPush(payload, completion: completion)
             }
         )
     }

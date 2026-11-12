@@ -35,6 +35,48 @@ struct PushRegistrationTests {
         #expect(h.engine.voipPushToken == token)
     }
 
+    private func makeEngine(provider: FakeCallProvider, registry: FakeVoIPPushRegistry) -> CallEngine {
+        CallEngine(
+            callProvider: provider,
+            interruptionObserver: FakeAudioInterruptionObserver(),
+            ringStatusReporter: FakeRingStatusReporter(),
+            pushRegistry: registry,
+            now: { Date() },
+            sleep: { _ in }
+        )
+    }
+
+    /// A push the engine cannot report gets the app terminated by iOS, so once
+    /// registration has started the engine stays alive even if the host lets go.
+    @Test func anEngineTheHostReleasedAfterRegistrationStillReportsPushes() {
+        let provider = FakeCallProvider()
+        let registry = FakeVoIPPushRegistry()
+        weak var released: CallEngine?
+        do {
+            let engine = makeEngine(provider: provider, registry: registry)
+            engine.startPushRegistration()
+            released = engine
+        }
+        #expect(released != nil)
+        var completions = 0
+
+        registry.simulateIncomingPush(["target_id": UUID().uuidString, "call_id": UUID().uuidString]) {
+            completions += 1
+        }
+
+        #expect(provider.reportedIncoming.count == 1)
+        #expect(completions == 1)
+    }
+
+    @Test func anEngineThatNeverRegisteredIsReleased() {
+        weak var released: CallEngine?
+        do {
+            let engine = makeEngine(provider: FakeCallProvider(), registry: FakeVoIPPushRegistry())
+            released = engine
+        }
+        #expect(released == nil)
+    }
+
     @Test func incomingPushesGoStraightToThePushEntry() {
         let h = CallEngineHarness()
         h.engine.startPushRegistration()

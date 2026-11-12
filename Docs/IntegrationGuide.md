@@ -88,7 +88,7 @@ A call that reaches `.ended(outcome)` is recorded with the same outcome, so a ho
 |---|---|
 | `init(configuration:)` | The real engine over CallKit and PushKit. Device only. |
 | `delegate` | Your `CallEngineDelegate`. **Weak**: keep the delegate alive yourself. |
-| `startPushRegistration()` | Start PushKit. Call once in `application(_:didFinishLaunchingWithOptions:)`; later calls do nothing. |
+| `startPushRegistration()` | Start PushKit. Call once in `application(_:didFinishLaunchingWithOptions:)`; later calls do nothing. From then on the engine stays alive for the rest of the process. |
 | `voipPushToken` | The current VoIP token, once PushKit has issued one. |
 | `placeCall(_:) async` | Start an outgoing call to a target. Ignored unless the engine is idle or terminal. Returns after the first connect attempt has run, not when the call connects. |
 | `endCall() async` | End the live call. Ignored while ringing (the user declines from the system UI). |
@@ -214,7 +214,7 @@ The engine guarantees the report on every path. It reports first, synchronously 
 
 What your code must do to keep the guarantee:
 
-- **Keep the engine alive for the whole process once `startPushRegistration()` has run.** The PushKit callbacks hold the engine weakly; if the engine has been deallocated when a push arrives, PushKit's completion is called without any call being reported, which is the case iOS punishes.
+- **Create one engine for the whole process.** Once `startPushRegistration()` has run, the engine keeps itself alive (its PushKit registry holds it), so a push is always reported even if your code lets go of the engine. Releasing it does not stop pushes or free it; a second engine that also starts registration would compete for PushKit, so do not create one.
 - **Set `delegate` before `startPushRegistration()`.** A push waiting at launch can be delivered as soon as the registry exists (on the main queue, right after the current turn). The delegate is weak and has no default target, so a push handled before it is set resolves to no target and the ring is ended as an unknown target.
 - **Resolve targets from memory.** `targetForIncomingCall` runs during push handling. Look the target up synchronously; do not start network or disk work there.
 - **Do not create your own `PKPushRegistry` for VoIP.** The engine owns PushKit for the app.
@@ -585,7 +585,7 @@ Cause: CallKit activated the audio session while the transport was still fetchin
 Fix: follow the rules in [section 10](#10-writing-your-own-transport): track attachment, have `connect` apply the current state, emit `.connected` only when ready.
 
 **The app is killed when a push arrives, or rings stop arriving altogether.**
-Cause: a VoIP push was not reported to CallKit. Usually `startPushRegistration()` runs too late (in a view or after sign-in) or not at all on a background launch, the engine was deallocated, or a second `PKPushRegistry` in the app handled the push. Once this has happened repeatedly, iOS stops delivering VoIP pushes to the app.
+Cause: a VoIP push was not reported to CallKit. Usually `startPushRegistration()` runs too late (in a view or after sign-in) or not at all on a background launch, or a second `PKPushRegistry` in the app handled the push. Once this has happened repeatedly, iOS stops delivering VoIP pushes to the app.
 Fix: create the engine and its delegate at launch, keep them alive, call `startPushRegistration()` in `didFinishLaunchingWithOptions`, and let the engine own PushKit.
 
 **A push during a call ends the call.**
@@ -658,5 +658,5 @@ Fix: record only from `didFinish`; the engine already makes the end of a call id
 - **Not exposed:** the remote audio level, user-speaking events, and PushKit token invalidation (logged only).
 - **`CallFailureReason.agentUnreachable`** exists but is never produced.
 - **The user's mic controls are not gated on audio activation or interruptions.** Unmuting (in-app or from the system UI) and pressing push-to-talk enable the transport's mic immediately, even before CallKit has activated the session or while `isInterrupted` is true. See [section 4](#4-audio-session-ownership).
-- **The engine must outlive push registration.** Once `startPushRegistration()` has run, the engine has to stay alive for the rest of the process; if it is deallocated, an incoming push is completed without reporting a call.
+- **An engine that has started push registration is never deallocated.** It keeps itself alive so every push is reported.
 - **The delegate must be set before `startPushRegistration()`.** A push waiting at launch can be delivered as soon as the registry exists, and a push handled with no delegate fails as an unknown target.
