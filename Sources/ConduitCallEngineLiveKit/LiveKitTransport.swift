@@ -12,6 +12,14 @@
 //  when the room is connected and a remote participant is present, bot-speaking
 //  from active speakers. Device-only (WebRTC audio aborts in the simulator).
 //
+//  Joins are the transport's own: `room.connect` runs in a task the transport keeps,
+//  because LiveKit's `Room` cannot take two connects at once (each one's cleanup fails
+//  the other) and ignores a disconnect while it is still setting a connect up. A newer
+//  `connect` cancels a join still in flight and waits for its cleanup before joining
+//  (a hold and resume during a reconnect attempt's join brings one), and `disconnect()`
+//  lets a join in flight finish before it signals and leaves; a join it could not
+//  wait for leaves the room itself when it completes.
+//
 //  Connecting while the call still rings is supported (`canConnectWhileRinging`):
 //  joining the room touches no audio. LiveKit does not configure the session (the
 //  automatic configuration is off), the remote audio it subscribes to only queues a
@@ -29,7 +37,8 @@ public final class LiveKitTransport: CallTransport {
     public nonisolated let events: AsyncStream<TransportEvent>
     private nonisolated let continuation: AsyncStream<TransportEvent>.Continuation
 
-    private let room: Room
+    private let room: LiveKitRoomControlling
+    private let audioEngine: LiveKitAudioEngineControlling
     // `Room` holds its delegates weakly, so this strong reference keeps the mapper alive
     // as long as the room. The mapper holds neither the room nor the transport.
     private let roomEvents: RoomEventMapper
@@ -40,17 +49,33 @@ public final class LiveKitTransport: CallTransport {
     /// it — LiveKit's audio engine then never starts and the call has no mic.
     private var isSessionAttached = false
 
-    public init() {
+    /// The join in flight: `room.connect`, in a task of the transport's own.
+    private var join: (id: Int, task: Task<Void, any Error>)?
+    private var joinCount = 0
+    /// Joins that were in flight when `disconnect()` left the room: LiveKit ignored that
+    /// leave if the room had not moved to connecting yet, so each leaves by itself.
+    private var joinsToLeave: Set<Int> = []
+    /// Counts `disconnect()` calls, so a connect that waited for an earlier join to
+    /// end can tell the host left meanwhile.
+    private var disconnectCount = 0
+
+    public convenience init() {
+        // Manual audio: CallKit owns the AVAudioSession; the engine starts only
+        // inside the CallKit activation window (see attachAudioSession).
+        self.init(makeRoom: { LiveKitSDKRoom(delegate: $0) }, audioEngine: LiveKitSDKAudioEngine())
+    }
+
+    init(
+        makeRoom: (RoomEventMapper) -> LiveKitRoomControlling,
+        audioEngine: LiveKitAudioEngineControlling
+    ) {
         let (stream, continuation) = AsyncStream.makeStream(of: TransportEvent.self)
         self.events = stream
         self.continuation = continuation
-
-        // Manual audio: CallKit owns the AVAudioSession; the engine starts only
-        // inside the CallKit activation window (see attachAudioSession).
-        AudioManager.shared.audioSession.isAutomaticConfigurationEnabled = false
+        self.audioEngine = audioEngine
         let roomEvents = RoomEventMapper(continuation: continuation)
         self.roomEvents = roomEvents
-        self.room = Room(delegate: roomEvents)
+        self.room = makeRoom(roomEvents)
 
         // The route can change from the native CallKit screen too — keep a host's
         // picker in sync. Continuation is thread-safe, so yield directly.
@@ -73,9 +98,18 @@ public final class LiveKitTransport: CallTransport {
     // MARK: - CallTransport
 
     public func connect(_ connection: CallConnection) async throws {
+        let disconnects = disconnectCount
+        if let previous = join {
+            Log.info(.transport, "LiveKit connect: superseding the join still in flight")
+            previous.task.cancel()
+            _ = await previous.task.result
+            guard disconnectCount == disconnects else {
+                throw TransportError.connectionFailed("LiveKit transport was disconnected")
+            }
+        }
         let plan = roomEvents.gate.planConnect(
-            roomPhase: LiveKitEndCallSignal.RoomPhase(room.connectionState),
-            remotesPresent: !room.remoteParticipants.isEmpty
+            roomPhase: room.phase,
+            remotesPresent: room.hasRemoteParticipants
         )
         switch plan {
         case .join:
@@ -90,20 +124,53 @@ public final class LiveKitTransport: CallTransport {
         }
         roomEvents.gate = LiveKitConnectGate()
         roomEvents.wasBotSpeaking = false
+        joinCount += 1
+        let id = joinCount
+        let room = room
+        let result: Result<Void, any Error>
         do {
             // Engine off until CallKit activates — unless activation already
             // happened (also keeps the engine alive across a mid-call reconnect).
-            try AudioManager.shared.setEngineAvailability(isSessionAttached ? .default : .none)
+            try audioEngine.setAvailable(isSessionAttached)
             Log.info(.audio, "LiveKit connect: audio engine \(isSessionAttached ? "available (attached)" : "unavailable until attach")")
-            try await room.connect(url: connection.url.absoluteString, token: connection.token ?? "")
+            let task = Task { @MainActor in
+                try await room.connect(url: connection.url.absoluteString, token: connection.token ?? "")
+            }
+            join = (id, task)
+            // The caller cancelling its connect cancels the join, as when it ran inline.
+            result = await withTaskCancellationHandler { await task.result } onCancel: { task.cancel() }
         } catch {
+            result = .failure(error)
+        }
+        if join?.id == id { join = nil }
+        if joinsToLeave.remove(id) != nil {
+            Log.warning(.transport, "LiveKit connect: the host disconnected while this join was in flight; leaving the room")
+            await leaveRoom()
+            throw TransportError.connectionFailed("LiveKit transport was disconnected while joining")
+        }
+        if case .failure(let error) = result {
             Log.error(.transport, "LiveKit connect failed: \(error)")
             throw mapConnectError(error)
         }
     }
 
     public func disconnect() async {
+        disconnectCount += 1
         roomEvents.gate.userRequestedDisconnect = true
+        let pending = join
+        await publishClientMessage("end-call", after: pending?.task)
+        await room.disconnect()
+        guard let pending else { return }
+        if join?.id == pending.id {
+            joinsToLeave.insert(pending.id)
+        } else if room.phase != .disconnected, room.phase != .disconnecting {
+            // The join completed while the leave above found nothing to leave.
+            await leaveRoom()
+        }
+    }
+
+    /// Signals the end of the call and leaves.
+    private func leaveRoom() async {
         await publishClientMessage("end-call")
         await room.disconnect()
     }
@@ -119,23 +186,25 @@ public final class LiveKitTransport: CallTransport {
     /// read it from the raw data event, because Pipecat's LiveKit input does not
     /// deliver client RTVI messages to its RTVI processor. See `LiveKitEndCallSignal`
     /// for when it is sent; it is never retried.
-    private func publishClientMessage(_ type: String) async {
+    /// `join`, when given, is a join in flight to let finish first, within the same bound.
+    private func publishClientMessage(_ type: String, after join: Task<Void, any Error>? = nil) async {
         guard let payload = LiveKitEndCallSignal.payload(type: type) else { return }
         let room = room
-        let finished = await LiveKitEndCallSignal.run(within: LiveKitEndCallSignal.deadline) {
+        let finished = await LiveKitEndCallSignal.run(within: LiveKitEndCallSignal.deadline) { @MainActor in
+            if let join { _ = await join.result }
             // A publish issued before the connect has set up the room's transports
             // would not start the publisher's negotiation, so let the connect finish first.
-            while room.connectionState == .connecting {
+            while room.phase == .connecting {
                 try? await Task.sleep(for: .milliseconds(50))
                 if Task.isCancelled { return }
             }
-            let phase = LiveKitEndCallSignal.RoomPhase(room.connectionState)
+            let phase = room.phase
             guard LiveKitEndCallSignal.shouldSend(in: phase) else {
                 Log.info(.transport, "LiveKit client message \(type) dropped: the room is \(phase)")
                 return
             }
             do {
-                try await room.localParticipant.publish(data: payload, options: DataPublishOptions(reliable: true))
+                try await room.publish(payload)
                 Log.info(.transport, "LiveKit client message \(type) sent (reliable)")
             } catch {
                 Log.warning(.transport, "LiveKit client message \(type) publish failed: \(error)")
@@ -148,7 +217,7 @@ public final class LiveKitTransport: CallTransport {
 
     public func setMicEnabled(_ enabled: Bool) async {
         do {
-            _ = try await room.localParticipant.setMicrophone(enabled: enabled)
+            try await room.setMicrophone(enabled: enabled)
         } catch {
             Log.error(.transport, "LiveKit setMicrophone(\(enabled)) error: \(error)")
         }
@@ -172,8 +241,8 @@ public final class LiveKitTransport: CallTransport {
     public func attachAudioSession() async {
         isSessionAttached = true
         do {
-            try AudioManager.shared.setEngineAvailability(.default)
-            Log.info(.audio, "LiveKit attach: audio engine available (playout restored); running=\(AudioManager.shared.isEngineRunning)")
+            try audioEngine.setAvailable(true)
+            Log.info(.audio, "LiveKit attach: audio engine available (playout restored); running=\(audioEngine.isRunning)")
         } catch {
             Log.error(.audio, "LiveKit setEngineAvailability(.default) error: \(error)")
         }
@@ -184,8 +253,8 @@ public final class LiveKitTransport: CallTransport {
     public func detachAudioSession() async {
         isSessionAttached = false
         do {
-            try AudioManager.shared.setEngineAvailability(.none)
-            Log.info(.audio, "LiveKit detach: audio engine unavailable (playout and capture stopped); running=\(AudioManager.shared.isEngineRunning)")
+            try audioEngine.setAvailable(false)
+            Log.info(.audio, "LiveKit detach: audio engine unavailable (playout and capture stopped); running=\(audioEngine.isRunning)")
         } catch {
             Log.error(.audio, "LiveKit setEngineAvailability(.none) error: \(error)")
         }
@@ -204,24 +273,12 @@ public final class LiveKitTransport: CallTransport {
     }
 }
 
-private extension LiveKitEndCallSignal.RoomPhase {
-    init(_ state: ConnectionState) {
-        switch state {
-        case .disconnected: self = .disconnected
-        case .connecting: self = .connecting
-        case .reconnecting: self = .reconnecting
-        case .connected: self = .connected
-        case .disconnecting: self = .disconnecting
-        @unknown default: self = .disconnected
-        }
-    }
-}
-
-/// Translates `Room`'s delegate callbacks into `TransportEvent`s. Kept out of the public
-/// type so hosts cannot invoke SDK callbacks on a live transport. The callbacks arrive off
-/// the main actor and hop to it before touching the gate.
+/// Translates the room's callbacks into `TransportEvent`s. Kept out of the public type
+/// so hosts cannot invoke SDK callbacks on a live transport. `Room`'s delegate callbacks
+/// arrive off the main actor and hop to the main-actor intake below before touching the
+/// gate; a test's room double calls the intake directly.
 @MainActor
-private final class RoomEventMapper: NSObject, RoomDelegate {
+final class RoomEventMapper: NSObject, RoomDelegate {
     private nonisolated let continuation: AsyncStream<TransportEvent>.Continuation
     var gate = LiveKitConnectGate()
     var wasBotSpeaking = false
@@ -230,16 +287,40 @@ private final class RoomEventMapper: NSObject, RoomDelegate {
         self.continuation = continuation
     }
 
-    private func onRoomConnected(hasRemote: Bool) {
+    // MARK: - Main-actor intake
+
+    func roomDidStartConnecting() {
+        continuation.yield(.connecting)
+    }
+
+    func roomDidConnect(hasRemote: Bool) {
         if let event = gate.roomDidConnect() { continuation.yield(event) }
         if hasRemote, let event = gate.remoteDidJoin() { continuation.yield(event) }
     }
 
-    private func onReconnectStarted() {
+    func reconnectDidStart() {
         if let event = gate.reconnectDidStart() { continuation.yield(event) }
     }
 
-    private func onSpeakers(botSpeaking: Bool, level: Float) {
+    func remoteDidJoin() {
+        if let event = gate.remoteDidJoin() { continuation.yield(event) }
+    }
+
+    func remoteDidLeave(remotesRemain: Bool) {
+        if let event = gate.remoteDidLeave(remotesRemain: remotesRemain) { continuation.yield(event) }
+    }
+
+    func reconnectDidComplete(roomConnected: Bool, remotesPresent: Bool) {
+        if let event = gate.reconnectDidComplete(roomConnected: roomConnected, remotesPresent: remotesPresent) {
+            continuation.yield(event)
+        }
+    }
+
+    func roomDidDisconnect() {
+        if let event = gate.roomDidDisconnect() { continuation.yield(event) }
+    }
+
+    func speakersDidUpdate(botSpeaking: Bool, level: Float) {
         if botSpeaking != wasBotSpeaking {
             wasBotSpeaking = botSpeaking
             continuation.yield(botSpeaking ? .botStartedSpeaking : .botStoppedSpeaking)
@@ -247,39 +328,35 @@ private final class RoomEventMapper: NSObject, RoomDelegate {
         if botSpeaking { continuation.yield(.remoteAudioLevel(level)) }
     }
 
+    // MARK: - RoomDelegate
+
     nonisolated func room(_ room: Room, didUpdateConnectionState state: ConnectionState, from oldState: ConnectionState) {
         switch state {
         case .connecting:
             continuation.yield(.connecting)
         case .connected:
             let hasRemote = !room.remoteParticipants.isEmpty
-            Task { @MainActor in self.onRoomConnected(hasRemote: hasRemote) }
+            Task { @MainActor in self.roomDidConnect(hasRemote: hasRemote) }
         case .reconnecting:
             // Hop like the completion does, so a reconnect that starts right after
             // one completes cannot overtake that completion's `.connected`.
-            Task { @MainActor in self.onReconnectStarted() }
+            Task { @MainActor in self.reconnectDidStart() }
         default:
             break
         }
     }
 
     nonisolated func room(_ room: Room, participantDidConnect participant: RemoteParticipant) {
-        Task { @MainActor in
-            if let event = self.gate.remoteDidJoin() { self.continuation.yield(event) }
-        }
+        Task { @MainActor in self.remoteDidJoin() }
     }
 
     nonisolated func room(_ room: Room, participantDidDisconnect participant: RemoteParticipant) {
         let remotesRemain = !room.remoteParticipants.isEmpty
-        Task { @MainActor in
-            if let event = self.gate.remoteDidLeave(remotesRemain: remotesRemain) {
-                self.continuation.yield(event)
-            }
-        }
+        Task { @MainActor in self.remoteDidLeave(remotesRemain: remotesRemain) }
     }
 
     nonisolated func room(_ room: Room, didStartReconnectWithMode mode: ReconnectMode) {
-        Task { @MainActor in self.onReconnectStarted() }
+        Task { @MainActor in self.reconnectDidStart() }
     }
 
     nonisolated func room(_ room: Room, didCompleteReconnectWithMode mode: ReconnectMode) {
@@ -289,23 +366,18 @@ private final class RoomEventMapper: NSObject, RoomDelegate {
         // applies a full reconnect's join response in a detached task.
         let isRoomConnected = room.connectionState == .connected
         Task { @MainActor in
-            guard let event = self.gate.reconnectDidComplete(
-                roomConnected: isRoomConnected, remotesPresent: !room.remoteParticipants.isEmpty
-            ) else { return }
-            self.continuation.yield(event)
+            self.reconnectDidComplete(roomConnected: isRoomConnected, remotesPresent: !room.remoteParticipants.isEmpty)
         }
     }
 
     nonisolated func room(_ room: Room, didDisconnectWithError error: LiveKitError?) {
-        Task { @MainActor in
-            if let event = self.gate.roomDidDisconnect() { self.continuation.yield(event) }
-        }
+        Task { @MainActor in self.roomDidDisconnect() }
     }
 
     nonisolated func room(_ room: Room, didUpdateSpeakingParticipants participants: [Participant]) {
         let remoteSpeakers = participants.compactMap { $0 as? RemoteParticipant }
         let botSpeaking = !remoteSpeakers.isEmpty
         let level = remoteSpeakers.map(\.audioLevel).max() ?? 0
-        Task { @MainActor in self.onSpeakers(botSpeaking: botSpeaking, level: level) }
+        Task { @MainActor in self.speakersDidUpdate(botSpeaking: botSpeaking, level: level) }
     }
 }
