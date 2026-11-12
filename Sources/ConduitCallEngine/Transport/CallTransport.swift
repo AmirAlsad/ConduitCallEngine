@@ -34,8 +34,23 @@ public protocol CallTransport: AnyObject {
     func setAudioDevice(_ id: String) async
 
     /// Start media on the CallKit-activated session. Called ONLY once CallKit has
-    /// activated it (on activation, or on creation if activation came first).
+    /// activated it and the call is not on hold (on activation, on creation if
+    /// activation came first, or on resuming from hold).
     func attachAudioSession() async
-    /// Stop media when CallKit deactivates the session or the call ends.
+    /// Stop media when CallKit deactivates the session, the call is put on hold,
+    /// or the call ends. Can be called more than once in a row; make it idempotent.
     func detachAudioSession() async
+
+    /// Deliver a call-control signal to the remote agent. Best effort: the engine
+    /// does not wait for or retry a delivery, and sends a signal only while the
+    /// transport has reported `.connected`. Must not throw, must return promptly
+    /// when the connection is gone, and may be called again with the same signal.
+    /// The default implementation drops the signal.
+    func send(_ signal: CallSignal) async
+}
+
+extension CallTransport {
+    /// Drops the signal: a transport that does not implement `send(_:)` leaves its
+    /// agent uninformed, and the call works as before.
+    public func send(_ signal: CallSignal) async {}
 }

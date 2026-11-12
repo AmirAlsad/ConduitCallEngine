@@ -17,6 +17,7 @@ package final class FakeCallProvider: CallProviding {
     package init() {}
 
     package weak var delegate: CallProviderDelegate?
+    package var supportsHolding = true
 
     package private(set) var startedCalls: [UUID] = []
     package private(set) var startedHandles: [CallHandle] = []
@@ -27,6 +28,10 @@ package final class FakeCallProvider: CallProviding {
     package private(set) var endRequests: [UUID] = []
     package private(set) var reportedEnded: [(id: UUID, reason: CallEndReason)] = []
     package private(set) var muteStates: [UUID: Bool] = [:]
+    /// Whether each call was last reported (started, reported or updated) as holdable.
+    package private(set) var holdableCalls: [UUID: Bool] = [:]
+    /// Every hold or resume the engine requested, in order.
+    package private(set) var heldRequests: [(id: UUID, onHold: Bool)] = []
     /// The calls CallKit holds: started or successfully reported, and not yet
     /// ended by the engine, the system UI or a reset.
     package private(set) var liveCallIDs: Set<UUID> = []
@@ -75,6 +80,7 @@ package final class FakeCallProvider: CallProviding {
         }
         if let startError { throw startError }
         liveCallIDs.insert(id)
+        holdableCalls[id] = supportsHolding
         startedCalls.append(id)
         startedHandles.append(handle)
         return id
@@ -88,7 +94,10 @@ package final class FakeCallProvider: CallProviding {
     ) {
         onEvent?("report")
         let error: IncomingCallReportError? = liveCallIDs.contains(id) ? .duplicateCallID : reportIncomingError
-        if error == nil { liveCallIDs.insert(id) }
+        if error == nil {
+            liveCallIDs.insert(id)
+            holdableCalls[id] = supportsHolding
+        }
         reportedIncoming.append((id, handle, displayName))
         let complete: @MainActor () -> Void = { [weak self] in
             self?.onEvent?("report-completed")
@@ -110,6 +119,7 @@ package final class FakeCallProvider: CallProviding {
 
     package func updateCall(_ id: UUID, handle: CallHandle, displayName: String) {
         onEvent?("update")
+        holdableCalls[id] = supportsHolding
         updatedCalls.append((id, handle, displayName))
     }
 
@@ -131,6 +141,16 @@ package final class FakeCallProvider: CallProviding {
     }
     package func setMuted(_ id: UUID, muted: Bool) async { muteStates[id] = muted }
 
+    /// Like CallKit, performs the request through the delegate, and only for a
+    /// call it holds that was reported as holdable (CallKit is assumed to refuse
+    /// the others before they reach the provider).
+    package func setHeld(_ id: UUID, onHold: Bool) async {
+        onEvent?("held-request(\(onHold))")
+        heldRequests.append((id, onHold))
+        guard liveCallIDs.contains(id), holdableCalls[id] == true else { return }
+        _ = delegate?.providerPerformSetHeld(id, onHold: onHold)
+    }
+
     // MARK: - System → engine drivers (for tests and the simulator)
 
     package func simulateActivate(_ session: AudioSessionActivating) {
@@ -147,6 +167,12 @@ package final class FakeCallProvider: CallProviding {
         delegate?.providerPerformEndCall(id)
     }
     package func simulateSetMuted(_ id: UUID, muted: Bool) { delegate?.providerPerformSetMuted(id, muted: muted) }
+    /// The system performs a hold or resume for `id`; returns whether the engine
+    /// fulfilled the action.
+    @discardableResult
+    package func simulateSetHeld(_ id: UUID, onHold: Bool) -> Bool {
+        delegate?.providerPerformSetHeld(id, onHold: onHold) ?? false
+    }
     package func simulateReset() {
         liveCallIDs.removeAll()
         delegate?.providerWasReset()

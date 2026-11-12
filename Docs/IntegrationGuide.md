@@ -24,10 +24,10 @@ Contents:
 
 `CallEngine` is a `@MainActor`, `@Observable` class. You create one for the whole process, give it a delegate, and hand it a `CallTarget` for each call. It does:
 
-- **CallKit.** Reports outgoing and incoming calls, so they get the system call screen, the lock screen, Bluetooth and CarPlay routing, the system mute and end buttons, and entries in the Phone app's Recents. It handles CallKit's answer, end, mute and reset actions.
+- **CallKit.** Reports outgoing and incoming calls, so they get the system call screen, the lock screen, Bluetooth and CarPlay routing, the system mute and end buttons, and entries in the Phone app's Recents. It handles CallKit's answer, end, mute, hold and reset actions, so iOS can put the call on hold while the user takes a phone call.
 - **PushKit.** Registers for VoIP pushes, reports every push as a call (iOS requires it), and passes you the VoIP token. Ends a ring nobody answers after a timeout, and honours a server's cancel push.
 - **The call state machine.** One call at a time, with the states below, and a `CallRecord` when each call finishes.
-- **Audio-session policy.** Configures the session for voice chat, lets CallKit activate it, attaches the transport only after activation, keeps the mic off until then, pauses the mic during interruptions (Siri, a phone call), and routes to the loudspeaker by default when no headset or car is connected.
+- **Audio-session policy.** Configures the session for voice chat, lets CallKit activate it, attaches the transport only after activation, keeps the mic off until then, pauses the mic during interruptions (Siri, a phone call), stops media while the call is on hold, and routes to the loudspeaker by default when no headset or car is connected.
 - **Reconnection.** After a mid-call network drop it retries with exponential backoff (six attempts, waiting 1, 2, 4, 8, 16 and 30 seconds) while CallKit keeps showing the call, and fails with `.lostConnection` when the budget runs out. A transport that says it is healing itself is given 30 seconds before the engine treats it as dropped and starts those retries.
 - **Ring-status receipts.** When a push asks for them, it POSTs the ring's outcome to your server.
 
@@ -95,12 +95,13 @@ A call that reaches `.ended(outcome)` is recorded with the same outcome, so a ho
 | `markEndedByUser()` | Set `endedByUser` synchronously, so your UI can dismiss in the same transaction as the tap, before `endCall()` runs. |
 | `setMuted(_:) async` | Mute or unmute; mirrored to CallKit. Unmuting turns the transport's mic on once CallKit has activated the session and while no interruption is in progress (see [section 4](#4-audio-session-ownership)). |
 | `setPushToTalkActive(_:) async` | With push-to-talk enabled in the configuration, `true` holds the talk button and `false` releases it. The mic is on while the button is held, once CallKit has activated the session and while no interruption is in progress. Does nothing when push-to-talk is disabled. |
+| `setOnHold(_:) async` | Hold or resume the call from your own UI. The engine asks CallKit, which performs the hold through the engine, as it does for the system UI; `isOnHold` changes then, which on a device can be just after this returns. Does nothing unless the call is connecting, connected or reconnecting, or when `supportsHolding` is off. See [Call hold](#call-hold). |
 | `selectAudioDevice(_:) async` | Route audio to one of `audioDevices`. |
 | `reset()` | Return to idle from a terminal state. |
-| `state`, `activeCall`, `isMuted`, `isBotSpeaking`, `isAudioActivated`, `isInterrupted`, `audioDevices`, `selectedAudioDeviceID`, `endedByUser` | Observable state for your UI. `activeCall` carries the target id, display name and direction of the current call. |
+| `state`, `activeCall`, `isMuted`, `isOnHold`, `isBotSpeaking`, `isAudioActivated`, `isInterrupted`, `audioDevices`, `selectedAudioDeviceID`, `endedByUser` | Observable state for your UI. `activeCall` carries the target id, display name and direction of the current call. |
 | `repeatingCue` | The looping cue that should be playing now (`.connecting`, `.retrying`, or nil), for a UI that attaches mid-call. See [Cues](#cues). |
 
-`CallEngineConfiguration` has three settings: `unknownCallerName` (default `"Unknown"`), the name a ring shows when the push carries none; `isPushToTalkEnabled`, a closure read at each mic decision, so a settings change mid-call takes effect on the next one; and `ringTimeout` (default 60 seconds), how long an incoming call rings before the engine ends it as unanswered. A push's `ring_timeout` can shorten that (to no less than 10 seconds) but not lengthen it. `nil` sets no limit of the engine's own; a push's `ring_timeout` still applies then.
+`CallEngineConfiguration` has four settings: `unknownCallerName` (default `"Unknown"`), the name a ring shows when the push carries none; `isPushToTalkEnabled`, a closure read at each mic decision, so a settings change mid-call takes effect on the next one; `ringTimeout` (default 60 seconds), how long an incoming call rings before the engine ends it as unanswered; and `supportsHolding` (default true), whether calls are reported to CallKit as holdable. A push's `ring_timeout` can shorten the ring timeout (to no less than 10 seconds) but not lengthen it. `nil` sets no limit of the engine's own; a push's `ring_timeout` still applies then. With `supportsHolding` off, CallKit offers no hold for the call, and a phone call the user takes during it ends it.
 
 `CallEngine.supportedPushFeatures` (`["cancel", "ring_timeout"]`) is the set of optional push features this engine understands; send it to your server with the VoIP token ([section 7](#7-delivering-the-voip-token-to-your-server)).
 
@@ -190,6 +191,18 @@ How each adapter honors this:
 **One mic rule.** The transport's mic is on only while CallKit has activated the session (`isAudioActivated`) and no interruption holds it (`isInterrupted` is false); beyond that it follows mute, or in push-to-talk mode whether the button is held (push-to-talk ignores mute). Every change to one of those inputs (an activation or deactivation, the start or end of an interruption, `setMuted(_:)`, a mute from the system call UI, `setPushToTalkActive(_:)`) and the transport reporting `.connected` re-derive the mic from that rule. The engine sends attach, detach and mic commands to the transport one after another in the order it issued them, and reads the rule when each mic command runs, so whatever order these arrive in, the transport ends up with the rule's current answer. An unmute or a push-to-talk press before activation, or during an interruption, is remembered and takes effect when the rule allows it. Muting, releasing push-to-talk, a deactivation and the start of an interruption turn the mic off.
 
 **Interruptions that end without permission to resume.** When an interruption ends with `shouldResume`, the mic comes back at once. When it ends without it, the mic stays closed, and `isInterrupted` stays true, until CallKit activates the session again or the user unmutes or presses push-to-talk. If CallKit activated the session while the interruption was still in progress, its end reopens the mic either way: the session is already back.
+
+<a id="call-hold"></a>**Call hold.** With `supportsHolding` on (the default), every call is reported to CallKit as holdable (and as not groupable and without DTMF), so when a phone call starts or arrives during an engine call, iOS can hold the engine call instead of ending it. The user, iOS, or your app through `setOnHold(_:)` holds and resumes it; each arrives as CallKit's hold action, which the engine performs only for the call it names and only while that call is connecting, connected or reconnecting (otherwise CallKit is told the action failed). A hold does not change `state`; it sets `isOnHold`, and:
+
+1. The mic closes, through the same rule as above: the mic is on only while the session is activated, the call is not on hold and nothing interrupts it. A mute, unmute or push-to-talk change while held is recorded and applies on resume.
+2. The engine calls `transport.detachAudioSession()`, so media stops even if CallKit keeps the session active (as it may when your app holds a call with no other call up).
+3. If the transport is connected, the engine sends it `CallSignal.held` for the agent (see [section 10](#10-writing-your-own-transport)).
+4. The looping cue, if one runs, stops, and `.moment(.held)` is delivered. No other cue is delivered until the resume.
+5. A reconnect already scheduled is cancelled, and the call shows `reconnecting(attempt: 0)`. A connection that drops while held does the same instead of spending retries. A transport that heals itself while held recovers as usual.
+
+On resume, `isOnHold` clears; the engine calls `attachAudioSession()` if CallKit has the session activated (otherwise it attaches on the next activation), re-derives the mic, sends `CallSignal.resumed` if connected, and delivers `.moment(.resumed)` followed by whatever the call's state needs: `.moment(.connected)` if the call first connected during the hold, `.moment(.connectionLost)` and `.start(.retrying)` if the connection dropped during the hold, `.start(.retrying)` again if the outage began before it, `.start(.connecting)` if the call has not connected yet. A reconnect the hold paused starts at once at attempt 1 with a fresh budget. A transport that connects or reconnects while the call is held is told `held` again, and one that reconnects after a resume it missed is told `resumed`. Ending a held call is an ordinary end; held time counts in `CallRecord.duration`.
+
+What CallKit does to the audio session around a hold is not documented by Apple. The engine is built so that any order works: whether CallKit deactivates the session on hold and activates it again on resume, sends interruptions around them, or does neither, media runs only while the session is activated and the call is not held, and the mic follows the rule above.
 
 **Hands-free default.** Once per call, after it connects and the transport's device list is available, the engine selects the loudspeaker if the transport lists no Bluetooth or wired route. A call with nothing connected therefore plays on the speaker rather than the earpiece, and a call in the car stays in the car. This is not configurable in this version; the user can change routes afterwards.
 
@@ -318,13 +331,15 @@ Here `agents` and `callTarget(inline:)` are your own: the latter builds a `CallT
 | `.moment(.connected)` | The call connected for the first time. |
 | `.moment(.reconnected)` | The call came back after an outage. |
 | `.moment(.connectionLost)` | The connection dropped. Once per outage, followed by `.start(.retrying)`. |
-| `.moment(.held)`, `.moment(.resumed)` | Reserved for call hold; not delivered in this version. |
+| `.moment(.held)` | The call was put on hold. A running loop is stopped first; no other cue comes until `.moment(.resumed)`. |
+| `.moment(.resumed)` | The call came back from hold. Followed by `.moment(.connected)` if the call first connected during the hold, and by the loop the call's state wants, if any, preceded by `.moment(.connectionLost)` if the connection dropped during the hold. |
 
 What the engine guarantees, so you need no bookkeeping of your own:
 
 - At most one loop runs at a time. Every `.start` is followed by exactly one `.stop` before the next `.start`, before `.moment(.connected)` or `.moment(.reconnected)`, and no later than the transition that ends the call, whatever ends it (a hangup, a failure, an exhausted retry budget, a CallKit provider reset).
 - `.moment(.connectionLost)` comes once per outage, also when a transport's own healing escalates to the engine's retries (`reconnecting(attempt: 0) -> reconnecting(attempt: 1)` is not a second outage).
 - A ring that is never answered (declined, timed out, cancelled, filtered by Focus, busy, or ended before it could proceed) produces no cues; CallKit's ringtone is the only sound.
+- While the call is on hold, nothing plays: `.moment(.held)` comes with no loop running, and the next cue is `.moment(.resumed)`. A connection that drops and comes back during the hold is not marked; one still down at the resume is marked then, once. Hold and resume cues come when CallKit performs the hold action, not with a state change.
 - Cues arrive synchronously on the main actor, right after the `didChangeStateFrom:to:` of the same change and after that change's ring-status receipt (so `answered` is sent before the ringback starts). `engine.repeatingCue` is already updated when a cue arrives.
 
 A host that speaks its cues:
@@ -342,7 +357,7 @@ func callEngine(_ engine: CallEngine, cue: CallCue) {
 }
 ```
 
-`announcer` is yours. Play cues into the session as CallKit configured it (see [section 4](#4-audio-session-ownership)); a call screen that appears mid-call can start the loop `engine.repeatingCue` names.
+`announcer` is yours. During a hold your app's audio session is typically not active (the user is on another call), so play nothing for `.moment(.held)`; a short sound for `.moment(.resumed)` is reasonable. Play cues into the session as CallKit configured it (see [section 4](#4-audio-session-ownership)); a call screen that appears mid-call can start the loop `engine.repeatingCue` names.
 
 **Missed calls.** The engine posts no notifications. A record with a non-nil `missedReason` is a ring nobody answered or declined: `.busy` (another call was up) and `.filteredByFocus` never reached the user, while `.ringTimedOut` (it rang out) and `.canceledByCaller` (the server withdrew it) did; `missedReason.reachedUser` tells the two groups apart. Post a local notification for them if you want the user to know. Provisional notification authorization lets you deliver these quietly without an upfront permission prompt.
 
@@ -357,12 +372,14 @@ A transport carries audio between the device and the agent. Conform to `CallTran
 | `disconnect() async` | Leave because the call is over. If your protocol has an explicit "end call" signal, send it here (see [section 11](#11-what-the-server-side-must-do)). |
 | `setMicEnabled(_:) async` | Capture on or off. Can arrive before `connect` finishes; it must be harmless then, because the engine sets it again after `.connected`. Also used to pause the mic during interruptions. |
 | `availableAudioDevices() async`, `selectedAudioDevice() async`, `setAudioDevice(_:) async` | The routes the user can pick, and switching between them, through your SDK so it does not revert the choice. |
-| `attachAudioSession() async` | CallKit has activated the session: start audio I/O on it. Never activate the session or change its category yourself. Can be called before `connect`, and again after an interruption; make it idempotent. |
-| `detachAudioSession() async` | CallKit deactivated the session, or the call is ending: stop audio I/O. Can be called mid-call. |
+| `attachAudioSession() async` | CallKit has activated the session and the call is not on hold: start audio I/O on it. Never activate the session or change its category yourself. Can be called before `connect`, again after an interruption, and on resuming from hold; make it idempotent. |
+| `detachAudioSession() async` | CallKit deactivated the session, the call was put on hold, or the call is ending: stop audio I/O, playout included. Can be called mid-call, and twice in a row (a hold followed by CallKit's deactivation). |
+| `send(_:) async` | Deliver a `CallSignal` (`held`, `resumed`) to the agent. Optional: the default implementation drops it. Best effort: the engine never waits on a delivery for anything else, does not retry, and sends only once the transport has reported `.connected`. Must not throw, must return promptly when the connection is gone, and may get the same signal again (`held` is repeated after every reconnect of a held call). |
 
 Rules that come from the device bugs this code survived:
 
 - **`connect` must not undo an attach.** If attach can come before or during connect, track whether you are attached and have `connect` apply the current state, rather than resetting audio to "off" unconditionally. An unconditional reset after a slow credential fetch is what produced a dead mic on the first call after launch.
+- **Being held is detach plus the mic.** The engine calls, in this order on hold: `setMicEnabled(false)`, `detachAudioSession()`, and, if connected, `send(.held)`. CallKit may then deactivate the session, which brings another `setMicEnabled(false)` and `detachAudioSession()`. On resume: `attachAudioSession()` (only if the session is still or again activated; otherwise at CallKit's next activation), `setMicEnabled(_:)` with the rule's answer, and, if connected, `send(.resumed)`. Mic and attach commands reach the transport one after another in the order the engine issued them; signals go in their own ordered queue, so a slow `send` never delays the mic. Your `detachAudioSession()` must stop playout as well as capture, or the user hears the agent while on another call, and your `attachAudioSession()` must restart both. Keep the connection up while held.
 - **Emit `.connected` once the agent can hear the user**, not when the network connection opens. It drives the call timer, the user's "connected" cue, and the engine's mic re-apply.
 - **Follow `.reconnecting` with `.connected` or `.disconnected`.** The engine shows reconnecting while your SDK heals itself and waits up to 30 seconds for one of the two. After that it treats the transport as dropped: it does not call `disconnect()`, but runs its own reconnect, calling the target's `connect` for fresh credentials and then your `connect(_:)` on the same instance, possibly while your SDK is still trying to heal. Make `connect(_:)` take over from an SDK reconnect in progress. If `.connected` arrives during the engine's attempt, the call recovers as usual.
 
@@ -468,10 +485,26 @@ The engine joins whatever room `connect` returns. Your server must put an agent 
 - **Use LiveKit 2.18.0 or later.** Earlier versions can report a reconnect they gave up on as complete, with the room still marked connected (client-sdk-swift PR #1144). The adapter reads the SDK's version at run time. Before 2.18.0, a completion with no remote participant is taken as that drop, and the adapter disconnects the room before the engine reconnects. A completion whose rejoin succeeded but whose media connection then timed out still has its participants, so on those versions the call can show connected with no audio until the user ends it.
 - **Errors.** Connect errors that LiveKit reports as insufficient permissions, or whose description mentions unauthorized, 401, permission or token, become `.authenticationFailed` (`.badToken`); others become `.connectionFailed`.
 
+### Call-control signals
+
+The engine tells the agent when the user's side holds and resumes the call, through `CallTransport.send(_:)`. A transport carries each `CallSignal` as an RTVI client message, the same envelope as the end-call signal, with the signal's raw value as `t`:
+
+```json
+{"id": "<8 characters>", "label": "rtvi-ai", "type": "client-message", "data": {"t": "call-held"}}
+```
+
+| `t` | Meaning | What the agent should do |
+|---|---|---|
+| `call-held` | The user's side put the call on hold. The user cannot hear the agent and their mic is closed. | Stop speaking (interrupt any response in progress), take no turns, and keep the session. If the user's media disappears while held, wait much longer than the usual drop grace window (the hold can last as long as the user's phone call) before giving up. |
+| `call-resumed` | The call is back. | Resume normally. |
+| `call-answered` | Reserved; not sent by this version. | Ignore it until you use pre-connect. |
+
+Signals are best effort and can repeat: `call-held` is sent again after every reconnect of a held call, and `call-resumed` after a reconnect that follows a resume the agent missed. Treat each as the current state, not a toggle, and ignore names you do not know. A transport that does not implement `send(_:)` delivers nothing; the call works the same, and the agent simply hears silence while the call is held.
+
 ### For any transport
 
 - **Honor the end-call signal.** A dropped connection and a hangup look the same from the server unless the client says which it is. Because the engine reconnects after drops, your agent should hold the room for a grace window when the user's media disappears. When the end-call signal arrives, tear down immediately instead. If you ignore it, every hangup keeps your agent in the room (and billing) for the full grace window, and nothing on the device will tell you.
-- **Size the grace window to the engine's backoff.** The engine waits 1, 2, 4, 8, 16 and 30 seconds before its six attempts, a little over a minute in total plus connection time. When the transport first reports that it is healing itself, the engine waits up to 30 seconds for it before that backoff starts, so the device can still be trying for about a minute and a half after its media stopped. A shorter window cuts off drops the device would have recovered from.
+- **Size the grace window to the engine's backoff.** The engine waits 1, 2, 4, 8, 16 and 30 seconds before its six attempts, a little over a minute in total plus connection time. When the transport first reports that it is healing itself, the engine waits up to 30 seconds for it before that backoff starts, so the device can still be trying for about a minute and a half after its media stopped. A shorter window cuts off drops the device would have recovered from. A held call does not reconnect until it is resumed, so after `call-held` (see [Call-control signals](#call-control-signals)) use a much longer window.
 - **Reconnects call your credential code again.** Each attempt re-runs the target's `connect`. Your endpoint may return the same room (the agent is still waiting there) or a fresh room with a newly dispatched agent; either works, as long as an agent is present when the device arrives. Inline credentials from a push are reused if your `connect` closure keeps returning them, so they must stay valid for the length of the call.
 - **The signal is best-effort.** The engine's teardown calls `disconnect()` for every ending (user hangup, agent hangup, failure), and the adapters send the signal only while the connection is up. A connection that died never sends it, which is exactly when the grace window should apply.
 
@@ -506,6 +539,7 @@ and in `makeTransport`, return a `FakeTransport()` in the simulator. `FakeTransp
 | `answerIncomingCall() async` | The user answers; returns once the connect attempt has run. |
 | `endCallFromSystem(_:)` | The user ends or declines from the system UI. |
 | `setMutedFromSystem(_:muted:)` | The user toggles mute from the system UI. Ignored unless `callID` is the live call's. |
+| `setHeldFromSystem(_:onHold:) async -> Bool` | The user or iOS holds or resumes the call (iOS does this for a phone call). Returns whether the engine performed the action, once the engine has applied it to the transport (mic, attach, the agent's signal). |
 | `resetProvider()` | CallKit resets the provider: a live call fails with `.unknown`, a ring returns to idle, and both are recorded. |
 | `outgoingStartError` | While set, every outgoing start throws it, as a rejected start does; the call fails with `.unknown`. |
 | `activateAudioSession() async` | CallKit activates the audio session; returns once the engine has attached the transport and applied mic state. |
@@ -516,10 +550,11 @@ and in `makeTransport`, return a `FakeTransport()` in the simulator. `FakeTransp
 | `incomingReportResult` | How CallKit answers incoming reports: `.rings`, `.filteredByFocus`, `.duplicateCallID`, `.fails(_)`. Like CallKit, the simulated system also answers `.duplicateCallID` on its own for an id it holds (a call started or reported and not yet ended), which is what a cancel push for the ringing call meets. |
 | `completesIncomingReportsLater`, `completeIncomingReports()` | Hold CallKit's report completions and release them. By default reports complete before the report call returns, which real CallKit never does; set this to test the device's ordering, such as an answer that arrives before CallKit accepts the report. |
 | `suspendsOutgoingStarts`, `pendingOutgoingStartCount`, `releaseOutgoingStarts()` | Hold outgoing call starts, to test ending a call while it dials. |
-| `startedCallIDs`, `reportedIncomingCalls`, `updatedCalls`, `ringReceipts` | What the engine reported, in plain types. `ReportedCall` and `RingReceipt` have public initializers, so you can write expected values. |
+| `startedCallIDs`, `reportedIncomingCalls`, `updatedCalls`, `ringReceipts`, `holdRequests` | What the engine reported or requested, in plain types. `ReportedCall`, `RingReceipt` and `HoldRequest` have public initializers, so you can write expected values. Like CallKit, the simulated system performs each requested hold through the engine, for a call it holds that was reported as holdable. |
+| `reportedSupportsHolding(_:) -> Bool?` | Whether the engine last reported a call as holdable (`CallEngineConfiguration.supportsHolding`); nil for a call it never reported. |
 | `presentConnectedCall(_:secondsElapsed:botSpeaking:) -> Bool` | Puts a connected call on the engine's observed state without CallKit, a transport or any delegate callback, for screenshots of your in-call UI. Works only on the engine `CallEngine.simulated` made for this system; returns false otherwise. |
 
-`FakeTransport` records `connectCount`, `disconnectCount`, `lastConnection`, `isMicEnabled` and `isAudioAttached`; `connectError` makes the next connect throw; `suspendConnect` with `releaseConnect()` holds a connect open; `emit(_:)` sends an event through the stream (asynchronously, unlike `deliverTransportEvent`).
+`FakeTransport` records `connectCount`, `disconnectCount`, `lastConnection`, `isMicEnabled`, `isAudioAttached` and `sentSignals`; `connectError` makes the next connect throw; `suspendConnect` with `releaseConnect()` holds a connect open; `emit(_:)` sends an event through the stream (asynchronously, unlike `deliverTransportEvent`).
 
 A test of incoming-call handling with Swift Testing:
 
@@ -605,7 +640,11 @@ Audio:
 - [ ] Connect AirPods mid-call: the route list updates; the in-app picker moves audio both ways.
 - [ ] LiveKit: the native call screen's route button moves audio. Daily: confirm your in-app picker works, since the native button cannot.
 - [ ] Mute from the system UI and in-app: both stay in sync.
-- [ ] Invoke Siri, or take a cellular call, mid-call: the mic pauses and comes back afterwards.
+- [ ] Invoke Siri mid-call: the mic pauses and comes back afterwards.
+- [ ] Have a second phone call the device's number mid-call and choose Hold & Accept: the engine call is held, not ended (`isOnHold`, the agent goes quiet and, if your server logs it, receives `call-held`). Hang up the phone call and resume the engine call if iOS does not: two-way audio is back within a second, and the agent receives `call-resumed`. Do this on each adapter you link.
+- [ ] Place a phone call from the Phone app during an engine call: the engine call is held, and comes back when the phone call ends and the call is resumed.
+- [ ] Hold and resume from your own UI, if you offer it: the same as above, without a second call.
+- [ ] Stay on hold longer than a minute: the engine call survives (a connection that drops during the hold reconnects after the resume).
 - [ ] CarPlay, if you support driving: place, take and end calls from the car.
 
 Network:
@@ -701,7 +740,8 @@ Fix: record only from `didFinish`; the engine already makes the end of a call id
 ## Known limitations
 
 - **One call at a time.** A second call during a live one is reported and ended as busy.
-- **No call-hold handling.** CallKit's hold action is not handled, so the engine's call cannot be held. When the user places a cellular call during an engine call, iOS ends the engine's call (observed on iOS 27; the engine tears down normally and sends the end-call signal). Other audio interruptions pause the mic and resume it afterwards.
+- **Call hold is verified in unit tests only.** How iOS sequences the hold action with audio-session deactivation, activation and interruptions, whether it resumes the engine call by itself when the phone call ends, and whether a hold is offered with the provider's one-call-group configuration have not been confirmed on a device; the engine is written to handle any order. Hold is not configurable beyond on or off, and calls cannot be grouped or swapped beyond what holding allows.
+- **The bundled adapters do not deliver call-control signals yet.** `PipecatDailyTransport` and `LiveKitTransport` use the default `send(_:)`, which drops the signal, so their agents are not told about a hold. `PipecatDailyTransport`'s `detachAudioSession()` does nothing, so on Daily a held call may still play the agent's audio unless CallKit's deactivation silences it.
 - **A cancel push for a ring the device no longer has flashes.** iOS requires every VoIP push to be reported as a call, so a cancel for an unknown or finished ring shows a brief incoming call that ends at once. Whether iOS counts a cancel CallKit refuses as a duplicate as properly reported (and keeps delivering pushes) is assumed from the PushKit rules and has not yet been confirmed on a device.
 - **No timeout while connecting.** If the agent never becomes ready, the call stays in `.connecting` until the user ends it.
 - **The native CallKit route button cannot move audio on the Daily adapter.** Use an in-app picker.

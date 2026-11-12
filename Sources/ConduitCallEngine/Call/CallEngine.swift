@@ -10,9 +10,10 @@
 //  protocols, so the whole machine runs in the simulator against fakes.
 //
 //  AUDIO-SESSION OWNERSHIP INVARIANT: `transport.attachAudioSession()` is called
-//  only once CallKit has activated the session — from `activate(_:)` (the
-//  `providerDidActivate` callback), or when a transport is created after that
-//  activation already happened — and the mic is never enabled before activation.
+//  only once CallKit has activated the session and only while the call is not on
+//  hold — from `activate(_:)` (the `providerDidActivate` callback), when a
+//  transport is created after that activation already happened, or on resume —
+//  and the mic is never enabled before activation (see `micShouldBeOn`).
 //  CallKit owns the session; the transport attaches to it.
 //
 
@@ -51,6 +52,12 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     /// not yet followed by a `stop`. Lets a UI that attaches mid-call pick the loop
     /// up without having seen the cue. Updated before the cue is delivered.
     public private(set) var repeatingCue: RepeatingCue?
+    /// Whether the call is on hold: iOS held it (typically so the user can take
+    /// or place a phone call) or the host did with `setOnHold(_:)`. The state does
+    /// not change on hold. While held the mic is closed, media is stopped, the
+    /// agent has been sent `CallSignal.held`, no cues are delivered, and a dropped
+    /// connection waits for the resume before reconnecting. Cleared when the call ends.
+    public private(set) var isOnHold = false
 
     // MARK: - Dependencies
 
@@ -95,6 +102,20 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     /// The tail of the media commands (attach, detach, mic) sent to the live
     /// transport, which run one after another in the order the engine issued them.
     private var mediaTask: Task<Void, Never>?
+    /// The tail of the call-control signals sent to the live transport, in order.
+    /// Kept apart from media so a slow delivery never delays the mic.
+    private var signalTask: Task<Void, Never>?
+    /// Whether the agent was last sent `held` and not yet `resumed`.
+    private var isAgentToldHeld = false
+    /// A drop while held: the reconnection waits for the resume, then starts at
+    /// attempt 1 at once.
+    private var isReconnectionPaused = false
+    /// Whether this outage's `connectionLost` cue has been delivered (it is not
+    /// while held, so the resume delivers it).
+    private var isOutageMarked = false
+    /// Whether `.moment(.connected)` has been delivered for this call (it is not
+    /// when the call first connects while held, so the resume delivers it).
+    private var isConnectionMarked = false
     package private(set) var reconnectTask: Task<Void, Never>?
     /// Ends the wait for a transport that is healing itself; see `enterReconnectingDisplay`.
     private var selfHealDeadlineTask: Task<Void, Never>?
@@ -147,6 +168,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         self.sleep = sleep
         self.isSimulated = isSimulated
         callProvider.delegate = self
+        callProvider.supportsHolding = configuration.supportsHolding
         interruptionObserver.delegate = self
     }
 
@@ -589,10 +611,11 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         let transport = target.makeTransport()
         self.transport = transport
         mediaTask = nil
+        signalTask = nil
         subscribe(to: transport)
         // CallKit can activate before the transport exists (while dialing, or
         // before `answer()` runs); that activation found no transport to attach.
-        if isAudioActivated {
+        if isAudioActivated, !isOnHold {
             await enqueueMedia { await $0.attachAudioSession() }?.value
             guard self.transport === transport else { return }
         }
@@ -674,6 +697,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
             transition(to: .connected(since: start))
             // The transport may have ignored a mic set before it joined.
             applyMic()
+            syncHoldSignal()
             scheduleAudioDeviceUpdate()
             Log.info(.call, "Connected")
 
@@ -681,9 +705,12 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
             reconnectAttempt = 0
             reconnectTask?.cancel()
             reconnectTask = nil
+            isReconnectionPaused = false
             cancelSelfHealDeadline()
             transition(to: .connected(since: firstConnectedAt ?? now()))
             applyMic()
+            // A new connection may be a new agent session: tell it again.
+            syncHoldSignal()
             Log.info(.call, "Reconnected")
 
         default:
@@ -758,8 +785,14 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         selfHealDeadlineTask = nil
     }
 
-    private func scheduleReconnect() {
+    /// Schedule the next attempt after its backoff, or `immediately`; while the
+    /// call is held, pause reconnection instead until the resume.
+    private func scheduleReconnect(immediately: Bool = false) {
         cancelSelfHealDeadline()
+        if isOnHold {
+            pauseReconnection()
+            return
+        }
         let next = reconnectAttempt + 1
         guard policy.canAttempt(next) else {
             Log.warning(.call, "Reconnection budget exhausted after \(reconnectAttempt) attempts")
@@ -770,13 +803,24 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
 
         transition(to: .reconnecting(attempt: reconnectAttempt))
 
-        let delay = policy.delay(forAttempt: reconnectAttempt)
+        let delay = immediately ? nil : policy.delay(forAttempt: reconnectAttempt)
         reconnectTask?.cancel()
         reconnectTask = Task { [weak self] in
-            try? await self?.sleep(delay)
+            if let delay { try? await self?.sleep(delay) }
             guard let self, !Task.isCancelled else { return }
             await self.retryConnect()
         }
+    }
+
+    /// A held call spends no attempts: any pending one is cancelled, the count
+    /// starts over, and the call shows `reconnecting(attempt: 0)` until the resume.
+    private func pauseReconnection() {
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        reconnectAttempt = 0
+        isReconnectionPaused = true
+        Log.info(.call, "Connection lost while held; reconnecting after the resume")
+        transition(to: .reconnecting(attempt: 0))
     }
 
     private func retryConnect() async {
@@ -838,9 +882,10 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         case .endedAwaitingActivation: interruption = .none
         case .none: break
         }
-        // A transport created later attaches as soon as it exists.
+        // A transport created later attaches as soon as it exists; a held call's
+        // attaches on the resume.
         guard let transport else { return }
-        enqueueMedia { await $0.attachAudioSession() }
+        if !isOnHold { enqueueMedia { await $0.attachAudioSession() } }
         // Enabling the mic only takes effect once the transport is connected. If
         // CallKit activates BEFORE connect (e.g. slow credential resolution delays the
         // join), this is a no-op and the mic is (re)enabled in `handleConnected`.
@@ -908,6 +953,99 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         isMuted = muted
         if !muted { endInterruptionAwaitingActivation() }
         applyMic()
+    }
+
+    // MARK: - Hold (CallProviderDelegate)
+
+    package func providerPerformSetHeld(_ id: UUID, onHold: Bool) -> Bool {
+        guard activeCallID == id else {
+            Log.warning(.callkit, "Hold for call \(id), which is not the live call; refused")
+            return false
+        }
+        guard configuration.supportsHolding, canBeHeld else {
+            Log.warning(.callkit, "Hold for call \(id) refused in state \(String(describing: state))")
+            return false
+        }
+        guard onHold != isOnHold else { return true }
+        if onHold { hold() } else { resume() }
+        return true
+    }
+
+    /// Placed or answered and not over: a ring or a call still dialing cannot be held.
+    private var canBeHeld: Bool {
+        switch state {
+        case .connecting, .connected, .reconnecting: true
+        default: false
+        }
+    }
+
+    private func hold() {
+        Log.info(.call, "Call held")
+        isOnHold = true
+        applyMic()
+        enqueueMedia { await $0.detachAudioSession() }
+        syncHoldSignal()
+        if repeatingCue != nil {
+            repeatingCue = nil
+            delegate?.callEngine(self, cue: .stop)
+        }
+        delegate?.callEngine(self, cue: .moment(.held))
+        // A retry already scheduled would spend the budget during the hold.
+        if reconnectTask != nil { pauseReconnection() }
+    }
+
+    private func resume() {
+        Log.info(.call, "Call resumed")
+        isOnHold = false
+        if isAudioActivated { enqueueMedia { await $0.attachAudioSession() } }
+        applyMic()
+        syncHoldSignal()
+        delegate?.callEngine(self, cue: .moment(.resumed))
+        if case .connected = state, !isConnectionMarked {
+            isConnectionMarked = true
+            delegate?.callEngine(self, cue: .moment(.connected))
+        }
+        if case .reconnecting = state, !isOutageMarked {
+            isOutageMarked = true
+            delegate?.callEngine(self, cue: .moment(.connectionLost))
+        }
+        if let loop = wantedLoop(for: state) {
+            repeatingCue = loop
+            delegate?.callEngine(self, cue: .start(loop))
+        }
+        if isReconnectionPaused {
+            isReconnectionPaused = false
+            scheduleReconnect(immediately: true)
+        }
+    }
+
+    /// Tell the agent whether the call is held, whenever it can be told: on hold
+    /// and resume while connected, and on every connection (a reconnect may reach
+    /// a new agent session). A resume while disconnected is sent on reconnect.
+    private func syncHoldSignal() {
+        guard case .connected = state else { return }
+        if isOnHold {
+            send(.held)
+            isAgentToldHeld = true
+        } else if isAgentToldHeld {
+            send(.resumed)
+            isAgentToldHeld = false
+        }
+    }
+
+    private func send(_ signal: CallSignal) {
+        guard let transport else { return }
+        let previous = signalTask
+        signalTask = Task { [weak self] in
+            await previous?.value
+            guard let self, self.transport === transport else { return }
+            await transport.send(signal)
+        }
+    }
+
+    /// Test hook: await every call-control signal sent so far.
+    package func awaitPendingSignals() async {
+        await signalTask?.value
     }
 
     /// The reset already ended every call in CallKit, so nothing is reported back
@@ -1003,6 +1141,21 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         await applyMic()?.value
     }
 
+    /// Ask CallKit to hold or resume the call, as the system UI would. CallKit
+    /// performs the hold through the engine, which then updates `isOnHold`; on a
+    /// device that can land just after this returns. Does nothing without a call
+    /// that can be held (connecting, connected or reconnecting), or when
+    /// `CallEngineConfiguration.supportsHolding` is false. While held, the user's
+    /// mute and push-to-talk changes are recorded and apply on resume.
+    public func setOnHold(_ onHold: Bool) async {
+        guard configuration.supportsHolding, canBeHeld, let id = activeCallID else {
+            Log.warning(.call, "setOnHold(\(onHold)) ignored; state is \(String(describing: state))")
+            return
+        }
+        await callProvider.setHeld(id, onHold: onHold)
+        await mediaTask?.value
+    }
+
     // MARK: - Audio route (driven through the transport so the SDK honors it)
 
     public func selectAudioDevice(_ id: String) async {
@@ -1073,10 +1226,11 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         case endedAwaitingActivation
     }
 
-    /// The one mic rule: on only on a session CallKit has activated and no other
-    /// audio holds, then following mute, or in push-to-talk mode the button.
+    /// The one mic rule: on only on a session CallKit has activated, while the
+    /// call is not on hold and no other audio holds the session, then following
+    /// mute, or in push-to-talk mode the button.
     private var micShouldBeOn: Bool {
-        guard isAudioActivated, !isInterrupted else { return false }
+        guard isAudioActivated, !isOnHold, !isInterrupted else { return false }
         return isPushToTalkEnabled() ? isPushToTalkHeld : !isMuted
     }
 
@@ -1163,6 +1317,10 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         eventTask?.cancel()
         eventTask = nil
         mediaTask = nil
+        signalTask = nil
+        isOnHold = false
+        isAgentToldHeld = false
+        isReconnectionPaused = false
         activeCallID = nil
         let outgoing = transport
         transport = nil
@@ -1187,6 +1345,11 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         remoteAudioLevel = 0
         isAudioActivated = false
         interruption = .none
+        isOnHold = false
+        isAgentToldHeld = false
+        isReconnectionPaused = false
+        isOutageMarked = false
+        isConnectionMarked = false
         audioDevices = []
         selectedAudioDeviceID = nil
         didApplyHandsFreeDefault = false
@@ -1209,21 +1372,22 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
 
     /// Cues are a function of the transition: the loop each state wants, and the
     /// moments its edges mark. Stopping first and starting last keeps every
-    /// moment outside a loop and at most one loop running.
+    /// moment outside a loop and at most one loop running. A held call gets no
+    /// cues; `resume()` delivers what its state wants then.
     private func deliverCues(from old: CallState, to new: CallState) {
-        let loop: RepeatingCue?
-        switch new {
-        case .connecting: loop = .connecting
-        case .reconnecting: loop = .retrying
-        default: loop = nil
+        if case .connected = new { isOutageMarked = false }
+        let loop = isOnHold ? nil : wantedLoop(for: new)
+        var moment: CallMoment?
+        if !isOnHold {
+            switch (old, new) {
+            case (.connecting, .connected): moment = .connected
+            case (.reconnecting, .connected): moment = .reconnected
+            case (.connected, .reconnecting): moment = .connectionLost
+            default: moment = nil
+            }
         }
-        let moment: CallMoment?
-        switch (old, new) {
-        case (.connecting, .connected): moment = .connected
-        case (.reconnecting, .connected): moment = .reconnected
-        case (.connected, .reconnecting): moment = .connectionLost
-        default: moment = nil
-        }
+        if moment == .connectionLost { isOutageMarked = true }
+        if moment == .connected { isConnectionMarked = true }
 
         if repeatingCue != nil, repeatingCue != loop {
             repeatingCue = nil
@@ -1233,6 +1397,14 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         if let loop, repeatingCue != loop {
             repeatingCue = loop
             delegate?.callEngine(self, cue: .start(loop))
+        }
+    }
+
+    private func wantedLoop(for state: CallState) -> RepeatingCue? {
+        switch state {
+        case .connecting: .connecting
+        case .reconnecting: .retrying
+        default: nil
         }
     }
 

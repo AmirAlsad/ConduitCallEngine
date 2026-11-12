@@ -21,14 +21,22 @@ public struct CallEngineConfiguration {
     /// lasts until it is answered, declined or cancelled, unless the push carries
     /// `ring_timeout`, which still applies. Default 60 seconds.
     public var ringTimeout: Duration?
+    /// Whether calls are reported to CallKit as holdable. When true (the default),
+    /// iOS can put the call on hold (for example to answer or place a phone call)
+    /// and the host can hold it with `CallEngine.setOnHold(_:)`; see
+    /// `CallEngine.isOnHold`. When false, CallKit offers no hold for the call, and a
+    /// phone call that starts during it ends it.
+    public var supportsHolding: Bool
 
     public init(
         unknownCallerName: String = "Unknown",
         isPushToTalkEnabled: @escaping @MainActor () -> Bool = { false },
-        ringTimeout: Duration? = .seconds(60)
+        ringTimeout: Duration? = .seconds(60),
+        supportsHolding: Bool = true
     ) {
         self.unknownCallerName = unknownCallerName
         self.isPushToTalkEnabled = isPushToTalkEnabled
         self.ringTimeout = ringTimeout
+        self.supportsHolding = supportsHolding
     }
 }

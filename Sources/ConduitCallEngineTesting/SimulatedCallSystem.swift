@@ -4,8 +4,8 @@
 //
 //  Stands in for CallKit, PushKit, the audio-interruption source, and ring-status
 //  receipts, so a host can run a `CallEngine` in the simulator and in its own tests.
-//  It drives what the system would do (deliver a push or a token, answer, end, or
-//  mute a call from the system UI, activate and deactivate the audio session,
+//  It drives what the system would do (deliver a push or a token, answer, end,
+//  mute, or hold a call from the system UI, activate and deactivate the audio session,
 //  interrupt audio, reset the provider, deliver a transport event) and exposes what
 //  the engine reported, in plain types.
 //
@@ -129,6 +129,19 @@ public final class SimulatedCallSystem {
         provider.simulateSetMuted(callID, muted: muted)
     }
 
+    /// The user or the system held or resumed `callID` from the system UI (for
+    /// example, iOS holds it so the user can take a phone call). Returns whether the
+    /// engine performed the action; CallKit fails one it refuses. Returns once the
+    /// engine has applied the change to the call's transport (mic, attach and the
+    /// agent's signal).
+    @discardableResult
+    public func setHeldFromSystem(_ callID: UUID, onHold: Bool) async -> Bool {
+        let performed = provider.simulateSetHeld(callID, onHold: onHold)
+        await engine?.awaitPendingMediaWork()
+        await engine?.awaitPendingSignals()
+        return performed
+    }
+
     /// The system reset the CallKit provider.
     public func resetProvider() {
         provider.simulateReset()
@@ -224,6 +237,30 @@ public final class SimulatedCallSystem {
             self.endpoint = endpoint
             self.bearer = bearer
         }
+    }
+
+    /// A hold or resume the engine requested from CallKit (`CallEngine.setOnHold(_:)`).
+    public struct HoldRequest: Equatable, Sendable {
+        public let callID: UUID
+        public let onHold: Bool
+
+        public init(callID: UUID, onHold: Bool) {
+            self.callID = callID
+            self.onHold = onHold
+        }
+    }
+
+    /// Every hold or resume the engine requested, in order. The simulated system
+    /// performs each one through the engine, as CallKit does, for a call it holds
+    /// that was reported as holdable.
+    public var holdRequests: [HoldRequest] {
+        provider.heldRequests.map { HoldRequest(callID: $0.id, onHold: $0.onHold) }
+    }
+
+    /// Whether the engine last reported `callID` to CallKit as holdable; nil for a
+    /// call it never reported.
+    public func reportedSupportsHolding(_ callID: UUID) -> Bool? {
+        provider.holdableCalls[callID]
     }
 
     /// The CallKit ids of the outgoing calls the engine started, in order.

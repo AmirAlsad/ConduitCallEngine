@@ -26,6 +26,10 @@ package protocol CallProviderDelegate: AnyObject {
     func providerPerformEndCall(_ id: UUID)
     /// The user toggled mute from the system UI. Ignored unless `id` is the live call.
     func providerPerformSetMuted(_ id: UUID, muted: Bool)
+    /// The user or the system held or resumed the call (for example to take a
+    /// phone call). Returns whether the engine performed it; false fails the
+    /// CallKit action. Refused unless `id` is the live call and it can be held.
+    func providerPerformSetHeld(_ id: UUID, onHold: Bool) -> Bool
     /// The system reset the provider; tear everything down defensively.
     func providerWasReset()
 }

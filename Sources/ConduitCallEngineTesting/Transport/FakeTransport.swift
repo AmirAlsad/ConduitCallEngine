@@ -3,7 +3,8 @@
 //  ConduitCallEngine
 //
 //  Fake conforming to `CallTransport`, for the simulator and tests. A test pushes
-//  events with `emit(_:)` and asserts the engine reacts.
+//  events with `emit(_:)` and asserts the engine reacts, and reads what the engine
+//  did to it (connects, mic, attach, signals).
 //
 
 import Foundation
@@ -101,6 +102,13 @@ public final class FakeTransport: CallTransport, @unchecked Sendable {
 
     public func detachAudioSession() async {
         isAudioAttached = false
+    }
+
+    /// Every call-control signal the engine sent, in order.
+    public private(set) var sentSignals: [CallSignal] = []
+
+    public func send(_ signal: CallSignal) async {
+        sentSignals.append(signal)
     }
 
     /// Drive an event onto the stream from a test or a simulator build.

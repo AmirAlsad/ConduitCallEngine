@@ -334,6 +334,51 @@ struct SimulatedEngineTests {
         #expect(transport.isMicEnabled)
     }
 
+    // MARK: - Hold
+
+    @Test func holdFromTheSystemHoldsAndResumesTheCall() async throws {
+        let callID = try await connectedOutgoingCall()
+        await system.activateAudioSession()
+        #expect(system.reportedSupportsHolding(callID) == true)
+
+        #expect(await system.setHeldFromSystem(callID, onHold: true))
+        #expect(engine.isOnHold)
+        #expect(!transport.isMicEnabled)
+        #expect(!transport.isAudioAttached)
+        #expect(transport.sentSignals == [.held])
+
+        #expect(await system.setHeldFromSystem(callID, onHold: false))
+        #expect(!engine.isOnHold)
+        #expect(transport.isAudioAttached)
+        #expect(transport.isMicEnabled)
+        #expect(transport.sentSignals == [.held, .resumed])
+        #expect(Array(host.cues.suffix(2)) == [.moment(.held), .moment(.resumed)])
+    }
+
+    @Test func theHostsHoldGoesThroughCallKit() async throws {
+        let callID = try await connectedOutgoingCall()
+
+        await engine.setOnHold(true)
+
+        #expect(system.holdRequests == [SimulatedCallSystem.HoldRequest(callID: callID, onHold: true)])
+        #expect(engine.isOnHold)
+    }
+
+    @Test func holdingCanBeTurnedOff() async throws {
+        let system = SimulatedCallSystem()
+        let engine = CallEngine.simulated(
+            configuration: CallEngineConfiguration(ringTimeout: nil, supportsHolding: false),
+            system: system,
+            sleep: { _ in }
+        )
+        await engine.placeCall(target)
+        let callID = try #require(system.startedCallIDs.first)
+
+        #expect(system.reportedSupportsHolding(callID) == false)
+        #expect(!(await system.setHeldFromSystem(callID, onHold: true)))
+        #expect(!engine.isOnHold)
+    }
+
     // MARK: - Screenshot projection
 
     @Test func connectedProjectionShowsOnASimulatedEngine() {

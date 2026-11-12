@@ -27,6 +27,8 @@ package enum IncomingCallReportError: Error, Equatable, Sendable {
 @MainActor
 package protocol CallProviding: AnyObject {
     var delegate: CallProviderDelegate? { get set }
+    /// Whether the calls it reports from now on are holdable (`CXCallUpdate.supportsHolding`).
+    var supportsHolding: Bool { get set }
 
     /// Report an outgoing call to the system. Returns the call's UUID.
     func startOutgoingCall(handle: CallHandle, displayName: String) async throws -> UUID
@@ -49,4 +51,7 @@ package protocol CallProviding: AnyObject {
     /// Tell the system the call ended (transport-initiated / failure).
     func reportCallEnded(_ id: UUID, reason: CallEndReason)
     func setMuted(_ id: UUID, muted: Bool) async
+    /// Request the system hold or resume the call. The system performs it through
+    /// `CallProviderDelegate.providerPerformSetHeld`, which decides.
+    func setHeld(_ id: UUID, onHold: Bool) async
 }

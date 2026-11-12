@@ -17,6 +17,7 @@ import Foundation
 @MainActor
 final class SystemCallProvider: NSObject, CallProviding, CXProviderDelegate {
     weak var delegate: CallProviderDelegate?
+    var supportsHolding = true
 
     private let provider: CXProvider
     private let callController = CXCallController()
@@ -48,7 +49,7 @@ final class SystemCallProvider: NSObject, CallProviding, CXProviderDelegate {
 
         // Show the target's display name on the call and lock screens instead of
         // the raw email-type handle.
-        let update = CXCallUpdate()
+        let update = makeCallUpdate()
         update.localizedCallerName = displayName
         provider.reportCall(with: uuid, updated: update)
 
@@ -64,10 +65,9 @@ final class SystemCallProvider: NSObject, CallProviding, CXProviderDelegate {
         // Pre-configure the session (no activation); CallKit activates on answer.
         try? audioSession.prepareForVoIPCall()
 
-        let update = CXCallUpdate()
+        let update = makeCallUpdate()
         update.localizedCallerName = displayName
         update.remoteHandle = CXHandle(type: .emailAddress, value: handle.value)
-        update.hasVideo = false
         // Issued synchronously: PushKit kills the host if a VoIP push's call isn't
         // reported before the push callback returns.
         provider.reportNewIncomingCall(with: id, update: update) { error in
@@ -92,7 +92,7 @@ final class SystemCallProvider: NSObject, CallProviding, CXProviderDelegate {
     }
 
     func updateCall(_ id: UUID, handle: CallHandle, displayName: String) {
-        let update = CXCallUpdate()
+        let update = makeCallUpdate()
         update.localizedCallerName = displayName
         update.remoteHandle = CXHandle(type: .emailAddress, value: handle.value)
         provider.reportCall(with: id, updated: update)
@@ -118,6 +118,27 @@ final class SystemCallProvider: NSObject, CallProviding, CXProviderDelegate {
     func setMuted(_ id: UUID, muted: Bool) async {
         let action = CXSetMutedCallAction(call: id, muted: muted)
         try? await callController.request(CXTransaction(action: action))
+    }
+
+    func setHeld(_ id: UUID, onHold: Bool) async {
+        let action = CXSetHeldCallAction(call: id, onHold: onHold)
+        do {
+            try await callController.request(CXTransaction(action: action))
+        } catch {
+            Log.error(.callkit, "CXSetHeldCallAction(onHold: \(onHold)) refused: \(error)")
+        }
+    }
+
+    /// Every report and update states the call's capabilities: an update that
+    /// leaves one unset is not relied on to keep the earlier value.
+    private func makeCallUpdate() -> CXCallUpdate {
+        let update = CXCallUpdate()
+        update.hasVideo = false
+        update.supportsHolding = supportsHolding
+        update.supportsGrouping = false
+        update.supportsUngrouping = false
+        update.supportsDTMF = false
+        return update
     }
 
     // MARK: - CXProviderDelegate (system → engine)
@@ -151,6 +172,13 @@ final class SystemCallProvider: NSObject, CallProviding, CXProviderDelegate {
     nonisolated func provider(_ provider: CXProvider, perform action: CXSetMutedCallAction) {
         MainActor.assumeIsolated { delegate?.providerPerformSetMuted(action.callUUID, muted: action.isMuted) }
         action.fulfill()
+    }
+
+    nonisolated func provider(_ provider: CXProvider, perform action: CXSetHeldCallAction) {
+        let performed = MainActor.assumeIsolated {
+            delegate?.providerPerformSetHeld(action.callUUID, onHold: action.isOnHold) ?? false
+        }
+        if performed { action.fulfill() } else { action.fail() }
     }
 
     nonisolated func provider(_ provider: CXProvider, didActivate audioSession: AVAudioSession) {

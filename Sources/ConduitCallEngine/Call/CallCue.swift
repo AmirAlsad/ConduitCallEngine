@@ -26,6 +26,13 @@ import Foundation
 /// - A ring that is never answered (declined, timed out, cancelled, filtered,
 ///   busy, or ended before it could proceed) produces no cues: CallKit's ringtone
 ///   is the only sound.
+/// - Nothing plays while the call is on hold: `.moment(.held)` comes with no loop
+///   running (a running one is stopped first), and the next cue is
+///   `.moment(.resumed)`, followed by the loop the call's state wants, if any. An
+///   outage that begins during the hold and is still going at the resume is marked
+///   then, with `.moment(.connectionLost)` before the loop; a call that first
+///   connected during the hold gets its `.moment(.connected)` then. Hold and resume cues
+///   come when CallKit performs the hold action, not with a state change.
 public enum CallCue: Equatable, Sendable {
     /// Begin a looping cue (a ringback, a "retrying" sound) and keep it going
     /// until the matching `stop`.
@@ -48,16 +55,16 @@ public enum RepeatingCue: Equatable, Sendable {
 
 /// A one-shot moment of a call.
 public enum CallMoment: Equatable, Sendable {
-    /// The call connected for the first time (`.connecting` to `.connected`).
+    /// The call connected for the first time (`.connecting` to `.connected`, or
+    /// at the resume for a call that connected on hold). Once per call.
     case connected
     /// The call came back after an outage (`.reconnecting` to `.connected`).
     case reconnected
-    /// The connection dropped (`.connected` to `.reconnecting`). Once per outage.
+    /// The connection dropped (`.connected` to `.reconnecting`, or at the resume
+    /// for an outage that began on hold). Once per outage.
     case connectionLost
-    /// The call was put on hold. Reserved for call hold; this version never
-    /// delivers it.
+    /// The call was put on hold (`CallEngine.isOnHold` became true).
     case held
-    /// A held call was resumed. Reserved for call hold; this version never
-    /// delivers it.
+    /// A held call was resumed (`CallEngine.isOnHold` became false).
     case resumed
 }

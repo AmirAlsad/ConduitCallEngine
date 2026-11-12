@@ -1,6 +1,6 @@
 # ConduitCallEngine
 
-An iOS library that turns a voice agent into a phone call. It presents the call through CallKit (system call UI, lock screen, Bluetooth and CarPlay routing), receives agent-initiated calls through PushKit VoIP pushes, runs the call state machine, owns the audio-session policy during a call, reconnects after network drops, and carries audio over WebRTC through pluggable transports.
+An iOS library that turns a voice agent into a phone call. It presents the call through CallKit (system call UI, lock screen, Bluetooth and CarPlay routing, hold while the user takes a phone call), receives agent-initiated calls through PushKit VoIP pushes, runs the call state machine, owns the audio-session policy during a call, reconnects after network drops, and carries audio over WebRTC through pluggable transports.
 
 Your app describes each call with a small `CallTarget` value: an id, a display name, an optional CallKit handle, a factory for the transport, and an async `connect` closure that returns a room URL and token however your app obtains them. The engine reports call state and finished calls back to you. It knows about calls, not about agents, accounts, persistence or UI. An app with one built-in agent and an app with many are the same to the engine: the first one just has one target.
 
@@ -168,7 +168,7 @@ struct CallScreen: View {
 
 CallKit and PushKit do not run in the iOS Simulator, and the Daily and LiveKit WebRTC stacks abort when they start audio there. A real two-way call can only be tested on a device.
 
-The `ConduitCallEngineTesting` product covers the rest. `CallEngine.simulated()` builds an engine over a `SimulatedCallSystem`, which stands in for CallKit, PushKit, audio interruptions and ring-status receipts, and `FakeTransport` stands in for the WebRTC transport. Use them behind `#if targetEnvironment(simulator)` to run your app's UI in the simulator, and in your own unit tests to deliver pushes, answer, mute and end calls from the system side, activate the audio session, interrupt audio, and inject transport events. See [Integration Guide, section 12](Docs/IntegrationGuide.md#12-simulator-and-unit-testing).
+The `ConduitCallEngineTesting` product covers the rest. `CallEngine.simulated()` builds an engine over a `SimulatedCallSystem`, which stands in for CallKit, PushKit, audio interruptions and ring-status receipts, and `FakeTransport` stands in for the WebRTC transport. Use them behind `#if targetEnvironment(simulator)` to run your app's UI in the simulator, and in your own unit tests to deliver pushes, answer, mute, hold and end calls from the system side, activate the audio session, interrupt audio, and inject transport events. See [Integration Guide, section 12](Docs/IntegrationGuide.md#12-simulator-and-unit-testing).
 
 ## Verified SDK versions
 

@@ -3,8 +3,8 @@
 //  ConduitCallEngineTests
 //
 //  The one mic rule: the transport's mic is on only while CallKit has activated
-//  the session, no interruption holds it, and the user wants it on (unmuted, or
-//  in push-to-talk mode the button held). Every input re-derives the mic from
+//  the session, the call is not on hold, no interruption holds it, and the user
+//  wants it on (unmuted, or in push-to-talk mode the button held). Every input re-derives the mic from
 //  that rule, so the order the inputs arrive in never matters; the permutation
 //  test drives every order against a reference model of the rule.
 //
@@ -131,11 +131,19 @@ struct MicRuleTests {
         let events: [MicEvent] = [.activate, .deactivate, .interrupt, .endInterruption, .unmute]
         try await MicRuleScenario.runEveryOrder(of: events, shouldResume: shouldResume)
     }
+
+    /// 1,260 orders per argument: hold and its release woven through activation,
+    /// deactivation, an interruption and an unmute.
+    @Test(arguments: [true, false])
+    func everyOrderWithAHoldLeavesTheMicAndMediaWhereTheRuleSays(shouldResume: Bool) async throws {
+        let events: [MicEvent] = [.activate, .deactivate, .hold, .unhold, .interrupt, .endInterruption, .unmute]
+        try await MicRuleScenario.runEveryOrder(of: events, shouldResume: shouldResume)
+    }
 }
 
 /// An input to the mic rule, as the system or the user delivers it.
 enum MicEvent: String, CustomStringConvertible, Sendable {
-    case activate, deactivate, interrupt, endInterruption, unmute
+    case activate, deactivate, interrupt, endInterruption, unmute, hold, unhold
 
     var description: String { rawValue }
 }
@@ -147,10 +155,13 @@ struct MicRuleModel {
     let shouldResume: Bool
     var isActivated = false
     var isMuted = true
+    var isHeld = false
     var interruption = Interruption.none
 
     var isInterrupted: Bool { interruption != .none }
-    var micIsOn: Bool { isActivated && !isInterrupted && !isMuted }
+    /// Media runs on a session CallKit activated, and not while held.
+    var isAttached: Bool { isActivated && !isHeld }
+    var micIsOn: Bool { isActivated && !isHeld && !isInterrupted && !isMuted }
 
     mutating func apply(_ event: MicEvent) {
         switch event {
@@ -174,6 +185,10 @@ struct MicRuleModel {
         case .unmute:
             isMuted = false
             if interruption == .awaitingActivation { interruption = .none }
+        case .hold:
+            isHeld = true
+        case .unhold:
+            isHeld = false
         }
     }
 }
@@ -202,6 +217,10 @@ enum MicRuleScenario {
                 h.interruption.simulateEnded(shouldResume: shouldResume)
             case .unmute:
                 await h.engine.setMuted(false)
+            case .hold:
+                h.provider.simulateSetHeld(h.callID, onHold: true)
+            case .unhold:
+                h.provider.simulateSetHeld(h.callID, onHold: false)
             }
             await h.engine.awaitPendingMediaWork()
             model.apply(event)
@@ -209,22 +228,30 @@ enum MicRuleScenario {
             let mic = h.transport.isMicEnabled
             let where_ = "\(order) step \(step) (\(event))"
             if mic && !h.engine.isAudioActivated { return "\(where_): mic on before activation" }
+            if mic && h.engine.isOnHold { return "\(where_): mic on while held" }
+            if h.transport.isAudioAttached != model.isAttached {
+                return "\(where_): attached \(h.transport.isAudioAttached), rule says \(model.isAttached)"
+            }
             if mic != model.micIsOn { return "\(where_): mic \(mic), rule says \(model.micIsOn)" }
             if h.engine.isInterrupted != model.isInterrupted {
                 return "\(where_): isInterrupted \(h.engine.isInterrupted), rule says \(model.isInterrupted)"
+            }
+            if h.engine.isOnHold != model.isHeld {
+                return "\(where_): isOnHold \(h.engine.isOnHold), rule says \(model.isHeld)"
             }
         }
         return nil
     }
 
-    /// Every order of `events` in which an interruption ends after it begins.
+    /// Every order of `events` in which an interruption ends after it begins and a
+    /// hold is released after it is placed.
     static func orders(of events: [MicEvent]) -> [[MicEvent]] {
         permutations(of: events).filter { order in
             func isBefore(_ first: MicEvent, _ second: MicEvent) -> Bool {
                 guard let a = order.firstIndex(of: first), let b = order.firstIndex(of: second) else { return true }
                 return a < b
             }
-            return isBefore(.interrupt, .endInterruption)
+            return isBefore(.interrupt, .endInterruption) && isBefore(.hold, .unhold)
         }
     }
 

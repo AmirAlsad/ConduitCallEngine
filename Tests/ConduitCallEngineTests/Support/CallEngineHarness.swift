@@ -164,11 +164,18 @@ final class RecordingCallEngineDelegate: CallEngineDelegate {
 
     /// Every way the cues delivered so far break `CallCue`'s guarantees: a start
     /// while a loop runs, a stop with none running, a connected moment inside a
-    /// loop, or `repeatingCue` disagreeing with the last start or stop.
+    /// loop, a connection loss not followed by the retrying loop, a hold with a
+    /// loop running, any cue between a hold and its resume, a resume without a
+    /// hold, or `repeatingCue` disagreeing with the last start or stop.
     var cueViolations: [String] {
         var violations: [String] = []
         var running: RepeatingCue?
+        var isHeld = false
+        let cues = cues
         for (index, cue) in cues.enumerated() {
+            if isHeld, cue != .moment(.resumed) {
+                violations.append("#\(index) \(cue.label) while held")
+            }
             switch cue {
             case .start(let loop):
                 if let running { violations.append("#\(index) start(\(loop)) while \(running) runs") }
@@ -179,6 +186,17 @@ final class RecordingCallEngineDelegate: CallEngineDelegate {
             case .moment(let moment):
                 if let running, moment == .connected || moment == .reconnected {
                     violations.append("#\(index) \(moment) while \(running) runs")
+                }
+                if moment == .connectionLost, index + 1 < cues.count, cues[index + 1] != .start(.retrying) {
+                    violations.append("#\(index) connectionLost followed by \(cues[index + 1].label)")
+                }
+                if moment == .held {
+                    if let running { violations.append("#\(index) held while \(running) runs") }
+                    isHeld = true
+                }
+                if moment == .resumed {
+                    if !isHeld { violations.append("#\(index) resumed without a hold") }
+                    isHeld = false
                 }
             }
             if repeatingCueAtEachCue[index] != running {
@@ -248,6 +266,7 @@ final class CallEngineHarness {
         policy: ReconnectionPolicy = .default,
         pushToTalk: Bool = false,
         ringTimeout: Duration? = nil,
+        supportsHolding: Bool = true,
         now: @escaping () -> Date = { Date() },
         sleep: @escaping (Duration) async throws -> Void = { _ in }
     ) {
@@ -264,7 +283,8 @@ final class CallEngineHarness {
             configuration: CallEngineConfiguration(
                 unknownCallerName: "Agent",
                 isPushToTalkEnabled: { pushToTalk },
-                ringTimeout: ringTimeout
+                ringTimeout: ringTimeout,
+                supportsHolding: supportsHolding
             ),
             callProvider: provider,
             interruptionObserver: interruption,
