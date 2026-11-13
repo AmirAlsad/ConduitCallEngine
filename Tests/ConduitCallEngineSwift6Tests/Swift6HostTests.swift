@@ -293,10 +293,51 @@ func describe(_ phase: RingPreparationPhase, _ preparation: RingPreparation, _ s
     return parts
 }
 
+/// The moment a host test's engine is built at, unless the test brings a clock.
+let hostEpoch = Date(timeIntervalSince1970: 1_000_000)
+
+/// A sleep a host test gives the engine so that no timer runs out by itself,
+/// however slow the machine: it ends, throwing `CancellationError`, only when its
+/// task is cancelled, as the engine cancels a timer it stops and
+/// `SimulatedCallSystem.fireTimer(_:)` cancels the one it runs out.
+func sleepUntilCancelled(_ duration: Duration) async throws {
+    let park = Park()
+    await withTaskCancellationHandler {
+        await park.wait()
+    } onCancel: {
+        park.open()
+    }
+    throw CancellationError()
+}
+
+/// Suspends `wait()` until `open()`; a `wait()` after `open()` returns at once.
+private final class Park: Sendable {
+    private let state = Mutex<(isOpen: Bool, waiter: CheckedContinuation<Void, Never>?)>((false, nil))
+
+    func wait() async {
+        await withCheckedContinuation { continuation in
+            let isOpen = state.withLock { state in
+                if !state.isOpen { state.waiter = continuation }
+                return state.isOpen
+            }
+            if isOpen { continuation.resume() }
+        }
+    }
+
+    func open() {
+        let waiter = state.withLock { state in
+            state.isOpen = true
+            defer { state.waiter = nil }
+            return state.waiter
+        }
+        waiter?.resume()
+    }
+}
+
 /// A clock and a sleep a host test controls, both on the main actor.
 @MainActor
 final class HostClock {
-    var current = Date(timeIntervalSince1970: 1_000_000)
+    var current = hostEpoch
     private(set) var sleeps: [Duration] = []
     func now() -> Date { current }
     func sleep(_ duration: Duration) async throws { sleeps.append(duration) }
@@ -311,7 +352,7 @@ struct Swift6HostTests {
     let engine: CallEngine
 
     init() {
-        engine = CallEngine.simulated(configuration: hostConfiguration, system: system, now: { .now }, sleep: { _ in })
+        engine = CallEngine.simulated(configuration: hostConfiguration, system: system, now: { hostEpoch }, sleep: { _ in })
         engine.delegate = host
         engine.startPushRegistration()
     }
@@ -397,7 +438,7 @@ struct Swift6HostTests {
 
     @Test func timersRunOutWhenTheHostSays() async throws {
         let system = SimulatedCallSystem()
-        let engine = CallEngine.simulated(system: system)
+        let engine = CallEngine.simulated(system: system, now: { hostEpoch }, sleep: sleepUntilCancelled)
         engine.delegate = host
         engine.startPushRegistration()
         host.targets[HostTargets.agentID] = HostTargets.fake
