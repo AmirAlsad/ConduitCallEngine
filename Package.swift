@@ -14,16 +14,21 @@ let package = Package(
     ],
     // WARNING: never add any `small-webrtc` package or `stasel/WebRTC` here. An un-prefixed
     // WebRTC linked next to Daily's embedded one duplicates the `RTC*` symbols and crashes Daily calls.
+    // The floors are the versions this release was built, tested and run on a device with,
+    // the set Package.resolved pins.
     dependencies: [
-        .package(url: "https://github.com/pipecat-ai/pipecat-client-ios.git", from: "1.2.0"),
-        .package(url: "https://github.com/pipecat-ai/pipecat-client-ios-daily.git", from: "1.2.0"),
-        // ConduitCallEngineDaily imports Daily itself (subscriptions, app messages). The floor is
-        // the one pipecat-client-ios-daily already sets, so declaring it changes no resolution.
-        .package(url: "https://github.com/daily-co/daily-client-ios.git", from: "0.38.0"),
-        // Floor at 2.18.0: from that version a reconnect LiveKit gives up on always ends with the
-        // room disconnected (client-sdk-swift PR #1144), which LiveKitTransport relies on. It also
-        // pulls LiveKitWebRTC 144.7559.10 or later (App Review binary-scan hygiene).
-        .package(url: "https://github.com/livekit/client-sdk-swift.git", from: "2.18.0"),
+        // 1.3.0: PipecatDailyTransport releases its client after each call, which frees Daily's
+        // call client only from pipecat-client-ios-daily 1.3.0 (`release()`).
+        .package(url: "https://github.com/pipecat-ai/pipecat-client-ios.git", from: "1.3.0"),
+        .package(url: "https://github.com/pipecat-ai/pipecat-client-ios-daily.git", from: "1.3.0"),
+        // ConduitCallEngineDaily calls Daily's API itself (subscriptions, app messages, the
+        // preferred audio device), and Daily makes breaking changes in minor releases, so a new
+        // Daily minor version is taken only after it has been tried here.
+        .package(url: "https://github.com/daily-co/daily-client-ios.git", .upToNextMinor(from: "0.41.0")),
+        // From 2.18.0 a reconnect LiveKit gives up on always ends with the room disconnected
+        // (client-sdk-swift PR #1144), which LiveKitTransport relies on; 2.19.0 is the version
+        // this release was verified with.
+        .package(url: "https://github.com/livekit/client-sdk-swift.git", from: "2.19.0"),
     ],
     targets: [
         // Core must never import a transport SDK.
