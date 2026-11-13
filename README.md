@@ -30,15 +30,17 @@ Link the core plus the adapter for the transport you use. Linking both adapters 
 - A physical iPhone for real calls (see [Device-only reality](#device-only-reality)).
 - For incoming calls: a paid Apple Developer account, the Push Notifications capability, and an APNs key on your server.
 
-The manifest's dependency floors are `pipecat-client-ios` 1.2.0, `pipecat-client-ios-daily` 1.2.0 and LiveKit `client-sdk-swift` 2.18.0. These are minimums SwiftPM may resolve above, not tested versions; see [Verified SDK versions](#verified-sdk-versions). The LiveKit floor is a requirement: LiveKit before 2.18.0 can report a reconnect it gave up on as complete, which the adapter no longer handles (see [the LiveKit notes](Docs/IntegrationGuide.md#livekit-livekittransport)).
+The manifest's dependency floors are the versions this release was verified with: `pipecat-client-ios` 1.3.0, `pipecat-client-ios-daily` 1.3.0, LiveKit `client-sdk-swift` 2.19.0, and `daily-client-ios` 0.41.x (up to the next minor version only, because the Daily adapter calls Daily's API directly and Daily makes breaking changes in minor releases). SwiftPM may resolve Pipecat and LiveKit above them; see [Verified SDK versions](#verified-sdk-versions) for how to stay on the verified set. The LiveKit floor is also a requirement: LiveKit before 2.18.0 can report a reconnect it gave up on as complete, which the adapter no longer handles (see [the LiveKit notes](Docs/IntegrationGuide.md#livekit-livekittransport)).
 
 ## Installation
 
 Add the package by URL in Xcode (File > Add Package Dependencies) or in a manifest:
 
 ```swift
-.package(url: "https://github.com/AmirAlsad/ConduitCallEngine.git", from: "0.2.0")
+.package(url: "https://github.com/AmirAlsad/ConduitCallEngine.git", .upToNextMinor(from: "0.2.0"))
 ```
+
+In Xcode, choose the dependency rule "Up to Next Minor Version". While the package is 0.x, a minor release (0.3) may break source compatibility or change defaults, and `from: "0.2.0"` would accept it; up to the next minor version takes only 0.2.x fixes.
 
 Then add `ConduitCallEngine` and one adapter product to your app target, and `ConduitCallEngineTesting` if you want simulator support.
 
@@ -79,6 +81,9 @@ enum Assistant {
     static func fetchConnection() async throws -> CallConnection {
         var request = URLRequest(url: URL(string: "https://agent.example.com/connect")!)
         request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        // Tells your agent this app sends `call-connected`, so it greets on it (see below).
+        request.httpBody = try JSONEncoder().encode(["call_signals": [CallSignal.connected.rawValue]])
         let (data, response) = try await URLSession.shared.data(for: request)
         switch (response as? HTTPURLResponse)?.statusCode ?? 0 {
         case 200..<300: break
@@ -161,11 +166,12 @@ struct CallScreen: View {
 
 - **Credentials.** The `connect` closure: a room URL and token for each call, from your backend or anywhere else. Throw `TransportError.authenticationFailed` for rejected credentials so the call fails as `.badToken` rather than a generic transport error.
 - **An agent that joins the room.** The engine reports a call as connected only once the agent is present and ready. See [Integration Guide, section 13](Docs/IntegrationGuide.md#13-what-the-server-side-must-do).
-- **VoIP token delivery.** The engine hands you the PushKit token; getting it to your server is your code.
+- **`call_signals` in every credential request and in the token registration.** The engine tells the agent the user is on the line with a `call-connected` message; your app lists it as `"call_signals": ["call-connected"]` (the quick start's `fetchConnection` does), so the agent knows to greet on it rather than when the device joins. See [When your agent should start speaking](Docs/IntegrationGuide.md#when-your-agent-should-start-speaking).
+- **VoIP token delivery.** The engine hands you the PushKit token; getting it to your server is your code, with the bundle id, the APNs environment, the target ids, `supportedPushFeatures.sorted()` and `call_signals` ([Integration Guide, section 7](Docs/IntegrationGuide.md#7-delivering-the-voip-token-to-your-server)). An app that only places calls needs none of this, nor the `voip` background mode.
 - **The server that rings the app.** It sends APNs VoIP pushes in the shape described in [Docs/PushContract.md](Docs/PushContract.md), optionally bounds a ring with `ring_timeout`, withdraws it with a cancel push, or asks the device to connect while it rings with `preconnect`, and learns which of those a device understands from `CallEngine.supportedPushFeatures`, which your app sends it with the token. An unanswered ring ends by itself after 60 seconds unless you configure another `ringTimeout`.
 - **A decision on pre-connect, if you take incoming calls.** A ring is prepared while it rings (credentials fetched, or the room joined with audio held until the answer) only when the push asks for it and your target's `ringPreparation` allows it, so the agent is ready when the user answers. The default, `.none`, keeps every ring as it was. See [Integration Guide, section 11](Docs/IntegrationGuide.md#pre-connect).
 - **Any in-app UI, call history, missed-call notifications and call sounds.** Drive them from `CallEngine`'s observable state and the delegate callbacks. The engine plays nothing, but tells you when a ringback, a "retrying" loop or a "connected" sound may belong through `callEngine(_:cue:)`, and `activeCall` tells you whether the call was placed or answered, and ready at the answer, so you can choose (see [Integration Guide, section 10](Docs/IntegrationGuide.md#cues)).
-- **Project configuration.** Capabilities, background modes and usage descriptions; see [Integration Guide, section 3](Docs/IntegrationGuide.md#3-project-setup).
+- **Project configuration.** Capabilities, background modes and usage descriptions; see [Integration Guide, section 3](Docs/IntegrationGuide.md#3-project-setup). Every call appears in the Phone app's Recents, and tapping one opens your app with a start-call request the engine leaves to you. Apple does not allow apps that use CallKit on the China mainland App Store.
 
 ## Experimental: call hold
 
@@ -179,17 +185,26 @@ The `ConduitCallEngineTesting` product covers the rest. `CallEngine.simulated()`
 
 ## Verified SDK versions
 
-The transport SDK versions this package has been verified against on a device, with real calls:
+0.2 was verified on one device, with real calls, with this set:
 
-| Product | SDK | Version | Verified on |
-|---|---|---|---|
-| `ConduitCallEngineDaily` | `pipecat-client-ios` / `pipecat-client-ios-daily` | 1.2.0 / 1.2.0 | iPhone 17, iOS 27.0, 2026-11-11 |
-| `ConduitCallEngineDaily` | `daily-client-ios` | 0.38.0 | iPhone 17, iOS 27.0, 2026-11-11 |
-| `ConduitCallEngineLiveKit` | LiveKit `client-sdk-swift` (LiveKitWebRTC) | 2.15.1 (144.7559.10) | iPhone 17, iOS 27.0, 2026-11-11 |
+| Product | SDK | Version |
+|---|---|---|
+| `ConduitCallEngineDaily` | `pipecat-client-ios` / `pipecat-client-ios-daily` | 1.3.0 / 1.3.0 |
+| `ConduitCallEngineDaily` | `daily-client-ios` | 0.41.0 |
+| `ConduitCallEngineLiveKit` | LiveKit `client-sdk-swift` (LiveKitWebRTC) | 2.19.0 (150.7871.4) |
 
-That run covered outgoing and incoming calls, mute, route switching, hang-up, declining, a ring during a call, short network drops and long outages on both adapters. Two paths could not be triggered on the test phone and are covered by unit tests only: a ring filtered by a Focus, and an audio interruption pausing the microphone.
+**Device:** one iPhone 17 with iOS 27.0, on 2026-11-12. **Routes:** the loudspeaker, the earpiece, and AirPods Pro over Bluetooth (HFP). **Not tried:** CarPlay, wired headsets, other iPhone models, and any iOS version below 27.0: the package supports iOS 18 and later, but nothing below 27.0 has had a device run. What passed on both adapters (outgoing and incoming calls, pre-connected rings, ring timeout, cancel and decline, outages from 10 seconds to 2.5 minutes, a denied microphone permission, the starting route) and what did not is in [What has been verified](Docs/IntegrationGuide.md#what-has-been-verified).
 
-Newer SDK versions that the manifest allows (for example Pipecat 1.3) compile and pass the unit tests, but have not been through a device run; to stay on the verified Daily set, pin those versions in your app. The LiveKit row predates the package's 2.18.0 floor, so no verified LiveKit version can be pinned: LiveKit 2.18.0 and 2.19.0 compile and pass the unit tests, and still need a device run.
+These are the versions the package's `Package.resolved` pins, and the only set CI builds and tests (a weekly scheduled run also resolves the newest versions the manifest allows, to catch upstream changes). Your app does not use the package's `Package.resolved`: SwiftPM resolves the package's dependencies within the manifest's ranges as part of your app's graph, so Pipecat and LiveKit can resolve above this set. To stay on it:
+
+- commit your app's own `Package.resolved` (in Xcode, `<App>.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved`), which pins every transitive package at the version it resolved; or
+- add the SDK to your app as a direct dependency with an exact version, for example `.package(url: "https://github.com/livekit/client-sdk-swift.git", exact: "2.19.0")`, which constrains the package's dependency to that version.
+
+After changing any of these versions, make a real call on each adapter you link before you ship.
+
+## Questions and problems
+
+Report bugs and ask questions in [GitHub issues](https://github.com/AmirAlsad/ConduitCallEngine/issues), with the package version, the SDK versions your app resolved, the device and iOS version, and the engine's log around the problem ([Logging](Docs/IntegrationGuide.md#logging); the engine removes credentials from its messages, but check what you paste). Report a security problem privately, through GitHub's "Report a vulnerability" on the repository's Security tab, not in a public issue.
 
 ## Documentation
 
