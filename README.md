@@ -21,7 +21,7 @@ What it does not include:
 
 Link the core plus the adapter for the transport you use. Linking both adapters is supported. You can also write your own transport against `CallTransport` and link no adapter at all.
 
-**Which adapter?** If you can choose, LiveKit is the smoother fit for a CallKit app today; Daily is supported with known limits. The comparison, with the versions and device it was made on, is in [Choosing a transport](Docs/IntegrationGuide.md#choosing-a-transport).
+**Which adapter?** Both gave working calls on a device as of 0.2.0. LiveKit's SDK is built to be driven by CallKit; Daily's manages audio itself, and the adapter works around that with behaviour confirmed in a small number of runs. If you can choose, LiveKit is the lower-risk choice; if you are on Daily, it works, with a few remaining differences. The comparison, with the versions and device it was made on, is in [Choosing a transport](Docs/IntegrationGuide.md#choosing-a-transport).
 
 ## Requirements
 

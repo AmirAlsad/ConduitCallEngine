@@ -182,7 +182,14 @@ The core imports no WebRTC SDK. `ConduitCallEngineTesting` imports neither XCTes
 
 ### Choosing a transport
 
-If you can choose between the bundled adapters, **LiveKit is the smoother fit for a CallKit app today.** Daily is supported, with the known limits below. The comparison was made with LiveKit `client-sdk-swift` 2.19.0 and `daily-client-ios` 0.41.0 (through `pipecat-client-ios-daily` 1.3.0), on one iPhone 17 running iOS 27.0, on the speaker, the earpiece and AirPods Pro over Bluetooth (HFP); CarPlay and wired headsets were not tried ([What has been verified](#what-has-been-verified)).
+Both bundled adapters gave working calls in the 0.2 device session: outgoing and answered calls, joining during a ring, the expected audio route, spoken cues, and recovery from outages. They get there differently, and that difference is what should guide the choice.
+
+- **LiveKit's SDK is built to be driven by CallKit.** The adapter turns off LiveKit's own audio-session handling and starts its audio when CallKit activates the session. Nothing has to be worked around.
+- **Daily's SDK manages audio itself**, with no way to defer to CallKit, so the adapter works around it: it tells Daily which route to keep, and when it joins during a ring it holds the agent's audio back until the answer. With those in place the problems first seen on Daily (the route jumping while connecting, a silent call after a ring-time join) did not recur. They were found by experiment and confirmed in a small number of runs on one phone, and they rest on behaviour Daily does not document. That is why this package holds Daily to one minor version (0.41.x), and why a Daily update should be followed by a device check.
+
+So: **if you can choose, LiveKit is the lower-risk choice for a CallKit app. If you are on Daily, calls work as of 0.2.0**, with the remaining differences in the table (CallKit's own route button, how a rejected token is reported, and no way to pause playout).
+
+The comparison was made with LiveKit `client-sdk-swift` 2.19.0 and `daily-client-ios` 0.41.0 (through `pipecat-client-ios-daily` 1.3.0), on one iPhone 17 running iOS 27.0, on the speaker, the earpiece and AirPods Pro over Bluetooth (HFP); CarPlay and wired headsets were not tried ([What has been verified](#what-has-been-verified)).
 
 | | LiveKit (`LiveKitTransport`) | Daily (`PipecatDailyTransport`) |
 |---|---|---|
@@ -195,7 +202,7 @@ If you can choose between the bundled adapters, **LiveKit is the smoother fit fo
 | Speech through the system's own speech session (`AVSpeechSynthesizer.usesApplicationAudioSession = false`) | Audible on the speaker, the earpiece and AirPods, while connecting and during an outage. | The same. |
 | Errors | A rejected token is reported as an authentication failure. | Every connect error is reported as a generic failure. |
 
-Daily has an open request for app-managed audio ([daily-co/daily-client-ios issue 41](https://github.com/daily-co/daily-client-ios/issues/41)); if it ships, it could close much of this gap. The per-adapter details are in [section 13](#daily-pipecatdailytransport), and what a host's own sounds do in [What plays during a call](#what-plays-during-a-call).
+Daily has an open request for app-managed audio ([daily-co/daily-client-ios issue 41](https://github.com/daily-co/daily-client-ios/issues/41)); if it ships, the adapter could drop its workarounds and most of this difference would go. The per-adapter details are in [section 13](#daily-pipecatdailytransport), and what a host's own sounds do in [What plays during a call](#what-plays-during-a-call).
 
 ### What gets downloaded
 
