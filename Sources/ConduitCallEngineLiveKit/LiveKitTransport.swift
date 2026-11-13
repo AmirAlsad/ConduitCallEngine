@@ -12,6 +12,11 @@
 //  when the room is connected and a remote participant is present, bot-speaking
 //  from active speakers. Device-only (WebRTC audio aborts in the simulator).
 //
+//  Host messages go out as signals do, in the same envelope with a `d`; what the
+//  agent publishes on the data channel is read as RTVI (`RTVIDataMessage`): a
+//  server message, the agent's output text and the user's transcript reach the
+//  engine, everything else is ignored.
+//
 //  Joins are the transport's own: `room.connect` runs in a task the transport keeps,
 //  because LiveKit's `Room` cannot take two connects at once (each one's cleanup fails
 //  the other) and ignores a disconnect while it is still setting a connect up. A newer
@@ -214,6 +219,18 @@ public final class LiveKitTransport: CallTransport {
         await publishClientMessage(signal.rawValue)
     }
 
+    /// Delivers a host message as an RTVI client message on the data channel, with
+    /// its type as `t` and its payload as `d` (left out without one), under the same
+    /// rules, bound and results as a signal. `.failed` for a reserved or empty type.
+    @discardableResult
+    public func send(_ message: CallMessage) async -> CallSignalDelivery {
+        guard !message.isRefused else {
+            Log.warning(.transport, "LiveKit client message \"\(message.type)\" refused: an empty type, or one the engine uses itself")
+            return .failed
+        }
+        return await publishClientMessage(message.type, data: message.data)
+    }
+
     /// Publishes an RTVI client message reliably, so LiveKit retransmits it rather
     /// than dropping it under backpressure (its default is lossy). A Pipecat bot must
     /// read it from the raw data event, because Pipecat's LiveKit input does not
@@ -221,8 +238,15 @@ public final class LiveKitTransport: CallTransport {
     /// for when it is sent; it is never retried.
     /// `join`, when given, is a join in flight to let finish first, within the same bound.
     @discardableResult
-    private func publishClientMessage(_ type: String, after join: Task<Void, any Error>? = nil) async -> CallSignalDelivery {
-        guard let payload = LiveKitEndCallSignal.payload(type: type) else { return .failed }
+    private func publishClientMessage(
+        _ type: String,
+        data: Data? = nil,
+        after join: Task<Void, any Error>? = nil
+    ) async -> CallSignalDelivery {
+        guard let payload = LiveKitEndCallSignal.payload(type: type, data: data) else {
+            Log.warning(.transport, "LiveKit client message \(type) dropped: it could not be encoded")
+            return .failed
+        }
         let room = room
         let sleep = sleep
         let outcome = PublishOutcome()
@@ -391,6 +415,14 @@ final class RoomEventMapper: NSObject, RoomDelegate {
         if let event = gate.roomDidDisconnect() { continuation.yield(event) }
     }
 
+    /// Data a participant (or the server) published: an RTVI message the host is
+    /// told about becomes its event; anything else is ignored. Thread-safe: it only
+    /// yields, so the room's callback calls it without hopping.
+    nonisolated func dataDidArrive(_ data: Data) {
+        guard let event = RTVIDataMessage.event(from: data) else { return }
+        continuation.yield(event)
+    }
+
     func speakersDidUpdate(botSpeaking: Bool, level: Float) {
         if botSpeaking != wasBotSpeaking {
             wasBotSpeaking = botSpeaking
@@ -447,10 +479,53 @@ final class RoomEventMapper: NSObject, RoomDelegate {
         Task { @MainActor in self.roomDidDisconnect() }
     }
 
+    nonisolated func room(
+        _ room: Room,
+        participant: RemoteParticipant?,
+        didReceiveData data: Data,
+        forTopic topic: String,
+        encryptionType: EncryptionType
+    ) {
+        dataDidArrive(data)
+    }
+
     nonisolated func room(_ room: Room, didUpdateSpeakingParticipants participants: [Participant]) {
         let remoteSpeakers = participants.compactMap { $0 as? RemoteParticipant }
         let botSpeaking = !remoteSpeakers.isEmpty
         let level = remoteSpeakers.map(\.audioLevel).max() ?? 0
         Task { @MainActor in self.speakersDidUpdate(botSpeaking: botSpeaking, level: level) }
+    }
+}
+
+/// The RTVI messages an agent publishes on LiveKit's data channel that the host is
+/// told about. A Pipecat agent sends RTVI messages to a LiveKit client as data
+/// packets holding the message's JSON, `{"label": "rtvi-ai", "type": ..., "data": ...}`.
+enum RTVIDataMessage {
+    /// The event for `packet`: a `server-message` (its `data` as JSON, `null` when it
+    /// has none), a `bot-output` or a `user-transcription` whose `data` has RTVI's
+    /// shape; nil for anything else, a malformed one included.
+    static func event(from packet: Data) -> TransportEvent? {
+        guard let message = (try? JSONSerialization.jsonObject(with: packet)) as? [String: Any],
+              message["label"] as? String == "rtvi-ai",
+              let type = message["type"] as? String
+        else { return nil }
+        let body = message["data"] ?? NSNull()
+        switch type {
+        case "server-message":
+            guard let json = try? JSONSerialization.data(withJSONObject: body, options: .fragmentsAllowed) else { return nil }
+            return .serverMessage(json)
+        case "bot-output":
+            guard let json = try? JSONSerialization.data(withJSONObject: body, options: .fragmentsAllowed),
+                  let output = try? BotOutput(rtviData: json)
+            else { return nil }
+            return .botOutput(output)
+        case "user-transcription":
+            guard let json = try? JSONSerialization.data(withJSONObject: body, options: .fragmentsAllowed),
+                  let transcript = try? UserTranscript(rtviData: json)
+            else { return nil }
+            return .userTranscript(transcript)
+        default:
+            return nil
+        }
     }
 }

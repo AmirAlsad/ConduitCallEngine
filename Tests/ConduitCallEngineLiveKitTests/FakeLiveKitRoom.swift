@@ -103,9 +103,13 @@ final class FakeLiveKitRoom: LiveKitRoomControlling {
         await cleanUp()
     }
 
+    /// Every payload published, as the transport encoded it.
+    private(set) var publishedPayloads: [Data] = []
+
     func publish(_ data: Data) async throws {
         if let publishError { throw publishError }
         guard phase == .connected else { throw NotConnected() }
+        publishedPayloads.append(data)
         let message = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         let type = (message?["data"] as? [String: Any])?["t"] as? String ?? "?"
         log.append("publish \(type)")

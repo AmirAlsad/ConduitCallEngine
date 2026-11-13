@@ -3,7 +3,7 @@
 //  ConduitCallEngine
 //
 //  How `LiveKitTransport` sends its RTVI client messages (the end-call signal from
-//  `disconnect()` and the call-control signals from `send(_:)`), kept pure and
+//  `disconnect()`, and the call-control signals and host messages from `send(_:)`), kept pure and
 //  SDK-free so it is unit-testable. A message is sent unless the room is already
 //  leaving: a room that is still connecting (the host disconnects right after
 //  starting a connect) or reconnecting may already be visible to the agent, which
@@ -13,7 +13,8 @@
 //
 //  The bytes are the RTVI client-message envelope a Pipecat bot parses from LiveKit's
 //  raw data-received event: `{"id": "<8 characters>", "label": "rtvi-ai",
-//  "type": "client-message", "data": {"t": "<name>"}}`.
+//  "type": "client-message", "data": {"t": "<name>"}}`, with `"d": <payload>` in
+//  `data` for a host message that has one.
 //
 
 import Foundation
@@ -28,13 +29,19 @@ enum LiveKitEndCallSignal {
     /// signal to be handed to the data channel, before it leaves regardless.
     static let deadline: Duration = .seconds(2)
 
-    /// The envelope for the client message named `type`, as UTF-8 JSON.
-    static func payload(type: String, id: String = String(UUID().uuidString.prefix(8))) -> Data? {
+    /// The envelope for the client message named `type`, as UTF-8 JSON, with
+    /// `payload` (UTF-8 JSON) as `d` when there is one; nil when `payload` is not JSON.
+    static func payload(type: String, data payload: Data? = nil, id: String = String(UUID().uuidString.prefix(8))) -> Data? {
+        var body: [String: Any] = ["t": type]
+        if let payload {
+            guard let d = try? JSONSerialization.jsonObject(with: payload, options: .fragmentsAllowed) else { return nil }
+            body["d"] = d
+        }
         let message: [String: Any] = [
             "id": id,
             "label": "rtvi-ai",
             "type": "client-message",
-            "data": ["t": type],
+            "data": body,
         ]
         return try? JSONSerialization.data(withJSONObject: message)
     }
