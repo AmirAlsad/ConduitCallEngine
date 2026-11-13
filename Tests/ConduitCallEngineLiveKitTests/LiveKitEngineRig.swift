@@ -7,6 +7,7 @@
 //
 
 import Foundation
+import Synchronization
 import Testing
 import ConduitCallEngine
 import ConduitCallEngineTesting
@@ -16,12 +17,22 @@ import ConduitCallEngineTesting
 final class HandSleeper {
     private(set) var requested: [Duration] = []
     private var pending: [CheckedContinuation<Void, Never>] = []
+    private var sleepWaiters: [CheckedContinuation<Void, Never>] = []
 
     var pendingCount: Int { pending.count }
 
     func sleep(_ duration: Duration) async {
         requested.append(duration)
+        let waiters = sleepWaiters
+        sleepWaiters = []
+        waiters.forEach { $0.resume() }
         await withCheckedContinuation { pending.append($0) }
+    }
+
+    /// Returns once a sleep is pending, however long the sleeper takes to get here.
+    func untilSleeping() async {
+        guard pending.isEmpty else { return }
+        await withCheckedContinuation { sleepWaiters.append($0) }
     }
 
     func wakeAll() {
@@ -29,6 +40,64 @@ final class HandSleeper {
         pending = []
         waiting.forEach { $0.resume() }
     }
+}
+
+/// The moment the rig's engine is built at: its clock stands still, so no wait it
+/// measures by `now` (the outgoing minimum connecting time) passes with the machine's time.
+let testEpoch = Date(timeIntervalSince1970: 1_000_000)
+
+/// A sleep that never runs out by itself: it ends, throwing `CancellationError`, only
+/// when its task is cancelled. For the adapter's deadline, which must wait for what
+/// it bounds however long the machine takes.
+@Sendable
+func parkedSleep(_ duration: Duration) async throws {
+    let park = Park()
+    await withTaskCancellationHandler {
+        await park.wait()
+    } onCancel: {
+        park.open()
+    }
+    throw CancellationError()
+}
+
+/// Suspends `wait()` until `open()`; a `wait()` after `open()` returns at once.
+private final class Park: Sendable {
+    private let state = Mutex<(isOpen: Bool, waiter: CheckedContinuation<Void, Never>?)>((false, nil))
+
+    func wait() async {
+        await withCheckedContinuation { continuation in
+            let isOpen = state.withLock { state in
+                if !state.isOpen { state.waiter = continuation }
+                return state.isOpen
+            }
+            if isOpen { continuation.resume() }
+        }
+    }
+
+    func open() {
+        let waiter = state.withLock { state in
+            state.isOpen = true
+            defer { state.waiter = nil }
+            return state.waiter
+        }
+        waiter?.resume()
+    }
+}
+
+/// A LiveKit transport whose waits do not run on the machine's time: the wait for a
+/// connecting room yields instead of sleeping, and the client messages' deadline
+/// never runs out by itself.
+@MainActor
+func makeLiveKitTransport(
+    makeRoom: (RoomEventMapper) -> LiveKitRoomControlling,
+    audioEngine: LiveKitAudioEngineControlling
+) -> LiveKitTransport {
+    LiveKitTransport(
+        makeRoom: makeRoom,
+        audioEngine: audioEngine,
+        sleep: { _ in await Task.yield() },
+        deadlineSleep: parkedSleep
+    )
 }
 
 @MainActor
@@ -75,6 +144,7 @@ final class LiveKitEngineRig {
                 supportsHolding: supportsHolding
             ),
             system: system,
+            now: { testEpoch },
             sleep: { await sleeper.sleep($0) }
         )
         engine.delegate = host
@@ -93,7 +163,7 @@ final class LiveKitEngineRig {
             handle: nil,
             ringPreparation: ringPreparation,
             makeTransport: { [unowned self] in
-                LiveKitTransport(
+                makeLiveKitTransport(
                     makeRoom: { [unowned self] mapper in
                         let room = FakeLiveKitRoom()
                         room.events = mapper

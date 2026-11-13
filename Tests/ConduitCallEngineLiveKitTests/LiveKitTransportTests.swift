@@ -16,7 +16,7 @@ struct LiveKitTransportTests {
 
     private func makeTransport() -> (LiveKitTransport, () -> FakeLiveKitRoom?) {
         var room: FakeLiveKitRoom?
-        let transport = LiveKitTransport(
+        let transport = makeLiveKitTransport(
             makeRoom: { mapper in
                 let fake = FakeLiveKitRoom()
                 fake.events = mapper

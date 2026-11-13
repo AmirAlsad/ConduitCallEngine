@@ -46,13 +46,14 @@ enum LiveKitEndCallSignal {
         }
     }
 
-    /// Runs `operation` and returns when it finishes or when `deadline` passes,
-    /// whichever is first, with whether it finished. An operation still running at
-    /// the deadline is cancelled and left to end on its own (leaving the room fails
-    /// LiveKit's pending sends).
+    /// Runs `operation` and returns when it finishes or when `deadline` passes on
+    /// `sleep`, whichever is first, with whether it finished. An operation still
+    /// running at the deadline is cancelled and left to end on its own (leaving the
+    /// room fails LiveKit's pending sends).
     @discardableResult
     static func run(
         within deadline: Duration,
+        sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
         _ operation: @escaping @Sendable () async -> Void
     ) async -> Bool {
         let (outcome, report) = AsyncStream.makeStream(of: Bool.self)
@@ -62,7 +63,7 @@ enum LiveKitEndCallSignal {
             report.finish()
         }
         let timer = Task {
-            try? await Task.sleep(for: deadline)
+            try? await sleep(deadline)
             report.yield(false)
             report.finish()
         }

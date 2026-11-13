@@ -47,6 +47,8 @@ public final class LiveKitTransport: CallTransport {
 
     private let room: LiveKitRoomControlling
     private let audioEngine: LiveKitAudioEngineControlling
+    private let sleep: @Sendable (Duration) async -> Void
+    private let deadlineSleep: @Sendable (Duration) async throws -> Void
     // `Room` holds its delegates weakly, so this strong reference keeps the mapper alive
     // as long as the room. The mapper holds neither the room nor the transport.
     private let roomEvents: RoomEventMapper
@@ -80,14 +82,20 @@ public final class LiveKitTransport: CallTransport {
         self.init(makeRoom: { LiveKitSDKRoom(delegate: $0) }, audioEngine: LiveKitSDKAudioEngine())
     }
 
+    /// `sleep` paces the wait for a connecting room before a client message is
+    /// published; `deadlineSleep` runs out `LiveKitEndCallSignal.deadline`.
     init(
         makeRoom: (RoomEventMapper) -> LiveKitRoomControlling,
-        audioEngine: LiveKitAudioEngineControlling
+        audioEngine: LiveKitAudioEngineControlling,
+        sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) },
+        deadlineSleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     ) {
         let (stream, continuation) = AsyncStream.makeStream(of: TransportEvent.self)
         self.events = stream
         self.continuation = continuation
         self.audioEngine = audioEngine
+        self.sleep = sleep
+        self.deadlineSleep = deadlineSleep
         let roomEvents = RoomEventMapper(continuation: continuation)
         self.roomEvents = roomEvents
         self.room = makeRoom(roomEvents)
@@ -216,13 +224,14 @@ public final class LiveKitTransport: CallTransport {
     private func publishClientMessage(_ type: String, after join: Task<Void, any Error>? = nil) async -> CallSignalDelivery {
         guard let payload = LiveKitEndCallSignal.payload(type: type) else { return .failed }
         let room = room
+        let sleep = sleep
         let outcome = PublishOutcome()
-        let finished = await LiveKitEndCallSignal.run(within: LiveKitEndCallSignal.deadline) { @MainActor in
+        let finished = await LiveKitEndCallSignal.run(within: LiveKitEndCallSignal.deadline, sleep: deadlineSleep) { @MainActor in
             if let join { _ = await join.result }
             // A publish issued before the connect has set up the room's transports
             // would not start the publisher's negotiation, so let the connect finish first.
             while room.phase == .connecting {
-                try? await Task.sleep(for: .milliseconds(50))
+                await sleep(.milliseconds(50))
                 if Task.isCancelled { return }
             }
             let phase = room.phase

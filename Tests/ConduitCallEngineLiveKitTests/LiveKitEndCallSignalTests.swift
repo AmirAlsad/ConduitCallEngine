@@ -54,7 +54,7 @@ struct LiveKitEndCallSignalDeadlineTests {
     @Test func aSendThatFinishesInTimeIsAwaited() async {
         let sent = SentFlag()
 
-        let finished = await LiveKitEndCallSignal.run(within: .seconds(10)) { await sent.set() }
+        let finished = await LiveKitEndCallSignal.run(within: .seconds(10), sleep: parkedSleep) { await sent.set() }
 
         #expect(await sent.value)
         #expect(finished)
@@ -63,17 +63,21 @@ struct LiveKitEndCallSignalDeadlineTests {
     /// A send held by LiveKit (a reconnecting room, a channel that never opens) must
     /// not hold up the hangup past the deadline, even if it ignores cancellation.
     @Test(.timeLimit(.minutes(1)))
+    @MainActor
     func aSendThatNeverFinishesIsAbandonedAtTheDeadline() async {
-        let clock = ContinuousClock()
-        let start = clock.now
+        let deadline = HandSleeper()
         let gate = Gate()
-
-        let finished = await LiveKitEndCallSignal.run(within: .milliseconds(100)) {
-            await gate.wait()
+        let running = Task {
+            await LiveKitEndCallSignal.run(within: .milliseconds(100), sleep: { await deadline.sleep($0) }) {
+                await gate.wait()
+            }
         }
+        await deadline.untilSleeping()
+        #expect(deadline.requested == [.milliseconds(100)])
 
-        #expect(clock.now - start < .seconds(3))
-        #expect(finished == false)
+        deadline.wakeAll() // the deadline passes; the send is still waiting at the gate
+
+        #expect(await running.value == false)
         await gate.open()
     }
 
