@@ -101,12 +101,10 @@ struct SimulatedEngineTests {
         return completed
     }
 
-    /// Yields the main actor until `condition` holds or the budget runs out, for
-    /// effects the engine applies on a later main-actor turn.
-    private func settle(_ condition: () -> Bool) async {
-        for _ in 0..<500 where !condition() {
-            await Task.yield()
-        }
+    /// Yields the main actor until `condition` holds, for effects the engine applies
+    /// on a later main-actor turn; records an issue if it never does.
+    private func settle(sourceLocation: SourceLocation = #_sourceLocation, _ condition: () -> Bool) async {
+        await waitUntil(sourceLocation: sourceLocation, condition)
     }
 
     // MARK: - Outgoing

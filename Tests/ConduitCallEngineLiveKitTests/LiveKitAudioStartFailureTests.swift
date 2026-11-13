@@ -73,10 +73,10 @@ struct LiveKitAudioStartFailureTests {
         let start = engine.availabilityHistory.count
 
         await rig.system.activateAudioSession()
-        await waitUntil { rig.sleeper.pendingCount == 1 }
+        // The resume's own wait for CallKit's activation is still pending on the sleeper.
+        await waitUntil { rig.sleeper.requested.last == .milliseconds(500) }
 
         #expect(Array(engine.availabilityHistory[start...]) == [true])
-        #expect(rig.sleeper.requested.last == .milliseconds(500))
         #expect(room.published.last == "call-held")
 
         rig.sleeper.wakeAll()
@@ -101,8 +101,8 @@ struct LiveKitAudioStartFailureTests {
         let start = engine.availabilityHistory.count
 
         await rig.system.activateAudioSession()
-        for _ in CallEngine.audioStartRetryDelays {
-            await waitUntil { rig.sleeper.pendingCount == 1 }
+        for delay in CallEngine.audioStartRetryDelays {
+            await waitUntil { rig.sleeper.requested.last == delay } // the delays differ
             #expect(room.published.last != "call-resumed")
             rig.sleeper.wakeAll()
         }
@@ -125,7 +125,7 @@ struct LiveKitAudioStartFailureTests {
         let engine = try #require(rig.audioEngines.last)
         engine.startsToFail = 100
         await rig.system.activateAudioSession()
-        await waitUntil { rig.sleeper.pendingCount == 1 }
+        await waitUntil { rig.sleeper.requested.last == .milliseconds(500) }
         let start = engine.availabilityHistory.count
 
         let holding = Task { _ = await rig.system.setHeldFromSystem(id, onHold: true) }

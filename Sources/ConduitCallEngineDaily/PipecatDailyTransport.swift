@@ -88,6 +88,7 @@ public final class PipecatDailyTransport: CallTransport {
     private let makeCallControl: @MainActor (any Transport) -> DailyCallControlling?
     private let readOutputPort: @MainActor () -> AVAudioSession.Port?
     private let readAvailableInputs: @MainActor () -> [AVAudioSession.Port]
+    private let sleep: @MainActor (Duration) async -> Void
     private var remoteAudio = DailyRemoteAudioGate()
     private var routes = DailyAudioRouteGate()
 
@@ -126,7 +127,8 @@ public final class PipecatDailyTransport: CallTransport {
         },
         readAvailableInputs: @escaping @MainActor () -> [AVAudioSession.Port] = {
             AVAudioSession.sharedInstance().availableInputs?.map(\.portType) ?? []
-        }
+        },
+        sleep: @escaping @MainActor (Duration) async -> Void = { try? await Task.sleep(for: $0) }
     ) {
         let (stream, continuation) = AsyncStream.makeStream(of: TransportEvent.self)
         self.events = stream
@@ -136,6 +138,7 @@ public final class PipecatDailyTransport: CallTransport {
         self.makeCallControl = makeCallControl
         self.readOutputPort = readOutputPort
         self.readAvailableInputs = readAvailableInputs
+        self.sleep = sleep
         self.session = makeSession()
     }
 
@@ -252,7 +255,7 @@ public final class PipecatDailyTransport: CallTransport {
         // before the join there is no one to tell. The brief sleep lets the message
         // flush before the leave.
         if Self.sendClientMessage("end-call", on: client) {
-            try? await Task.sleep(for: .milliseconds(200))
+            await sleep(.milliseconds(200))
         }
         do { try await client.disconnect() }
         catch { Log.error(.transport, "Daily disconnect error: \(error)") }

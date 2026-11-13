@@ -339,15 +339,18 @@ struct CallCredentialResolutionTests {
         #expect(h.engine.state == .failed(.badToken))
     }
 
-    @Test func otherErrorEventWhileReconnectingIsOnlyLogged() async throws {
+    @Test func otherErrorEventWhileReconnectingChangesNothing() async throws {
         let h = CallEngineHarness()
         await h.placeCall()
         h.engine.handle(.connected)
         h.engine.handle(.disconnected(reason: .networkDropped))
+        let transitions = h.delegate.transitions
 
         h.engine.handle(.error(.connectionFailed("timed out")))
 
         #expect(h.engine.state == .reconnecting(attempt: 1))
+        #expect(h.delegate.transitions == transitions)
+        #expect(h.delegate.records.isEmpty)
     }
 
     // MARK: - Once per attempt

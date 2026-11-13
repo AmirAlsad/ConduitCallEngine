@@ -31,7 +31,18 @@ final class FakeDailyCallControl: DailyCallControlling {
         self.transport = transport
     }
 
+    /// While set, each subscription change waits for `releaseRemoteAudio()`.
+    var holdsRemoteAudio = false
+    private var heldRemoteAudio: [CheckedContinuation<Void, Never>] = []
+
+    func releaseRemoteAudio() {
+        holdsRemoteAudio = false
+        heldRemoteAudio.forEach { $0.resume() }
+        heldRemoteAudio = []
+    }
+
     func setRemoteAudio(_ state: DailyRemoteAudio) async throws {
+        if holdsRemoteAudio { await withCheckedContinuation { heldRemoteAudio.append($0) } }
         for _ in 0..<suspensions { await Task.yield() }
         if refusesBeforeJoin, ![.connected, .ready].contains(transport.state()) { throw Refused() }
         transport.record("agent audio \(state)")

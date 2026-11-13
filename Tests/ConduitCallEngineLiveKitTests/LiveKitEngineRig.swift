@@ -7,6 +7,7 @@
 //
 
 import Foundation
+import Testing
 import ConduitCallEngine
 import ConduitCallEngineTesting
 @testable import ConduitCallEngineLiveKit
@@ -134,12 +135,22 @@ func drain(_ ticks: Int = 200) async {
     for _ in 0..<ticks { await Task.yield() }
 }
 
+/// Yield the main actor until `condition` holds. A budget that runs out records an
+/// issue at the caller, so the test fails where it waited rather than at an
+/// expectation that only looks wrong. Work that runs off the main actor may need
+/// more than yields: prefer `SimulatedCallSystem.awaitPendingWork()` where it covers it.
 @MainActor
-func waitUntil(ticks: Int = 1000, _ condition: () -> Bool) async {
+func waitUntil(
+    ticks: Int = 1000,
+    sourceLocation: SourceLocation = #_sourceLocation,
+    _ condition: () -> Bool
+) async {
     for _ in 0..<ticks {
         if condition() { return }
         await Task.yield()
     }
+    if condition() { return }
+    Issue.record("waitUntil gave up after \(ticks) yields", sourceLocation: sourceLocation)
 }
 
 extension CallState {

@@ -187,9 +187,11 @@ struct JoinDeadlineTests {
 
     /// A placed call that connected in time. The first connect's bound is cancelled
     /// but still asleep in the `ManualSleeper`; it is woken, and stays inert.
-    private func connectedCall(_ h: CallEngineHarness) async {
+    /// `bounded`: whether the harness has a `joinTimeout`, whose wait starts once the
+    /// connect returns.
+    private func connectedCall(_ h: CallEngineHarness, bounded: Bool = true) async {
         await h.placeCall()
-        if h.engine.state == .connecting, sleeper.pendingCount == 0 {
+        if bounded, h.engine.state == .connecting, sleeper.pendingCount == 0 {
             await waitUntil { sleeper.pendingCount == 1 }
         }
         h.engine.handle(.connected)
@@ -295,7 +297,7 @@ struct JoinDeadlineTests {
 
     @Test func noBoundConfiguredWaitsForTheTransport() async throws {
         let h = harness(joinTimeout: nil)
-        await connectedCall(h)
+        await connectedCall(h, bounded: false)
         h.engine.handle(.disconnected(reason: .networkDropped))
         await waitUntil { sleeper.pendingCount == 1 }
         sleeper.wakeFirst()

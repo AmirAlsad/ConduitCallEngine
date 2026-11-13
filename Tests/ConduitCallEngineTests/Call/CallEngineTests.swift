@@ -253,7 +253,7 @@ struct CallEngineTests {
         let calls = h.transport.setMicEnabledCallCount
 
         h.engine.providerPerformSetMuted(UUID(), muted: true) // e.g. a busy ring's id
-        await waitUntil { h.transport.setMicEnabledCallCount > calls }
+        await settle()
 
         #expect(!h.engine.isMuted)
         #expect(h.transport.isMicEnabled)
@@ -670,9 +670,20 @@ struct CallEngineTests {
         let h = CallEngineHarness()
         await h.placeCall()
         h.engine.handle(.connected)
+        let transitions = h.delegate.transitions
+        let cues = h.delegate.cues
 
         h.engine.handle(.disconnected(reason: .requestedByUser))
+        await settle()
+
         #expect(h.engine.state.isConnected)
+        #expect(h.delegate.transitions == transitions)
+        #expect(h.delegate.cues == cues)
+        #expect(h.delegate.records.isEmpty)
+        #expect(h.engine.reconnectTask == nil)
+        #expect(h.target.connectCount == 1)
+        #expect(h.transport.connectCount == 1)
+        #expect(h.transport.disconnectCount == 0)
     }
 
     @Test func endWhileReconnectingCancelsReconnect() async throws {

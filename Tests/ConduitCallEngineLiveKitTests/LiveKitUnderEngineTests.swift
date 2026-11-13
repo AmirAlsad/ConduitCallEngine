@@ -119,6 +119,8 @@ struct LiveKitUnderEngineTests {
         rig.system.endCallFromSystem(id)
         await drain()
         room.releaseSetUp()
+        // The leave runs in the teardown's disconnect, partly off the main actor.
+        await rig.system.awaitPendingWork()
         await waitUntil { room.leaveCount == 1 && room.phase == .disconnected }
 
         #expect(room.leaveCount == 1)
@@ -139,6 +141,7 @@ struct LiveKitUnderEngineTests {
         await drain()
         room.releaseSetUp()
         await placing.value
+        await rig.system.awaitPendingWork()
         await waitUntil { room.leaveCount == 1 && room.phase == .disconnected }
 
         #expect(room.leaveCount == 1)

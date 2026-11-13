@@ -410,11 +410,15 @@ struct Swift6HostTests {
 
     @Test func aHostClockDrivesTheEngine() async throws {
         let clock = HostClock()
-        let engine = CallEngine.simulated(configuration: hostConfiguration, now: clock.now, sleep: clock.sleep)
+        let system = SimulatedCallSystem()
+        let engine = CallEngine.simulated(configuration: hostConfiguration, system: system, now: clock.now, sleep: clock.sleep)
+        engine.delegate = host
         await engine.placeCall(HostTargets.fake)
+        #expect(system.deliverTransportEvent(.connected))
         clock.current += 30
         await engine.endCall()
-        #expect(engine.state == .ended(.canceled))
+        #expect(engine.state == .ended(.completed))
+        #expect(host.records.map(\.duration) == [30])
     }
 
     @Test func theFakeTransportCanBeUsedFromAnyContext() async {

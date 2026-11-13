@@ -125,7 +125,7 @@ struct TransportSelfHealTests {
 
         h.engine.handle(.connected)
         sleeper.wakeAll()
-        await waitUntil(ticks: 50) { h.engine.reconnectTask != nil }
+        await settle(ticks: 50) // the bound, had it not stopped, would start a reconnect
 
         #expect(h.engine.state.isConnected)
         #expect(h.engine.reconnectTask == nil)
@@ -137,7 +137,7 @@ struct TransportSelfHealTests {
 
         await h.engine.endCall()
         sleeper.wakeAll()
-        await waitUntil(ticks: 50) { h.engine.reconnectTask != nil }
+        await settle(ticks: 50) // the bound, had it not stopped, would start a reconnect
 
         #expect(h.engine.state == .ended(.completed))
         #expect(h.target.connectCount == 1)
@@ -166,7 +166,7 @@ struct TransportSelfHealTests {
         #expect(sleeper.pendingCount == 2)
 
         sleeper.wakeFirst() // the first interruption's bound runs out
-        await waitUntil(ticks: 50) { h.engine.reconnectTask != nil }
+        await settle(ticks: 50) // the bound, had it not stopped, would start a reconnect
         #expect(h.engine.state == .reconnecting(attempt: 0))
         #expect(h.engine.reconnectTask == nil)
 

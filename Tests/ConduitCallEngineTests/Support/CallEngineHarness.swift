@@ -408,15 +408,22 @@ final class CallEngineHarness {
     }
 }
 
-/// Yield the main actor until `condition` holds or the tick budget runs out, so a
-/// test can await an event delivered through an async path (e.g. the transport
-/// event stream) without a brittle fixed sleep.
+/// Yield the main actor until `condition` holds. A budget that runs out records an
+/// issue at the caller, so the test fails where it waited rather than at an
+/// expectation that only looks wrong. Work that runs off the main actor may need
+/// more than yields: prefer `SimulatedCallSystem.awaitPendingWork()` where it covers it.
 @MainActor
-func waitUntil(ticks: Int = 500, _ condition: () -> Bool) async {
+func waitUntil(
+    ticks: Int = 500,
+    sourceLocation: SourceLocation = #_sourceLocation,
+    _ condition: () -> Bool
+) async {
     for _ in 0..<ticks {
         if condition() { return }
         await Task.yield()
     }
+    if condition() { return }
+    Issue.record("waitUntil gave up after \(ticks) yields", sourceLocation: sourceLocation)
 }
 
 /// Yield the main actor a fixed number of times, so work that should NOT happen

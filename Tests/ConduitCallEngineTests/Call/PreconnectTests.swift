@@ -184,13 +184,21 @@ struct PreconnectTests {
         #expect(h.engine.state == .incomingRinging)
     }
 
+    /// With no target there is nothing to prepare with: the ring reaches the delegate,
+    /// is ended as an unknown target, and its preparation phase never leaves `.idle`.
     @Test func aRingForAnUnknownTargetPreparesNothing() async throws {
         let h = harness()
-        h.ring(targetID: UUID(), preconnect: "media")
+        let unknown = UUID()
+        h.ring(targetID: unknown, preconnect: "media")
         await settle()
 
+        #expect(h.delegate.resolved.map(\.targetID) == [unknown])
+        #expect(h.delegate.resolved.first?.requestedPreparation == .media)
+        #expect(h.delegate.phaseChanges.isEmpty)
+        #expect(h.engine.ringPreparationPhase == .idle)
         #expect(h.target.requests.isEmpty)
         #expect(h.target.makeTransportCount == 0)
+        #expect(h.delegate.records.map(\.failureReason) == [.unknown])
         #expect(h.engine.state == .idle)
     }
 

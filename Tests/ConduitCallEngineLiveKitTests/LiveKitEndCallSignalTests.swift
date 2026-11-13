@@ -66,14 +66,32 @@ struct LiveKitEndCallSignalDeadlineTests {
     func aSendThatNeverFinishesIsAbandonedAtTheDeadline() async {
         let clock = ContinuousClock()
         let start = clock.now
+        let gate = Gate()
 
         let finished = await LiveKitEndCallSignal.run(within: .milliseconds(100)) {
-            let end = clock.now + .seconds(5)
-            while clock.now < end { try? await Task.sleep(for: .milliseconds(10)) }
+            await gate.wait()
         }
 
         #expect(clock.now - start < .seconds(3))
         #expect(finished == false)
+        await gate.open()
+    }
+
+    /// Suspends its waiters, ignoring cancellation, until `open()`.
+    private actor Gate {
+        private var isOpen = false
+        private var waiters: [CheckedContinuation<Void, Never>] = []
+
+        func wait() async {
+            if isOpen { return }
+            await withCheckedContinuation { waiters.append($0) }
+        }
+
+        func open() {
+            isOpen = true
+            waiters.forEach { $0.resume() }
+            waiters = []
+        }
     }
 
     private actor SentFlag {

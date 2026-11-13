@@ -101,7 +101,7 @@ struct CallInboundTests {
         h.ring(callID: busy) // reported; not ended until CallKit accepts it
 
         h.provider.simulateAnswerCall(busy)
-        await waitUntil { h.target.makeTransportCount > 0 }
+        await settle()
 
         #expect(h.engine.state == .incomingRinging)
         #expect(h.target.makeTransportCount == 0)

@@ -34,7 +34,9 @@ struct PipecatDailyTransportTests {
     private let clients = Clients()
     private let connection = CallConnection(url: URL(string: "https://example.daily.co/room")!, token: "t")
 
-    private func makeTransport() -> PipecatDailyTransport {
+    private func makeTransport(
+        sleep: @escaping @MainActor (Duration) async -> Void = { try? await Task.sleep(for: $0) }
+    ) -> PipecatDailyTransport {
         PipecatDailyTransport(
             makePipecatTransport: { [clients] in
                 let fake = FakePipecatTransport()
@@ -53,7 +55,8 @@ struct PipecatDailyTransportTests {
                 clients.controls.append(control)
                 return control
             },
-            readOutputPort: { nil }
+            readOutputPort: { nil },
+            sleep: sleep
         )
     }
 
@@ -174,14 +177,17 @@ struct PipecatDailyTransportTests {
     /// that started while that disconnect was still flushing its end-call signal.
     @Test(.timeLimit(.minutes(1)))
     func aConnectDuringTheDisconnectKeepsItsClient() async throws {
-        let transport = makeTransport()
+        let flush = HandSleeper()
+        let transport = makeTransport(sleep: flush.sleep)
         try await transport.connect(connection)
         let first = try #require(clients.made.first)
         first.becomeReady()
 
         let disconnecting = Task { await transport.disconnect() }
-        while first.calls.contains("send client-message") == false { await Task.yield() }
+        await waitUntil { flush.pendingCount == 1 } // flushing the end-call signal
+        #expect(first.calls.last == "send client-message")
         try await transport.connect(connection)
+        flush.wakeAll()
         await disconnecting.value
 
         let second = try #require(clients.made.last)
@@ -297,8 +303,11 @@ struct PipecatDailyTransportTests {
         #expect(fresh.calls == ["disconnect", "release"])
     }
 
-    private func waitUntilLeaving(_ fake: FakePipecatTransport) async {
-        for _ in 0..<1000 where !fake.calls.contains("disconnect") { await Task.yield() }
+    private func waitUntilLeaving(
+        _ fake: FakePipecatTransport,
+        sourceLocation: SourceLocation = #_sourceLocation
+    ) async {
+        await waitUntil(sourceLocation: sourceLocation) { fake.calls.contains("disconnect") }
     }
 
     // MARK: - Call-control signals
@@ -493,14 +502,19 @@ struct PipecatDailyTransportTests {
 
     /// The engine's teardown detaches, then disconnects at once: the leave is not
     /// held up by a subscription change, which the released session no longer gets.
-    @Test func aTeardownDetachDoesNotHoldUpTheLeave() async throws {
+    @Test(.timeLimit(.minutes(1)))
+    func aTeardownDetachDoesNotHoldUpTheLeave() async throws {
         let transport = makeTransport()
         let fake = try await attachedCall(transport)
+        let control = try #require(clients.controls.first)
+        control.holdsRemoteAudio = true // a subscription change Daily never finishes
 
         await transport.detachAudioSession()
         await transport.disconnect()
-        await drain()
 
+        #expect(fake.calls == ["connect", "send client-message", "disconnect", "release"])
+        control.releaseRemoteAudio()
+        await drain()
         #expect(fake.calls == ["connect", "send client-message", "disconnect", "release"])
     }
 
