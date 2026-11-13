@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.0
+## 0.2.0 - 2026-11-12
 
 0.2 adds pre-connect (preparing an incoming call while it rings), ring timeouts and cancel pushes, call-control signals to the agent (among them `call-connected`, which tells the agent when to start speaking), sound cues, a minimum time a call the user placed shows as connecting, a bound on how long a call waits for its agent, and a log hook, with call hold as an experimental opt-in that is off by default; makes the public API usable from a Swift 6 host; lets a host test drive every feature deterministically; and fixes many ordering and recovery bugs found on devices, in both adapters and the engine. A 0.1 host needs a few source changes and should read the behaviour changes below: several defaults now do something 0.1 did not (calls start on the earpiece, rings time out, a call whose agent never comes fails, the mic opens only once the call is connected). A phone call the user accepts during a call still ends it, as in 0.1.
 
