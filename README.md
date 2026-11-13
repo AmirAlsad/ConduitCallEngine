@@ -1,6 +1,6 @@
 # ConduitCallEngine
 
-An iOS library that turns a voice agent into a phone call. It presents the call through CallKit (system call UI, lock screen, Bluetooth and CarPlay routing, hold while the user takes a phone call), receives agent-initiated calls through PushKit VoIP pushes, runs the call state machine, owns the audio-session policy during a call, reconnects after network drops, and carries audio over WebRTC through pluggable transports.
+An iOS library that turns a voice agent into a phone call. It presents the call through CallKit (system call UI, lock screen, Bluetooth and CarPlay routing), receives agent-initiated calls through PushKit VoIP pushes, runs the call state machine, owns the audio-session policy during a call, reconnects after network drops, and carries audio over WebRTC through pluggable transports.
 
 Your app describes each call with a small `CallTarget` value: an id, a display name, an optional CallKit handle, a factory for the transport, and an async `connect` closure that returns a room URL and token however your app obtains them, told by a `ConnectRequest` whether it is for a new call or a reconnect. The engine reports call state and finished calls back to you. It knows about calls, not about agents, accounts, persistence or UI. An app with one built-in agent and an app with many are the same to the engine: the first one just has one target.
 
@@ -166,6 +166,10 @@ struct CallScreen: View {
 - **A decision on pre-connect, if you take incoming calls.** A ring is prepared while it rings (credentials fetched, or the room joined with audio held until the answer) only when the push asks for it and your target's `ringPreparation` allows it, so the agent is ready when the user answers. The default, `.none`, keeps every ring as it was. See [Integration Guide, section 9](Docs/IntegrationGuide.md#pre-connect).
 - **Any in-app UI, call history, missed-call notifications and call sounds.** Drive them from `CallEngine`'s observable state and the delegate callbacks. The engine plays nothing, but tells you when a ringback, a "retrying" loop or a "connected" sound may belong through `callEngine(_:cue:)`, and `activeCall` tells you whether the call was placed or answered, and ready at the answer, so you can choose (see [Integration Guide, section 9](Docs/IntegrationGuide.md#cues)).
 - **Project configuration.** Capabilities, background modes and usage descriptions; see [Integration Guide, section 3](Docs/IntegrationGuide.md#3-project-setup).
+
+## Experimental: call hold
+
+A phone call the user accepts during an engine call ends the engine call, as in 0.1. `CallEngineConfiguration.supportsHolding` (off by default) lets iOS hold the call instead, and `CallEngine.setOnHold(_:)` hold it from your UI. It is experimental: do not enable it in a shipping app yet. On an iPhone 17 with iOS 27.0, in-app hold and resume with no other call restored two-way audio on both bundled transports, but resuming after a real phone call did not: on LiveKit every start of the audio engine failed (`LiveKitError` 801, "Audio engine returned error code: -4010"), and on Daily the audio was simply absent. See [Call hold](Docs/IntegrationGuide.md#call-hold).
 
 ## Device-only reality
 

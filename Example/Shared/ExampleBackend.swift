@@ -26,8 +26,10 @@ enum ExampleBackend {
 
     /// The call-control signals this app's calls carry, sent with every request so the
     /// backend's agent waits for `call-connected` before it speaks (Integration Guide,
-    /// "When your agent should start speaking").
-    static let callSignals = CallSignal.allCases.map(\.rawValue)
+    /// "When your agent should start speaking"). Only `call-connected`: the engine
+    /// sends `call-held` and `call-resumed` only with the experimental hold, which
+    /// this app leaves off.
+    static let callSignals = [CallSignal.connected.rawValue]
 
     /// POSTs `{ "call_signals": [...] }` to `<baseURL>/connect` and decodes
     /// `{ "url": ..., "token": ... }`.
