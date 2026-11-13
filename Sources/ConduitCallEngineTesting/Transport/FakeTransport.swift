@@ -39,6 +39,21 @@ public final class FakeTransport: CallTransport {
     public private(set) var micEnabledHistory: [Bool] = []
     /// Whether the last of `attachAudioSession()` and `detachAudioSession()` was an attach.
     public private(set) var isAudioAttached = false
+    /// How many times the engine called `recoverMediaAfterInterruption()`.
+    public private(set) var mediaRecoveryCount = 0
+
+    /// A media command or signal the engine gave the transport.
+    public enum Command: Equatable, Sendable {
+        case attach
+        case detach
+        case mic(Bool)
+        case recoverMediaAfterInterruption
+        case send(CallSignal)
+    }
+
+    /// Every attach, detach, mic command, media recovery and signal, in the order
+    /// the engine made them, so a test can check how they interleave.
+    public private(set) var commands: [Command] = []
     /// How many `connect(_:)` calls found their task cancelled when they finished.
     /// An SDK whose join is cancellation-aware (LiveKit's `Room.connect`, for one)
     /// abandons the join then, so a test can check the engine never cancels one it
@@ -118,6 +133,7 @@ public final class FakeTransport: CallTransport {
     }
 
     public func setMicEnabled(_ enabled: Bool) async {
+        commands.append(.mic(enabled))
         isMicEnabled = enabled
         setMicEnabledCallCount += 1
         micEnabledHistory.append(enabled)
@@ -165,7 +181,21 @@ public final class FakeTransport: CallTransport {
         waiting.forEach { $0.resume() }
     }
 
+    /// How many of the next attaches fail to start the audio (`audioStartFailure()`
+    /// then reports it until the next attach that starts it, or a detach).
+    public var failingAttaches = 0
+    private var startFailure: String?
+
+    public func audioStartFailure() async -> String? { startFailure }
+
     public func attachAudioSession() async {
+        commands.append(.attach)
+        if failingAttaches > 0 {
+            failingAttaches -= 1
+            startFailure = "fake audio start failure"
+        } else {
+            startFailure = nil
+        }
         if suspendAttach {
             pendingAttachCount += 1
             await withCheckedContinuation { attachContinuations.append($0) }
@@ -174,7 +204,14 @@ public final class FakeTransport: CallTransport {
     }
 
     public func detachAudioSession() async {
+        commands.append(.detach)
+        startFailure = nil
         isAudioAttached = false
+    }
+
+    public func recoverMediaAfterInterruption() async {
+        commands.append(.recoverMediaAfterInterruption)
+        mediaRecoveryCount += 1
     }
 
     /// Every call-control signal the engine sent, in order, whatever became of it.
@@ -185,6 +222,7 @@ public final class FakeTransport: CallTransport {
     @discardableResult
     public func send(_ signal: CallSignal) async -> CallSignalDelivery {
         sentSignals.append(signal)
+        commands.append(.send(signal))
         return signalDeliveries.isEmpty ? .sent : signalDeliveries.removeFirst()
     }
 

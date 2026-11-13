@@ -194,6 +194,7 @@ final class SystemCallProvider: NSObject, CallProviding, CXProviderDelegate, CXC
             // Configure the session again, without activating it, before the resume
             // is fulfilled, as before a start or an answer: CallKit activates it then.
             if performed, !action.isOnHold, !isSessionActivated {
+                Log.info(.callKit, "Configuring the session before the resume; was: \(audioSession.diagnosticDescription)")
                 try? audioSession.prepareForVoIPCall()
             }
             return performed

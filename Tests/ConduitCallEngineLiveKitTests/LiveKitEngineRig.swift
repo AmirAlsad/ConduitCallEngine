@@ -9,7 +9,7 @@
 import Foundation
 import ConduitCallEngine
 import ConduitCallEngineTesting
-@testable import ConduitCallEngineLiveKit
+@_spi(InterruptionRecoveryExperiment) @testable import ConduitCallEngineLiveKit
 
 @MainActor
 final class HandSleeper {
@@ -53,6 +53,10 @@ final class LiveKitEngineRig {
     /// Configures each room as the transport creates it.
     var prepareRoom: (FakeLiveKitRoom) -> Void = { _ in }
     var ringPreparation: RingPreparation = .none
+    /// What each new transport does when the engine asks it to recover its media.
+    var interruptionRecovery: LiveKitInterruptionRecovery = .off
+    /// Every pause the transports took, in order; each returns at once.
+    private(set) var transportPauses: [Duration] = []
 
     private(set) var rooms: [FakeLiveKitRoom] = []
     private(set) var audioEngines: [FakeLiveKitAudioEngine] = []
@@ -93,7 +97,9 @@ final class LiveKitEngineRig {
                         self.rooms.append(room)
                         return room
                     },
-                    audioEngine: makeAudioEngine()
+                    audioEngine: makeAudioEngine(),
+                    interruptionRecovery: interruptionRecovery,
+                    sleep: { [unowned self] in transportPauses.append($0) }
                 )
             },
             connect: { [unowned self] request in

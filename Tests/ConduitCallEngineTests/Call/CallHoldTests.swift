@@ -352,7 +352,63 @@ struct CallHoldTests {
         await h.engine.awaitPendingWork()
 
         #expect(h.provider.heldRequests.isEmpty)
-        #expect(h.engine.isTimerRunning(.activationRecovery)) // the attempt is spent, the next waits
+        #expect(h.engine.isTimerRunning(.activationRecovery)) // it checks again later
+    }
+
+    /// A phone call can still be listed a moment after it is hung up. Its end asks
+    /// CallKit again at once, rather than waiting for the next check.
+    @Test func theOtherCallEndingAsksAtOnce() async throws {
+        let h = timedHarness()
+        await resumedWithoutAudio(h)
+        let other = h.provider.simulateOtherCallStarted()
+        #expect(h.engine.fireTimer(.activationRecovery))
+        await h.engine.awaitPendingWork()
+        #expect(h.provider.heldRequests.isEmpty)
+
+        h.provider.simulateOtherCallEnded(other)
+        await h.engine.awaitPendingWork()
+
+        #expect(h.provider.heldRequests.map(\.onHold) == [true, false])
+        #expect(!h.engine.isOnHold)
+    }
+
+    /// Waiting for another call spends none of the attempts.
+    @Test func waitingForAnotherCallSpendsNoAttempt() async throws {
+        let h = timedHarness()
+        await resumedWithoutAudio(h)
+        let other = h.provider.simulateOtherCallStarted()
+        for _ in 0..<CallEngine.activationRecoveryAttemptLimit + 2 {
+            #expect(h.engine.fireTimer(.activationRecovery))
+            await h.engine.awaitPendingWork()
+        }
+        #expect(h.provider.heldRequests.isEmpty)
+        h.provider.simulateOtherCallEnded(other)
+        await h.engine.awaitPendingWork()
+
+        var fired = 0
+        while h.engine.fireTimer(.activationRecovery) {
+            fired += 1
+            await h.engine.awaitPendingWork()
+        }
+
+        #expect(h.provider.heldRequests.count == 2 * CallEngine.activationRecoveryAttemptLimit)
+        #expect(fired == CallEngine.activationRecoveryAttemptLimit - 1) // the end asked once itself
+    }
+
+    /// While another call stays active, the engine stops checking after a while.
+    @Test func anotherCallThatStaysActiveIsCheckedForABoundedTime() async throws {
+        let h = timedHarness()
+        await resumedWithoutAudio(h)
+        h.provider.simulateOtherCallStarted()
+
+        var fired = 0
+        while h.engine.fireTimer(.activationRecovery) {
+            fired += 1
+            await h.engine.awaitPendingWork()
+        }
+
+        #expect(fired == CallEngine.activationRecoveryWaitLimit + 1)
+        #expect(h.provider.heldRequests.isEmpty)
     }
 
     // MARK: - Resuming once the other call ends

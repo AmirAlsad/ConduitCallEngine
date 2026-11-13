@@ -229,5 +229,22 @@ package final class FakeCallProvider: CallProviding {
 
 @MainActor
 package final class FakeAudioSession: AudioSessionActivating {
+    /// How many times the engine set the call's configuration again.
+    package private(set) var reapplyCount = 0
+    /// How many times the engine activated the session again.
+    package private(set) var activateCount = 0
+
     package init() {}
+
+    package var diagnosticDescription: String { "fake audio session" }
+
+    package func reapplyCallConfiguration() -> String {
+        reapplyCount += 1
+        return "fake reapply"
+    }
+
+    package func activateAgain() -> String {
+        activateCount += 1
+        return "fake activate"
+    }
 }

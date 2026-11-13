@@ -109,8 +109,12 @@ final class FakePipecatTransport: Transport {
         calls.append("release")
     }
 
+    /// When set, `connect` records the join and then fails with it.
+    var connectError: (any Error)?
+
     func connect(transportParams: TransportConnectionParams?) async throws {
         calls.append(Self.joinDevice(transportParams).map { "connect preferring \($0)" } ?? "connect")
+        if let connectError { throw connectError }
         onJoin?()
         setState(state: joinsOnConnect ? .connected : .connecting)
         if joinsOnConnect, isBotPresent {
@@ -163,7 +167,17 @@ final class FakePipecatTransport: Transport {
     func updateCam(camId: MediaDeviceId) async throws {}
     func selectedMic() -> MediaDeviceInfo? { nil }
     func selectedCam() -> MediaDeviceInfo? { nil }
-    func enableMic(enable: Bool) async throws { micHistory.append(enable) }
+    /// When true, each `enableMic(enable:)` is also recorded in `calls` ("mic on",
+    /// "mic off").
+    var recordsMic = false
+    /// When set, `enableMic(enable:)` fails with it.
+    var micError: (any Error)?
+
+    func enableMic(enable: Bool) async throws {
+        if let micError { throw micError }
+        micHistory.append(enable)
+        if recordsMic { calls.append(enable ? "mic on" : "mic off") }
+    }
     func enableCam(enable: Bool) async throws {}
     func isCamEnabled() -> Bool { false }
     func isMicEnabled() -> Bool { false }

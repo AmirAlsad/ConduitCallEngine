@@ -242,6 +242,16 @@ struct DailyAudioRouteGate {
         applied = reported
     }
 
+    /// The adapter changed Daily's preferred device itself (a recovery after an
+    /// interruption), and Daily now reports `reported`: that counts as applied,
+    /// unless an application is still in flight, so a wanted route Daily does not
+    /// have is asked for again.
+    mutating func preferenceChangedOutsideTheGate(reported: DailyAudioRoute?) {
+        refused = nil
+        guard !isApplying else { return }
+        applied = reported
+    }
+
     /// The next change to apply, or `nil` if there is none or one is in flight. A
     /// ring's join asks nothing of Daily, which manages the session from the join,
     /// between the join and the first attach.

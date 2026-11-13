@@ -112,6 +112,12 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     /// it before `startPushRegistration()`.
     @ObservationIgnored public weak var delegate: CallEngineDelegate?
 
+    /// EXPERIMENTAL, not supported API: what the engine does to the audio session
+    /// when CallKit hands back the audio of a call whose media was detached during an
+    /// audio interruption, read each time. Nothing (`.off`) by default.
+    @_spi(InterruptionRecoveryExperiment)
+    @ObservationIgnored public var sessionInterruptionRecovery: @MainActor () -> SessionInterruptionRecovery = { .off }
+
     private let configuration: CallEngineConfiguration
     private let callProvider: CallProviding
     private let interruptionObserver: AudioInterruptionObserving
@@ -148,6 +154,16 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     private var eventTask: Task<Void, Never>?
     /// Where an interruption stands; see `isInterrupted`.
     private var interruption: InterruptionPhase = .none
+    /// Whether the live transport's media is detached: a hold or CallKit's
+    /// deactivation detached it, and no attach has followed. False before its
+    /// first attach.
+    private var isMediaDetached = false
+    /// Whether an audio interruption was in progress while the live transport's
+    /// media was detached, since its last attach: the next attach is followed by
+    /// `recoverMediaAfterInterruption()`.
+    private var isMediaInterruptedWhileDetached = false
+    /// The session CallKit last activated for the call, until it deactivates it.
+    @ObservationIgnored private var activatedSession: AudioSessionActivating?
     /// The tail of the media commands (attach, detach, mic) sent to the live
     /// transport, which run one after another in the order the engine issued them.
     private var mediaTask: Task<Void, Never>?
@@ -221,6 +237,12 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     private var activationRecoveryTask: Task<Void, Never>?
     /// The times CallKit has been asked again since the last resume.
     private var activationRecoveryAttempts = 0
+    /// The times the engine did not ask CallKit again since the last resume because
+    /// another call was active; these spend no attempt.
+    private var activationRecoveryWaitsForOtherCall = 0
+    /// Whether the engine is waiting for another call to end before it asks CallKit
+    /// again; that call ending asks at once.
+    private var isActivationRecoveryWaitingForOtherCall = false
     /// Where the hold-and-resume pair asking CallKit again stands.
     private var activationRecoveryStep: ActivationRecoveryStep = .idle
     /// Who asked for the hold in effect; nil while the call is not held.
@@ -1148,9 +1170,12 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         self.transport = transport
         mediaTask = nil
         signalTask = nil
+        isMediaDetached = false
+        isMediaInterruptedWhileDetached = false
         if !isSubscribed { subscribe(to: transport) }
         guard isAudioActivated, !isOnHold else { return nil }
-        return enqueueMedia { await $0.attachAudioSession() }
+        attachMedia()
+        return confirmAudioStarted()
     }
 
     private func subscribe(to transport: CallTransport) {
@@ -1698,6 +1723,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
             return
         }
         isAudioActivated = true
+        activatedSession = audioSession
         cancelActivationRecovery()
         switch interruption {
         case .none:
@@ -1718,11 +1744,16 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         // A transport created later attaches as soon as it exists; a held call's
         // attaches on the resume.
         guard let transport else { return }
-        if !isOnHold { enqueueMedia { await $0.attachAudioSession() } }
+        if !isOnHold { attachMedia() }
         // The mic opens only once the call is connected. If CallKit activates BEFORE
         // that (the usual order: the credential fetch and the join come after), this
         // closes it and `handleConnected` opens it.
-        await applyMic()?.value
+        let mic = applyMic()
+        if !isOnHold {
+            recoverMediaAfterInterruptionIfDue()
+            confirmAudioStarted()
+        }
+        await mic?.value
         guard self.transport === transport else { return }
         // After the attach and the mic, so an agent that waits for them starts
         // speaking into a running audio engine: a resume that came before this
@@ -1764,8 +1795,9 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     package func providerDidDeactivate(_ audioSession: AudioSessionActivating) {
         Log.info(.callKit, "Audio session deactivated")
         isAudioActivated = false
+        activatedSession = nil
         applyMic()
-        enqueueMedia { await $0.detachAudioSession() }
+        detachMedia()
     }
 
     package func providerPerformAnswerCall(_ id: UUID) {
@@ -1867,7 +1899,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         signalRetryCount = 0
         cancelActivationRecovery()
         applyMic()
-        enqueueMedia { await $0.detachAudioSession() }
+        detachMedia()
         syncHoldSignal()
         if repeatingCue != nil {
             setRepeatingCue(nil)
@@ -1896,8 +1928,12 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
             Log.info(.call, "Resumed with the audio CallKit handed back during the hold; the interruption is over")
             interruption = .none
         }
-        if isAudioActivated { enqueueMedia { await $0.attachAudioSession() } }
+        if isAudioActivated { attachMedia() }
         applyMic()
+        if isAudioActivated {
+            recoverMediaAfterInterruptionIfDue()
+            confirmAudioStarted()
+        }
         syncHoldSignal()
         delegate?.callEngine(self, cue: .moment(.resumed))
         markConnectedIfDue()
@@ -1921,6 +1957,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
             startJoinDeadline(for: transport)
         }
         activationRecoveryAttempts = 0
+        activationRecoveryWaitsForOtherCall = 0
         startActivationRecoveryIfNeeded()
     }
 
@@ -1966,16 +2003,29 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         activationRecoveryTask?.cancel()
         activationRecoveryTask = nil
         timerExpiries[.activationRecovery] = nil
+        isActivationRecoveryWaitingForOtherCall = false
     }
 
-    private func askForActivationAgain(for id: UUID) {
+    /// `ended` is a call the observer just reported ended, which may still be listed.
+    private func askForActivationAgain(for id: UUID, ended: UUID? = nil) {
         guard activeCallID == id, !isAudioActivated, !isOnHold, canBeHeld, activationRecoveryStep == .idle else { return }
-        activationRecoveryAttempts += 1
-        if callProvider.observedCalls.contains(where: { $0.id != id && !$0.hasEnded && !$0.isOnHold }) {
-            Log.warning(.callKit, "CallKit did not activate the audio within \(Self.activationRecoveryDelay) of the resume, but another call is active; not asking again (\(activationRecoveryAttempts) of \(Self.activationRecoveryAttemptLimit))")
+        let active = callProvider.observedCalls.filter { $0.id != id && $0.id != ended && !$0.hasEnded && !$0.isOnHold }
+        if !active.isEmpty {
+            // A phone call can still be listed for a while after the user hangs it up;
+            // asking CallKit then is pointless, so wait for it to end, without
+            // spending an attempt.
+            activationRecoveryWaitsForOtherCall += 1
+            guard activationRecoveryWaitsForOtherCall <= Self.activationRecoveryWaitLimit else {
+                Log.error(.callKit, "CallKit has not activated the resumed call's audio, and another call has stayed active for \(activationRecoveryWaitsForOtherCall - 1) checks; waiting for the system or the user")
+                return
+            }
+            Log.warning(.callKit, "CallKit did not activate the audio within \(Self.activationRecoveryDelay) of the resume, but another call is active (\(active.count)); asking again once it ends, checking again in \(Self.activationRecoveryDelay) (wait \(activationRecoveryWaitsForOtherCall) of \(Self.activationRecoveryWaitLimit))")
             startActivationRecoveryIfNeeded()
+            isActivationRecoveryWaitingForOtherCall = true
             return
         }
+        isActivationRecoveryWaitingForOtherCall = false
+        activationRecoveryAttempts += 1
         Log.warning(.callKit, "CallKit did not activate the audio within \(Self.activationRecoveryDelay) of the resume; holding and resuming the call to ask again (\(activationRecoveryAttempts) of \(Self.activationRecoveryAttemptLimit))")
         activationRecoveryStep = .holding
         startDetachedWork { [weak self] in await self?.runActivationRecoveryPair(for: id) }
@@ -2020,6 +2070,13 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
 
     package func providerDidObserveCallChange(_ call: ObservedCall) {
         guard let id = activeCallID, call.id != id else { return }
+        if call.hasEnded, isActivationRecoveryWaitingForOtherCall,
+           activationRecoveryAttempts < Self.activationRecoveryAttemptLimit {
+            Log.info(.callKit, "A call that kept the engine from asking CallKit again for the audio ended; asking now")
+            cancelActivationRecovery()
+            askForActivationAgain(for: id, ended: call.id)
+            return
+        }
         guard isOnHold, holdOrigin == .system else { return }
         guard call.hasEnded else {
             callsSeenDuringSystemHold.insert(call.id)
@@ -2247,6 +2304,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         guard state.isActive, !state.isTerminal else { return }
         Log.info(.call, "Call interrupted; pausing mic")
         interruption = .interrupted(reactivated: false)
+        if isMediaDetached { noteInterruptionWhileDetached() }
         applyMic()
     }
 
@@ -2501,6 +2559,99 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         }
     }
 
+    /// Queue the live transport's attach, and return that command.
+    @discardableResult
+    private func attachMedia() -> Task<Void, Never>? {
+        if isMediaInterruptedWhileDetached, transport != nil { recoverSessionAfterInterruption() }
+        isMediaDetached = false
+        return enqueueMedia { await $0.attachAudioSession() }
+    }
+
+    /// Before the attach that follows an audio interruption: log the session now and
+    /// a second and three seconds later, and run the experimental session recovery,
+    /// if one is chosen, as a media command ahead of the attach.
+    private func recoverSessionAfterInterruption() {
+        let session = activatedSession
+        let recovery = sessionInterruptionRecovery()
+        Log.info(.callKit, "Attaching after an audio interruption (session recovery \(recovery.rawValue)); session: \(session?.diagnosticDescription ?? "none")")
+        logSessionLater(session)
+        guard recovery != .off, let session else { return }
+        enqueueMedia { _ in
+            Log.info(.callKit, "Session recovery \(recovery.rawValue): \(session.reapplyCallConfiguration())")
+            if recovery == .reapplyCategoryAndActivate {
+                Log.warning(.callKit, "Session recovery E-B, experimental, activating the session although CallKit owns activation: \(session.activateAgain())")
+            }
+            Log.info(.callKit, "Session recovery \(recovery.rawValue) done; session: \(session.diagnosticDescription)")
+        }
+    }
+
+    /// Logs `session` a second and three seconds from now, while the call lasts.
+    private func logSessionLater(_ session: AudioSessionActivating?) {
+        guard let session, let id = activeCallID else { return }
+        Task { [weak self] in
+            var elapsed: Duration = .zero
+            for mark in [Duration.seconds(1), .seconds(3)] {
+                try? await Task.sleep(for: mark - elapsed)
+                elapsed = mark
+                guard let self, self.activeCallID == id else { return }
+                Log.info(.callKit, "Session \(mark) after the attach that followed an audio interruption: \(session.diagnosticDescription)")
+            }
+        }
+    }
+
+    /// Queue the live transport's detach (a hold, CallKit's deactivation).
+    private func detachMedia() {
+        isMediaDetached = true
+        if case .interrupted = interruption { noteInterruptionWhileDetached() }
+        enqueueMedia { await $0.detachAudioSession() }
+    }
+
+    private func noteInterruptionWhileDetached() {
+        guard !isMediaInterruptedWhileDetached else { return }
+        Log.info(.call, "An audio interruption while the call's media is detached; the transport will be asked to recover its media at the next attach")
+        isMediaInterruptedWhileDetached = true
+    }
+
+    /// After an attach and its mic command, and before anything the engine sends
+    /// the agent after them: a transport whose media was detached during a real
+    /// audio interruption is asked to recover it, once per such attach.
+    private func recoverMediaAfterInterruptionIfDue() {
+        guard isMediaInterruptedWhileDetached, !isMediaDetached, transport != nil else { return }
+        isMediaInterruptedWhileDetached = false
+        Log.info(.call, "Media attached after an audio interruption; asking the transport to recover it")
+        enqueueMedia { await $0.recoverMediaAfterInterruption() }
+    }
+
+    /// After an attach (and the mic and recovery commands issued with it): if the
+    /// transport says its audio did not start, attach it again a few times, while
+    /// the call stays activated, attached and not held. What the engine sends the
+    /// agent after the attach (`call-resumed`, `call-connected`) waits for this, so
+    /// the agent hears the user is back only once the audio runs, or once the
+    /// attempts are spent, which is logged as an error.
+    @discardableResult
+    private func confirmAudioStarted() -> Task<Void, Never>? {
+        enqueueMedia { [weak self] transport in
+            guard var failure = await transport.audioStartFailure() else { return }
+            let delays = Self.audioStartRetryDelays
+            for (index, delay) in delays.enumerated() {
+                guard let self else { return }
+                Log.warning(.call, "The transport's audio did not start: \(failure); session: \(self.activatedSession?.diagnosticDescription ?? "none"); attaching again in \(delay) (\(index + 1) of \(delays.count))")
+                try? await self.sleep(delay)
+                guard self.transport === transport, self.isAudioActivated, !self.isOnHold, !self.isMediaDetached else {
+                    Log.info(.call, "Not attaching again: the call was held, deactivated or ended meanwhile")
+                    return
+                }
+                await transport.attachAudioSession()
+                guard let next = await transport.audioStartFailure() else {
+                    Log.info(.call, "The transport's audio started on attaching again (\(index + 1) of \(delays.count))")
+                    return
+                }
+                failure = next
+            }
+            Log.error(.call, "The transport's audio did not start after attaching \(delays.count) more times: \(failure); session: \(self?.activatedSession?.diagnosticDescription ?? "none"); telling the agent anyway")
+        }
+    }
+
     /// Queue a media command for the live transport, after the ones already
     /// queued. It is skipped if that transport is no longer the call's when its
     /// turn comes.
@@ -2566,6 +2717,9 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         endMicWithhold()
         interruptionObserver.stopObserving()
         interruption = .none
+        isMediaDetached = false
+        isMediaInterruptedWhileDetached = false
+        activatedSession = nil
         // The session CallKit activated belonged to this call.
         isAudioActivated = false
         reconnectAttemptID = nil
@@ -2585,6 +2739,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         cancelActivationRecovery()
         activationRecoveryStep = .idle
         activationRecoveryAttempts = 0
+        activationRecoveryWaitsForOtherCall = 0
         holdOrigin = nil
         pendingHostHold = nil
         callsSeenDuringSystemHold = []
@@ -2622,6 +2777,9 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         remoteAudioLevel = 0
         isAudioActivated = false
         interruption = .none
+        isMediaDetached = false
+        isMediaInterruptedWhileDetached = false
+        activatedSession = nil
         isOnHold = false
         isAgentToldHeld = false
         lastHoldSignal = nil
@@ -2637,6 +2795,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         cancelActivationRecovery()
         activationRecoveryStep = .idle
         activationRecoveryAttempts = 0
+        activationRecoveryWaitsForOtherCall = 0
         holdOrigin = nil
         pendingHostHold = nil
         callsSeenDuringSystemHold = []
@@ -2769,4 +2928,9 @@ extension CallEngine {
     package nonisolated static let activationRecoveryDelay: Duration = .seconds(2)
     /// How many times the engine asks again after one resume.
     package nonisolated static let activationRecoveryAttemptLimit = 3
+    /// How many times, `activationRecoveryDelay` apart, the engine checks again
+    /// after one resume while another call keeps it from asking.
+    package nonisolated static let activationRecoveryWaitLimit = 15
+    /// The waits before each attach again of a transport whose audio did not start.
+    package nonisolated static let audioStartRetryDelays: [Duration] = [.milliseconds(500), .seconds(1), .seconds(2)]
 }

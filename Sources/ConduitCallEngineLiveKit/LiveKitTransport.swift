@@ -56,6 +56,11 @@ public final class LiveKitTransport: CallTransport {
     /// activation lands mid-connect, and an unconditional `.none` there would stomp
     /// it — LiveKit's audio engine then never starts and the call has no mic.
     private var isSessionAttached = false
+    private let interruptionRecovery: LiveKitInterruptionRecovery
+    /// Why the last attach could not start LiveKit's audio engine; nil once it did,
+    /// and after a detach.
+    private var attachFailure: String?
+    private let sleep: @MainActor (Duration) async -> Void
 
     /// The join in flight: `room.connect`, in a task of the transport's own.
     private var join: (id: Int, task: Task<Void, any Error>)?
@@ -77,10 +82,25 @@ public final class LiveKitTransport: CallTransport {
         self.init(makeRoom: { LiveKitSDKRoom(delegate: $0) }, audioEngine: LiveKitSDKAudioEngine())
     }
 
+    /// EXPERIMENTAL, for the device test of recovering a call's audio after a phone
+    /// call interrupted it; not supported API.
+    @_spi(InterruptionRecoveryExperiment)
+    public convenience init(interruptionRecovery: LiveKitInterruptionRecovery) {
+        self.init(
+            makeRoom: { LiveKitSDKRoom(delegate: $0) },
+            audioEngine: LiveKitSDKAudioEngine(),
+            interruptionRecovery: interruptionRecovery
+        )
+    }
+
     init(
         makeRoom: (RoomEventMapper) -> LiveKitRoomControlling,
-        audioEngine: LiveKitAudioEngineControlling
+        audioEngine: LiveKitAudioEngineControlling,
+        interruptionRecovery: LiveKitInterruptionRecovery = .off,
+        sleep: @escaping @MainActor (Duration) async -> Void = { try? await Task.sleep(for: $0) }
     ) {
+        self.interruptionRecovery = interruptionRecovery
+        self.sleep = sleep
         let (stream, continuation) = AsyncStream.makeStream(of: TransportEvent.self)
         self.events = stream
         self.continuation = continuation
@@ -263,26 +283,129 @@ public final class LiveKitTransport: CallTransport {
     }
 
     /// CallKit activated the session (or a hold ended): let LiveKit's audio engine run,
-    /// which resumes the playout and capture it was asked for while unavailable.
+    /// which resumes the playout and capture it was asked for while unavailable. A
+    /// start LiveKit refuses is logged with the session's state and reported through
+    /// `audioStartFailure()`; the attach after such a failure takes the engine down
+    /// first, since asking LiveKit again for the availability it already holds may
+    /// change nothing.
     public func attachAudioSession() async {
         isSessionAttached = true
+        if let previous = attachFailure {
+            Log.info(.audio, "LiveKit attach after a failed start (\(previous)): making the engine unavailable first")
+            do { try audioEngine.setAvailable(false) }
+            catch { Log.warning(.audio, "LiveKit setEngineAvailability(.none) before attaching again failed: \(error)") }
+        }
+        makeEngineAvailable(context: "attach")
+    }
+
+    /// Makes the audio engine available, recording whether it started.
+    private func makeEngineAvailable(context: String) {
         do {
             try audioEngine.setAvailable(true)
-            Log.info(.audio, "LiveKit attach: audio engine available (playout restored); running=\(audioEngine.isRunning)")
+            attachFailure = nil
+            Log.info(.audio, "LiveKit \(context): audio engine available (playout restored); running=\(audioEngine.isRunning)")
         } catch {
-            Log.error(.audio, "LiveKit setEngineAvailability(.default) error: \(error)")
+            attachFailure = "setEngineAvailability(.default) failed: \(error)"
+            Log.error(.audio, "LiveKit \(context): setEngineAvailability(.default) error: \(error); \(audioEngine.stateDescription); session: \(Self.sessionDescription)")
         }
     }
+
+    public func audioStartFailure() async -> String? { attachFailure }
 
     /// A hold, CallKit's deactivation or teardown: stop LiveKit's audio engine, so
     /// neither playout nor capture runs, while the room stays connected.
     public func detachAudioSession() async {
         isSessionAttached = false
+        attachFailure = nil
         do {
             try audioEngine.setAvailable(false)
             Log.info(.audio, "LiveKit detach: audio engine unavailable (playout and capture stopped); running=\(audioEngine.isRunning)")
         } catch {
             Log.error(.audio, "LiveKit setEngineAvailability(.none) error: \(error)")
+        }
+    }
+
+    /// The audio session as it stands, for logs.
+    private static var sessionDescription: String {
+        let session = AVAudioSession.sharedInstance()
+        let route = session.currentRoute
+        return """
+        category \(session.category.rawValue), mode \(session.mode.rawValue), options \(session.categoryOptions.rawValue), \
+        otherAudioPlaying \(session.isOtherAudioPlaying), sampleRate \(session.sampleRate), \
+        inputAvailable \(session.isInputAvailable), inputs \(route.inputs.map(\.portType.rawValue)), \
+        outputs \(route.outputs.map(\.portType.rawValue))
+        """
+    }
+
+    // MARK: - Media after an interruption (experimental)
+    //
+    // After a real phone call, a resumed LiveKit call was observed with no audio
+    // either way, although CallKit had activated the session and the attach had made
+    // the audio engine available again; a hold and resume with no other call
+    // brought it back every time. LiveKit's Swift layer does not retry a start that
+    // failed: `setEngineAvailability` passes the audio device module's result code
+    // up, and LiveKit throws for a non-zero one; what the module does about an
+    // interruption whose end iOS never reports is inside the WebRTC binary. The
+    // engine calls this after an attach that follows such an interruption; what it
+    // does is chosen with the experimental `LiveKitInterruptionRecovery` (nothing by
+    // default), and every step and the engine's state before, after, and a second
+    // and three seconds later, are logged.
+
+    /// Runs the recovery chosen with `LiveKitInterruptionRecovery`, nothing by default.
+    public func recoverMediaAfterInterruption() async {
+        let recovery = interruptionRecovery
+        Log.info(.audio, "LiveKit after an interruption: recovery \(recovery.rawValue); engine before: \(audioEngine.stateDescription)")
+        switch recovery {
+        case .off:
+            Log.info(.audio, "LiveKit after an interruption: recovery off; nothing done")
+        case .restartEngine:
+            restartEngine(attempt: 1)
+        case .notifyActivationThenRestart:
+            Log.info(.audio, "LiveKit after an interruption: telling WebRTC's audio session it was activated: \(audioEngine.notifyExternalActivation())")
+            restartEngine(attempt: 1)
+        case .restartEngineUntilRunning:
+            for attempt in 1...Self.restartAttempts {
+                Log.info(.audio, "LiveKit after an interruption: pausing \(Self.restartPause) before restart \(attempt) of \(Self.restartAttempts)")
+                await sleep(Self.restartPause)
+                guard isSessionAttached else {
+                    Log.info(.audio, "LiveKit after an interruption: detached meanwhile; stopping")
+                    break
+                }
+                restartEngine(attempt: attempt)
+                if audioEngine.isRunning { break }
+            }
+        }
+        Log.info(.audio, "LiveKit after an interruption: recovery \(recovery.rawValue) done; engine now: \(audioEngine.stateDescription)")
+        logEngineLater(recovery)
+    }
+
+    /// How many times L-B restarts the engine at most, and its pause before each.
+    private static let restartAttempts = 3
+    private static let restartPause: Duration = .milliseconds(500)
+
+    /// Makes the engine unavailable and available again, logging each result; the
+    /// second decides `audioStartFailure()`.
+    private func restartEngine(attempt: Int) {
+        do {
+            try audioEngine.setAvailable(false)
+            Log.info(.audio, "LiveKit after an interruption: restart \(attempt): setEngineAvailability(.none) ok; \(audioEngine.stateDescription)")
+        } catch {
+            Log.warning(.audio, "LiveKit after an interruption: restart \(attempt): setEngineAvailability(.none) failed: \(error)")
+        }
+        makeEngineAvailable(context: "after an interruption: restart \(attempt):")
+        Log.info(.audio, "LiveKit after an interruption: restart \(attempt): \(audioEngine.stateDescription)")
+    }
+
+    /// Logs the engine's state a second and three seconds from now.
+    private func logEngineLater(_ recovery: LiveKitInterruptionRecovery) {
+        Task { [weak self] in
+            var elapsed: Duration = .zero
+            for mark in [Duration.seconds(1), .seconds(3)] {
+                await self?.sleep(mark - elapsed)
+                elapsed = mark
+                guard let self else { return }
+                Log.info(.audio, "LiveKit after an interruption: recovery \(recovery.rawValue), \(mark) later: \(self.audioEngine.stateDescription)")
+            }
         }
     }
 

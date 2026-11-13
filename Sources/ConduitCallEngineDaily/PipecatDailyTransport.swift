@@ -90,6 +90,12 @@ public final class PipecatDailyTransport: CallTransport {
     private let readAvailableInputs: @MainActor () -> [AVAudioSession.Port]
     private var remoteAudio = DailyRemoteAudioGate()
     private var routes = DailyAudioRouteGate()
+    private let interruptionRecovery: DailyInterruptionRecovery
+    private let sleep: @MainActor (Duration) async -> Void
+    /// What the engine last set the mic to.
+    private var isMicWanted = false
+    /// What the last connect joined, for a rejoin of the same room.
+    private var lastConnection: CallConnection?
 
     /// A Pipecat client and the mapper that is its delegate. `disconnect()` takes the
     /// session away and releases its client, so a later `connect` builds a new one.
@@ -110,6 +116,16 @@ public final class PipecatDailyTransport: CallTransport {
         self.init(makePipecatTransport: { PipecatClientIOSDaily.DailyTransport() })
     }
 
+    /// EXPERIMENTAL, for the device test of recovering a call's audio after a phone
+    /// call interrupted it; not supported API.
+    @_spi(InterruptionRecoveryExperiment)
+    public convenience init(interruptionRecovery: DailyInterruptionRecovery) {
+        self.init(
+            makePipecatTransport: { PipecatClientIOSDaily.DailyTransport() },
+            interruptionRecovery: interruptionRecovery
+        )
+    }
+
     /// True: a join while the call rings (`connectWhileRinging(_:)`) holds the agent's
     /// audio unsubscribed until `attachAudioSession()`, so nothing is heard before
     /// the answer, and joins with the mic off, as every join does. Daily still
@@ -126,8 +142,12 @@ public final class PipecatDailyTransport: CallTransport {
         },
         readAvailableInputs: @escaping @MainActor () -> [AVAudioSession.Port] = {
             AVAudioSession.sharedInstance().availableInputs?.map(\.portType) ?? []
-        }
+        },
+        interruptionRecovery: DailyInterruptionRecovery = .off,
+        sleep: @escaping @MainActor (Duration) async -> Void = { try? await Task.sleep(for: $0) }
     ) {
+        self.interruptionRecovery = interruptionRecovery
+        self.sleep = sleep
         let (stream, continuation) = AsyncStream.makeStream(of: TransportEvent.self)
         self.events = stream
         self.continuation = continuation
@@ -174,6 +194,7 @@ public final class PipecatDailyTransport: CallTransport {
     }
 
     public func connect(_ connection: CallConnection) async throws {
+        lastConnection = connection
         var session = self.session ?? makeSession()
         self.session = session
         let plan = session.events.gate.planConnect(
@@ -192,16 +213,26 @@ public final class PipecatDailyTransport: CallTransport {
             throw TransportError.connectionFailed("Daily session is still in the call")
         case .takeOver:
             Log.warning(.transport, "Daily connect: the session's bot never got ready (\(session.client.state)); leaving it and joining with a new client")
-            let stale = session
-            session = makeSession()
-            self.session = session
-            routes.sessionDidReset()
-            await Self.retire(stale)
-            // The host's disconnect() may have ended the new session meanwhile.
-            guard self.session?.client === session.client else {
-                throw TransportError.connectionFailed("Daily transport was disconnected while taking a session over")
-            }
+            session = try await takeOver(session)
         }
+        try await join(connection, on: session)
+    }
+
+    /// Leaves `stale` without the end-call signal, releases its client, and returns
+    /// the new session that replaces it, not yet joined.
+    private func takeOver(_ stale: Session) async throws -> Session {
+        let session = makeSession()
+        self.session = session
+        routes.sessionDidReset()
+        await Self.retire(stale)
+        // The host's disconnect() may have ended the new session meanwhile.
+        guard self.session?.client === session.client else {
+            throw TransportError.connectionFailed("Daily transport was disconnected while taking a session over")
+        }
+        return session
+    }
+
+    private func join(_ connection: CallConnection, on session: Session) async throws {
         // Presence counts as ready only for a join the bot cannot get ready in.
         session.events.gate.connectDidStart(readyOnPresence: remoteAudio.holdsAgentBack)
         session.events.interruptions.connectDidStart()
@@ -335,6 +366,7 @@ public final class PipecatDailyTransport: CallTransport {
     private static let statesJoined: Set<TransportState> = [.connected, .ready]
 
     public func setMicEnabled(_ enabled: Bool) async {
+        isMicWanted = enabled
         guard let client = session?.client else { return }
         do { try await client.enableMic(enable: enabled) }
         catch { Log.error(.transport, "Daily enableMic(\(enabled)) error: \(error)") }
@@ -404,6 +436,207 @@ public final class PipecatDailyTransport: CallTransport {
         remoteAudio.detach()
         Log.info(.audio, "Daily detach: agent audio wanted \(Self.describe(remoteAudio.wanted))")
         applyRemoteAudio()
+    }
+
+    // MARK: - Media after an interruption (experimental)
+    //
+    // After a real phone call, a resumed Daily call was observed with no audio either
+    // way although the attach had subscribed again and the mic was on, and a hold and
+    // resume did not bring it back, nor did a route change. Daily has no public hook
+    // for "the audio session was activated". The engine calls this after an attach
+    // that follows such an interruption; what it does is chosen with the experimental
+    // `DailyInterruptionRecovery` (nothing by default), and each step, Daily's result
+    // and Daily's media state before, after, and a second and three seconds later
+    // are logged, so a device test can tell which recovery, if any, works.
+
+    /// Runs the recovery chosen with `DailyInterruptionRecovery`, nothing by default.
+    public func recoverMediaAfterInterruption() async {
+        let recovery = interruptionRecovery
+        Log.info(.audio, "Daily after an interruption: recovery \(recovery.rawValue); Daily before: \(mediaStateDescription)")
+        switch recovery {
+        case .off:
+            Log.info(.audio, "Daily after an interruption: recovery off; nothing done")
+        case .restartMedia:
+            await restartMedia()
+        case .reassertAudioDevice:
+            await reassertAudioDevice()
+        case .rejoin:
+            await rejoin()
+        }
+        Log.info(.audio, "Daily after an interruption: recovery \(recovery.rawValue) done; Daily now: \(mediaStateDescription)")
+        reportMediaStateLater(recovery)
+    }
+
+    /// The pause between taking Daily's media down and bringing it back, so the SDK
+    /// has acted on the first change before the second.
+    private static let recoveryPause: Duration = .milliseconds(500)
+
+    /// A: the lightest restart, without leaving the room. Daily's media runs on
+    /// WebRTC's audio device, whose iOS voice-processing unit serves capture and
+    /// playout together and is torn down only once both have stopped; starting
+    /// either afterwards builds a new one. So both are stopped before either is
+    /// started: the mic first (an input change, `setInputsEnabled`), then the
+    /// agent's audio (its subscription, the only way the adapter has to stop
+    /// playout), a pause, then the agent's audio first, so playout comes back on
+    /// whatever the subscription builds, and the mic last, which is an input change
+    /// after which Daily reconfigures the audio session for its preferred device.
+    /// The mic is turned on again only if the engine had it on. A hold and resume
+    /// makes the same changes, across CallKit's deactivation and activation, and did
+    /// not recover the call; this makes them on a session CallKit has activated.
+    private func restartMedia() async {
+        guard let session, let callControl = session.callControl else {
+            Log.info(.audio, "Daily after an interruption: no Daily call client; nothing done")
+            return
+        }
+        await settlePendingChanges()
+        let client = session.client
+        guard await recoveryStep("mic off (setInputsEnabled microphone false)", on: session, {
+            try await client.enableMic(enable: false)
+        }) else { return }
+        guard await recoveryStep("agent audio unsubscribed", on: session, {
+            try await callControl.setRemoteAudio(.unsubscribed)
+        }) else { return }
+        Log.info(.audio, "Daily after an interruption: media down: \(callControl.mediaStateDescription); pausing \(Self.recoveryPause)")
+        await sleep(Self.recoveryPause)
+        await resubscribe(on: session, callControl: callControl)
+        guard isMicWanted else {
+            Log.info(.audio, "Daily after an interruption: mic left off, as the engine has it")
+            return
+        }
+        await recoveryStep("mic on (setInputsEnabled microphone true)", on: session) {
+            try await client.enableMic(enable: true)
+        }
+    }
+
+    /// B: Daily's audio manager applies its preferred device when the preference
+    /// changes and after each input change, and reconfigures the audio session to
+    /// do so. Asking it for another device and then the call's own again, each as
+    /// the preferred device and as the microphone input's device, makes it
+    /// reconfigure twice; then the agent's audio is unsubscribed and subscribed
+    /// again, as in A. The other device is the loudspeaker, or the earpiece for a
+    /// call on the loudspeaker, so the user may hear the call move for a moment.
+    private func reassertAudioDevice() async {
+        guard let session, let callControl = session.callControl else {
+            Log.info(.audio, "Daily after an interruption: no Daily call client; nothing done")
+            return
+        }
+        await settlePendingChanges()
+        let route = routes.wanted ?? callControl.preferredAudioRoute ?? callControl.currentAudioRoute ?? .earpiece
+        let other: DailyAudioRoute = route == .speaker ? .earpiece : .speaker
+        Log.info(.audio, "Daily after an interruption: re-asserting \(route) by way of \(other) (adapter wants \(Self.describe(routes.wanted)); \(callControl.audioRouteDescription))")
+        guard await recoveryStep("prefer \(other) (setPreferredAudioDevice, mic input device)", on: session, {
+            try await callControl.setPreferredAudioRoute(other)
+        }) else { return }
+        Log.info(.audio, "Daily after an interruption: \(callControl.audioRouteDescription); pausing \(Self.recoveryPause)")
+        await sleep(Self.recoveryPause)
+        await recoveryStep("prefer \(route) (setPreferredAudioDevice, mic input device)", on: session) {
+            try await callControl.setPreferredAudioRoute(route)
+        }
+        routes.preferenceChangedOutsideTheGate(reported: callControl.preferredAudioRoute)
+        applyRoute()
+        guard self.session?.client === session.client else { return }
+        guard await recoveryStep("agent audio unsubscribed", on: session, {
+            try await callControl.setRemoteAudio(.unsubscribed)
+        }) else { return }
+        await resubscribe(on: session, callControl: callControl)
+    }
+
+    /// C: leave the room without the end-call signal, release the client and join
+    /// the same room with the same credentials on a new one, as a connect takes a
+    /// stale session over. Daily builds a new call client, and with it new media.
+    /// The call reports `.reconnecting` first, and the new session reports
+    /// `.connected` once the agent is ready again, so the engine shows the call
+    /// reconnecting meanwhile and tells the agent again that the user is on the
+    /// line; a join that fails is reported as a drop, which the engine's own
+    /// reconnect takes over. The agent sees the user leave and a new participant
+    /// join, with no end-call message in between.
+    private func rejoin() async {
+        guard let stale = session, let connection = lastConnection else {
+            Log.info(.transport, "Daily after an interruption: nothing to rejoin (no session or no earlier join)")
+            return
+        }
+        Log.info(.transport, "Daily after an interruption: rejoining the same room on a new client; leaving without the end-call signal")
+        continuation.yield(.reconnecting)
+        let session: Session
+        do {
+            session = try await takeOver(stale)
+        } catch {
+            Log.warning(.transport, "Daily after an interruption: rejoin stopped: \(error)")
+            return
+        }
+        Log.info(.transport, "Daily after an interruption: left and released the old client; joining with a new one")
+        do {
+            try await join(connection, on: session)
+        } catch {
+            Log.warning(.transport, "Daily after an interruption: rejoin failed: \(error); reporting a drop")
+            guard self.session?.client === session.client else { return }
+            continuation.yield(.disconnected(reason: .networkDropped))
+            return
+        }
+        Log.info(.transport, "Daily after an interruption: rejoined (\(session.client.state)); connected again once the agent is ready")
+        guard isMicWanted else { return }
+        await recoveryStep("mic on (setInputsEnabled microphone true)", on: session) {
+            try await session.client.enableMic(enable: true)
+        }
+    }
+
+    /// Subscribes to the agent's audio again, and counts it with the gate.
+    private func resubscribe(on session: Session, callControl: DailyCallControlling) async {
+        let subscribed = await recoveryStep("agent audio subscribed", on: session) {
+            try await callControl.setRemoteAudio(.subscribed)
+        }
+        if subscribed { remoteAudio.subscriptionChangedOutsideTheGate(to: .subscribed) }
+        guard self.session?.client === session.client else { return }
+        await applyRemoteAudio().value
+    }
+
+    /// Waits, a bounded time, for subscription and route changes already under way.
+    private func settlePendingChanges() async {
+        if let remoteAudioApplication { await Self.wait(for: remoteAudioApplication, atMost: Self.attachBound) }
+        if let routeApplication { await Self.wait(for: routeApplication, atMost: Self.attachBound) }
+    }
+
+    /// Runs one SDK call of a recovery on `session`, logging it and Daily's result.
+    /// Returns false, without the call, once `session` is no longer the transport's.
+    @discardableResult
+    private func recoveryStep(
+        _ name: String,
+        on session: Session,
+        _ call: () async throws -> Void
+    ) async -> Bool {
+        guard self.session?.client === session.client else {
+            Log.info(.audio, "Daily after an interruption: \(name) not made: the session ended")
+            return false
+        }
+        do {
+            try await call()
+            Log.info(.audio, "Daily after an interruption: \(name) -> ok")
+            return true
+        } catch {
+            Log.warning(.audio, "Daily after an interruption: \(name) -> failed: \(error)")
+            return false
+        }
+    }
+
+    private var mediaStateDescription: String {
+        guard let session else { return "no session" }
+        let state = "client \(session.client.state)"
+        guard let callControl = session.callControl else { return state }
+        return "\(state), \(callControl.mediaStateDescription)"
+    }
+
+    /// Logs Daily's media state 1 and 3 seconds after a recovery, while the session lasts.
+    private func reportMediaStateLater(_ recovery: DailyInterruptionRecovery) {
+        guard let client = session?.client else { return }
+        Task { [weak self] in
+            var elapsed: Duration = .zero
+            for mark in [Duration.seconds(1), .seconds(3)] {
+                await self?.sleep(mark - elapsed)
+                elapsed = mark
+                guard let self, self.session?.client === client else { return }
+                Log.info(.audio, "Daily after an interruption: recovery \(recovery.rawValue), \(mark) later: \(self.mediaStateDescription)")
+            }
+        }
     }
 
     /// The longest `attachAudioSession()` waits for Daily to apply a subscription.

@@ -71,4 +71,9 @@ final class FakeDailyCallControl: DailyCallControlling {
     }
 
     var audioRouteDescription: String { "fake" }
+
+    /// What Daily reports playing on now.
+    var currentAudioRoute: DailyAudioRoute?
+
+    var mediaStateDescription: String { "fake media" }
 }

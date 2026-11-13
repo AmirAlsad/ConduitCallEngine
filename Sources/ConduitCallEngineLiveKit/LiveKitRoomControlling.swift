@@ -9,6 +9,7 @@
 //  implementations below are thin forwards to the SDK.
 //
 
+import AVFoundation
 import Foundation
 import ConduitCallEngine
 import LiveKit
@@ -34,6 +35,11 @@ protocol LiveKitRoomControlling: AnyObject, Sendable {
 protocol LiveKitAudioEngineControlling: AnyObject {
     func setAvailable(_ available: Bool) throws
     var isRunning: Bool { get }
+    /// The engine's availability, whether it runs and the mic's mute, for logs.
+    var stateDescription: String { get }
+    /// Tells WebRTC's audio session it was activated from outside (experimental,
+    /// L-C); returns what was done, for logs.
+    func notifyExternalActivation() -> String
 }
 
 @MainActor
@@ -77,6 +83,32 @@ final class LiveKitSDKAudioEngine: LiveKitAudioEngineControlling {
     }
 
     var isRunning: Bool { AudioManager.shared.isEngineRunning }
+
+    var stateDescription: String {
+        let manager = AudioManager.shared
+        let availability = manager.engineAvailability
+        return """
+        availability input \(availability.isInputAvailable) output \(availability.isOutputAvailable), \
+        running \(manager.isEngineRunning), microphone muted \(manager.isMicrophoneMuted)
+        """
+    }
+
+    /// `LKRTCAudioSession.sharedInstance().audioSessionDidActivate(_:)`, through the
+    /// Objective-C runtime: the LiveKit SDK imports its WebRTC module internally, so
+    /// the class is not visible to Swift here.
+    func notifyExternalActivation() -> String {
+        guard let type = NSClassFromString("LKRTCAudioSession") as? NSObject.Type else {
+            return "LKRTCAudioSession not found"
+        }
+        let sharedInstance = NSSelectorFromString("sharedInstance")
+        guard type.responds(to: sharedInstance),
+              let shared = type.perform(sharedInstance)?.takeUnretainedValue() as? NSObject
+        else { return "LKRTCAudioSession.sharedInstance unavailable" }
+        let didActivate = NSSelectorFromString("audioSessionDidActivate:")
+        guard shared.responds(to: didActivate) else { return "LKRTCAudioSession does not respond to audioSessionDidActivate:" }
+        _ = shared.perform(didActivate, with: AVAudioSession.sharedInstance())
+        return "LKRTCAudioSession audioSessionDidActivate: sent"
+    }
 }
 
 extension LiveKitEndCallSignal.RoomPhase {

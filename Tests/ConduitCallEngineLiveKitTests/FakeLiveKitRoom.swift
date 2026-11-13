@@ -177,9 +177,38 @@ final class FakeLiveKitRoom: LiveKitRoomControlling {
 @MainActor
 final class FakeLiveKitAudioEngine: LiveKitAudioEngineControlling {
     private(set) var isAvailable = false
-    var isRunning: Bool { isAvailable }
+    /// Every availability the transport set, in order.
+    private(set) var availabilityHistory: [Bool] = []
+    /// While positive, making the engine available fails, as LiveKit's did after a
+    /// phone call (`Audio engine returned error code: -4010`), and counts down.
+    var startsToFail = 0
+    private(set) var isRunning = false
+
+    struct StartRefused: Error {}
 
     func setAvailable(_ available: Bool) throws {
+        availabilityHistory.append(available)
+        calls.append(available ? "available" : "unavailable")
+        if available, startsToFail > 0 {
+            startsToFail -= 1
+            isRunning = false
+            throw StartRefused()
+        }
         isAvailable = available
+        isRunning = available
+    }
+
+    var stateDescription: String { "fake engine available \(isAvailable) running \(isRunning)" }
+
+    /// How many times the transport told WebRTC's audio session it was activated.
+    private(set) var externalActivationCount = 0
+    /// Every call the transport made on the engine, in order ("available",
+    /// "unavailable", "external activation").
+    private(set) var calls: [String] = []
+
+    func notifyExternalActivation() -> String {
+        externalActivationCount += 1
+        calls.append("external activation")
+        return "fake"
     }
 }
