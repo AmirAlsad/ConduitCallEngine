@@ -5,10 +5,11 @@
 //  Every feature a host tests, driven through `SimulatedCallSystem`'s public API
 //  alone and without sleeping or polling: each step either returns once the
 //  engine has applied it, or is followed by `awaitPendingWork()`,
-//  `awaitRingPreparation()` or `awaitPendingReconnect()`. The engine keeps its
-//  default timeouts on a sleep that never runs out by itself (`parkedSleep`) and a
-//  clock that stands still, so no timer runs out unless a test ends it with
-//  `fireTimer(_:)`, however slow the machine. Imports without `@testable`.
+//  `awaitRingPreparation()` or `awaitPendingReconnect()`. The engine, from
+//  `CallEngine.simulatedForTesting`, keeps its default timeouts on a sleep that
+//  never runs out by itself and a clock that stands still, so no timer runs out
+//  unless a test ends it with `fireTimer(_:)`, however slow the machine. Imports
+//  without `@testable`.
 //
 
 import Foundation
@@ -48,11 +49,9 @@ struct DeterministicHostTests {
     init() {
         // The experimental hold is opted in, as a host that tests it would; the
         // tests that do not hold behave as they would with it off.
-        engine = CallEngine.simulated(
+        engine = CallEngine.simulatedForTesting(
             configuration: CallEngineConfiguration(supportsHolding: true),
-            system: system,
-            now: { testEpoch },
-            sleep: parkedSleep
+            system: system
         )
         engine.delegate = host
         engine.startPushRegistration()
@@ -183,11 +182,9 @@ struct DeterministicHostTests {
     @Test func aHostRunsTheMinimumConnectingTimeOutWithFireTimer() async throws {
         let system = SimulatedCallSystem()
         let host = Host()
-        let engine = CallEngine.simulated(
+        let engine = CallEngine.simulatedForTesting(
             configuration: CallEngineConfiguration(minimumOutgoingConnectingDuration: .seconds(3)),
-            system: system,
-            now: { testEpoch },
-            sleep: parkedSleep
+            system: system
         )
         engine.delegate = host
         await engine.placeCall(target())

@@ -83,11 +83,9 @@ struct CallEngineLogTests {
     @Test func anActivationTheEngineIgnoresIsLogged() async throws {
         try await capturing { sink in
             let system = SimulatedCallSystem()
-            let engine = CallEngine.simulated(
+            let engine = CallEngine.simulatedForTesting(
                 configuration: CallEngineConfiguration(ringTimeout: nil, joinTimeout: nil),
-                system: system,
-                now: { testEpoch },
-                sleep: parkedSleep
+                system: system
             )
             engine.startPushRegistration()
             // CallKit has not accepted the report yet, so the ring rings on.
@@ -108,7 +106,7 @@ struct CallEngineLogTests {
     @Test func aWithholdTheBoundEndsIsLoggedAsAWarning() async throws {
         try await capturing { sink in
             let system = SimulatedCallSystem()
-            let engine = CallEngine.simulated(system: system, now: { testEpoch }, sleep: parkedSleep)
+            let engine = CallEngine.simulatedForTesting(system: system)
             let target = CallTarget(
                 id: UUID(),
                 displayName: "Assistant",

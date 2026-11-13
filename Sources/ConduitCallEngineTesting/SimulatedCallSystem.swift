@@ -11,6 +11,7 @@
 //
 
 import Foundation
+import Synchronization
 import ConduitCallEngine
 
 /// The system side of a simulated `CallEngine` (`CallEngine.simulated(system:)`):
@@ -271,9 +272,12 @@ public final class SimulatedCallSystem {
 
     // MARK: - Timers
 
-    /// The engine's timers. Each waits on the `sleep` given to `CallEngine.simulated`,
-    /// real time by default, so a test can leave them running and end the one it
-    /// wants with `fireTimer(_:)`.
+    /// The engine's timers. Each waits on the engine's `sleep`. In a test, give the
+    /// engine one that never runs out by itself (`CallEngine.simulatedForTesting`, or
+    /// `sleepUntilCancelled(_:)` as `CallEngine.simulated`'s `sleep`), leave the timers
+    /// running, and end the one you want with `fireTimer(_:)`. With
+    /// `CallEngine.simulated`'s default, real time, a slow or stalled machine lets
+    /// them run out by themselves.
     ///
     /// Open: later versions may add cases.
     public enum EngineTimer: CaseIterable, Sendable {
@@ -309,6 +313,27 @@ public final class SimulatedCallSystem {
         /// which changes nothing the host sees but `holdRequests`; the wait then runs
         /// again, up to 3 times per resume.
         case activationRecovery
+    }
+
+    /// The moment `CallEngine.simulatedForTesting` reads as now, unless the test brings
+    /// a clock: a fixed date, so nothing the engine measures by its clock (the outgoing
+    /// minimum connecting time, a call's duration) passes with the machine's time. Start
+    /// a clock of your own here when a test moves time.
+    public nonisolated static let testEpoch = Date(timeIntervalSince1970: 1_000_000)
+
+    /// A sleep that never runs out by itself: it ends, throwing `CancellationError`,
+    /// only when its task is cancelled, which is how `fireTimer(_:)` runs a timer out
+    /// and how the engine stops one. `CallEngine.simulatedForTesting` gives it to the
+    /// engine; pass it to any other sleep a test must end by cancelling it, such as
+    /// the timeouts of a transport of your own.
+    @Sendable public nonisolated static func sleepUntilCancelled(_ duration: Duration) async throws {
+        let park = Park()
+        await withTaskCancellationHandler {
+            await park.wait()
+        } onCancel: {
+            park.open()
+        }
+        throw CancellationError()
     }
 
     /// Run `timer` out now, as if its wait were over, if it is running: the engine
@@ -446,5 +471,29 @@ public final class SimulatedCallSystem {
                 bearer: $0.apiKey.isEmpty ? nil : $0.apiKey
             )
         }
+    }
+}
+
+/// Suspends `wait()` until `open()`; a `wait()` after `open()` returns at once.
+private final class Park: Sendable {
+    private let state = Mutex<(isOpen: Bool, waiter: CheckedContinuation<Void, Never>?)>((false, nil))
+
+    func wait() async {
+        await withCheckedContinuation { continuation in
+            let isOpen = state.withLock { state in
+                if !state.isOpen { state.waiter = continuation }
+                return state.isOpen
+            }
+            if isOpen { continuation.resume() }
+        }
+    }
+
+    func open() {
+        let waiter = state.withLock { state in
+            state.isOpen = true
+            defer { state.waiter = nil }
+            return state.waiter
+        }
+        waiter?.resume()
     }
 }

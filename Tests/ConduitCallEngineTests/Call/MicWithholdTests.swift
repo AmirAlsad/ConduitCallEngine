@@ -379,7 +379,7 @@ struct MicWithholdTests {
 
     @Test func aHostTestFiresTheBoundThroughTheSimulatedSystem() async throws {
         let system = SimulatedCallSystem()
-        let engine = CallEngine.simulated(system: system, now: { testEpoch }, sleep: parkedSleep)
+        let engine = CallEngine.simulatedForTesting(system: system)
         let transport = FakeTransport()
         let target = CallTarget(
             id: UUID(),

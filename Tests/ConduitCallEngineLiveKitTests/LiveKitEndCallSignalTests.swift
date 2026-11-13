@@ -10,6 +10,7 @@
 import Foundation
 import Testing
 import ConduitCallEngine
+import ConduitCallEngineTesting
 @testable import ConduitCallEngineLiveKit
 
 struct LiveKitEndCallSignalTests {
@@ -54,7 +55,7 @@ struct LiveKitEndCallSignalDeadlineTests {
     @Test func aSendThatFinishesInTimeIsAwaited() async {
         let sent = SentFlag()
 
-        let finished = await LiveKitEndCallSignal.run(within: .seconds(10), sleep: parkedSleep) { await sent.set() }
+        let finished = await LiveKitEndCallSignal.run(within: .seconds(10), sleep: SimulatedCallSystem.sleepUntilCancelled) { await sent.set() }
 
         #expect(await sent.value)
         #expect(finished)

@@ -13,6 +13,7 @@
 import Foundation
 import Testing
 import ConduitCallEngine
+import ConduitCallEngineTesting
 import PipecatClientIOS
 @testable import ConduitCallEngineDaily
 
@@ -59,7 +60,7 @@ struct PipecatDailyTransportTests {
             },
             readOutputPort: { nil },
             sleep: sleep,
-            attachBoundSleep: { try? await parkedSleep($0) }
+            attachBoundSleep: { try? await SimulatedCallSystem.sleepUntilCancelled($0) }
         )
     }
 

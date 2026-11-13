@@ -194,7 +194,7 @@ struct CallHoldTests {
 
     /// A harness whose timers wait until a test fires them.
     private func timedHarness() -> CallEngineHarness {
-        CallEngineHarness(supportsHolding: true, sleep: parkedSleep)
+        CallEngineHarness(supportsHolding: true, sleep: SimulatedCallSystem.sleepUntilCancelled)
     }
 
     /// Held by the system, CallKit deactivated the audio, and the resume came with
@@ -538,7 +538,7 @@ struct CallHoldTests {
     }
 
     @Test func turnedOffTheCallStaysHeld() async throws {
-        let h = CallEngineHarness(supportsHolding: true, resumesAfterSystemHold: false, sleep: parkedSleep)
+        let h = CallEngineHarness(supportsHolding: true, resumesAfterSystemHold: false, sleep: SimulatedCallSystem.sleepUntilCancelled)
         let other = await heldForAnotherCall(h)
 
         h.provider.simulateOtherCallEnded(other)

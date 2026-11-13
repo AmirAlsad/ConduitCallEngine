@@ -7,7 +7,6 @@
 //
 
 import Foundation
-import Synchronization
 import Testing
 import ConduitCallEngine
 import ConduitCallEngineTesting
@@ -42,48 +41,6 @@ final class HandSleeper {
     }
 }
 
-/// The moment the rig's engine is built at: its clock stands still, so no wait it
-/// measures by `now` (the outgoing minimum connecting time) passes with the machine's time.
-let testEpoch = Date(timeIntervalSince1970: 1_000_000)
-
-/// A sleep that never runs out by itself: it ends, throwing `CancellationError`, only
-/// when its task is cancelled. For the adapter's deadline, which must wait for what
-/// it bounds however long the machine takes.
-@Sendable
-func parkedSleep(_ duration: Duration) async throws {
-    let park = Park()
-    await withTaskCancellationHandler {
-        await park.wait()
-    } onCancel: {
-        park.open()
-    }
-    throw CancellationError()
-}
-
-/// Suspends `wait()` until `open()`; a `wait()` after `open()` returns at once.
-private final class Park: Sendable {
-    private let state = Mutex<(isOpen: Bool, waiter: CheckedContinuation<Void, Never>?)>((false, nil))
-
-    func wait() async {
-        await withCheckedContinuation { continuation in
-            let isOpen = state.withLock { state in
-                if !state.isOpen { state.waiter = continuation }
-                return state.isOpen
-            }
-            if isOpen { continuation.resume() }
-        }
-    }
-
-    func open() {
-        let waiter = state.withLock { state in
-            state.isOpen = true
-            defer { state.waiter = nil }
-            return state.waiter
-        }
-        waiter?.resume()
-    }
-}
-
 /// A LiveKit transport whose waits do not run on the machine's time: the wait for a
 /// connecting room yields instead of sleeping, and the client messages' deadline
 /// never runs out by itself.
@@ -96,7 +53,7 @@ func makeLiveKitTransport(
         makeRoom: makeRoom,
         audioEngine: audioEngine,
         sleep: { _ in await Task.yield() },
-        deadlineSleep: parkedSleep
+        deadlineSleep: SimulatedCallSystem.sleepUntilCancelled
     )
 }
 
@@ -144,7 +101,7 @@ final class LiveKitEngineRig {
                 supportsHolding: supportsHolding
             ),
             system: system,
-            now: { testEpoch },
+            now: { SimulatedCallSystem.testEpoch },
             sleep: { await sleeper.sleep($0) }
         )
         engine.delegate = host

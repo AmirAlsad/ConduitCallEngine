@@ -9,21 +9,15 @@
 //
 
 import Foundation
-import Synchronization
 import Testing
 @testable import ConduitCallEngine
 import ConduitCallEngineTesting
-
-/// The moment every test's engine is built at, unless the test brings a clock: the
-/// engine's clock stands still, so no wait it measures by `now` (the outgoing minimum
-/// connecting time, the remembered cancel pushes) passes with the machine's time.
-let testEpoch = Date(timeIntervalSince1970: 1_000_000)
 
 /// A clock the tests advance by hand to make durations deterministic.
 @MainActor
 final class MutableClock {
     var current: Date
-    init(_ start: Date = testEpoch) { current = start }
+    init(_ start: Date = SimulatedCallSystem.testEpoch) { current = start }
     func now() -> Date { current }
     func advance(_ seconds: TimeInterval) { current = current.addingTimeInterval(seconds) }
 }
@@ -51,44 +45,6 @@ final class ManualSleeper {
         let waiting = pending
         pending = []
         waiting.forEach { $0.resume() }
-    }
-}
-
-/// A sleep that never runs out by itself: it ends, throwing `CancellationError`, only
-/// when its task is cancelled, as the engine cancels a timer it stops and
-/// `fireTimer(_:)` cancels the one it runs out. For engines whose timers must wait
-/// for the test however long the machine takes.
-func parkedSleep(_ duration: Duration) async throws {
-    let park = Park()
-    await withTaskCancellationHandler {
-        await park.wait()
-    } onCancel: {
-        park.open()
-    }
-    throw CancellationError()
-}
-
-/// Suspends `wait()` until `open()`; a `wait()` after `open()` returns at once.
-private final class Park: Sendable {
-    private let state = Mutex<(isOpen: Bool, waiter: CheckedContinuation<Void, Never>?)>((false, nil))
-
-    func wait() async {
-        await withCheckedContinuation { continuation in
-            let isOpen = state.withLock { state in
-                if !state.isOpen { state.waiter = continuation }
-                return state.isOpen
-            }
-            if isOpen { continuation.resume() }
-        }
-    }
-
-    func open() {
-        let waiter = state.withLock { state in
-            state.isOpen = true
-            defer { state.waiter = nil }
-            return state.waiter
-        }
-        waiter?.resume()
     }
 }
 
@@ -357,12 +313,12 @@ final class CallEngineHarness {
     /// How many times PushKit's completion has run, across every ring.
     private(set) var pushCompletions = 0
 
-    /// The engine's clock stands still at `testEpoch` unless the test passes `now`,
-    /// and its timers run on `sleep`, which by default returns at once: every timer
-    /// that starts runs out on the engine's next main-actor turn, whatever the
-    /// machine's speed. A test that needs a timer to keep running passes a
-    /// `ManualSleeper` (to end it by hand) or `parkedSleep` (to leave it running, or
-    /// end it with `fireTimer(_:)`). `ringTimeout` and `joinTimeout` default to none,
+    /// The engine's clock stands still at `SimulatedCallSystem.testEpoch` unless the
+    /// test passes `now`, and its timers run on `sleep`, which by default returns at
+    /// once: every timer that starts runs out on the engine's next main-actor turn,
+    /// whatever the machine's speed. A test that needs a timer to keep running passes
+    /// a `ManualSleeper` (to end it by hand) or `SimulatedCallSystem.sleepUntilCancelled`
+    /// (to leave it running, or end it with `fireTimer(_:)`). `ringTimeout` and `joinTimeout` default to none,
     /// unlike the engine's, because the default `sleep` would end every ring, and
     /// every attempt waiting for the agent, at once; tests of those timeouts pass one
     /// and a sleep of their own.
@@ -378,7 +334,7 @@ final class CallEngineHarness {
         micWithholdTimeout: Duration = .seconds(5),
         resumesAfterSystemHold: Bool = true,
         defaultsToSpeaker: Bool = false,
-        now: @escaping () -> Date = { testEpoch },
+        now: @escaping () -> Date = { SimulatedCallSystem.testEpoch },
         sleep: @escaping (Duration) async throws -> Void = { _ in }
     ) {
         _ = QuietEngineLog.installed
