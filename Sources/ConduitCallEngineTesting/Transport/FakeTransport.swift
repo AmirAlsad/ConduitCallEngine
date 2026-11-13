@@ -4,7 +4,7 @@
 //
 //  Fake conforming to `CallTransport`, for the simulator and tests. A test pushes
 //  events with `emit(_:)` and asserts the engine reacts, and reads what the engine
-//  did to it (connects, mic, attach, signals).
+//  did to it (connects, mic, attach, signals, host messages).
 //
 
 import Foundation
@@ -40,15 +40,20 @@ public final class FakeTransport: CallTransport {
     /// Whether the last of `attachAudioSession()` and `detachAudioSession()` was an attach.
     public private(set) var isAudioAttached = false
 
-    /// A media command or signal the engine gave the transport.
+    /// A media command, signal or host message the engine gave the transport.
+    ///
+    /// Open: later versions may add cases, as 0.3 added `.message(_:)`. End a
+    /// `switch` over it with `@unknown default`.
     public enum Command: Equatable, Sendable {
         case attach
         case detach
         case mic(Bool)
         case send(CallSignal)
+        /// A host message, from `CallEngine.send(_:)`.
+        case message(CallMessage)
     }
 
-    /// Every attach, detach, mic command and signal, in the order
+    /// Every attach, detach, mic command, signal and host message, in the order
     /// the engine made them, so a test can check how they interleave.
     public private(set) var commands: [Command] = []
     /// How many `connect(_:)` calls found their task cancelled when they finished.
@@ -217,6 +222,19 @@ public final class FakeTransport: CallTransport {
         sentSignals.append(signal)
         commands.append(.send(signal))
         return signalDeliveries.isEmpty ? .sent : signalDeliveries.removeFirst()
+    }
+
+    /// Every host message the engine sent, in order, whatever became of it.
+    public private(set) var sentMessages: [CallMessage] = []
+    /// What the next host-message sends return, in order; once it is empty, every
+    /// send is `.sent`. Separate from `signalDeliveries`.
+    public var messageDeliveries: [CallSignalDelivery] = []
+
+    @discardableResult
+    public func send(_ message: CallMessage) async -> CallSignalDelivery {
+        sentMessages.append(message)
+        commands.append(.message(message))
+        return messageDeliveries.isEmpty ? .sent : messageDeliveries.removeFirst()
     }
 
     /// Drive an event onto the stream from a test or a simulator build. The engine

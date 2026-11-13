@@ -3,8 +3,9 @@
 //  ConduitCallEngine
 //
 //  The host's side of the call engine: it resolves incoming targets, observes
-//  state transitions and cues, records finished calls, and
-//  supplies the bearer for ring-status receipts. Every call is synchronous and on
+//  state transitions and cues, records finished calls,
+//  supplies the bearer for ring-status receipts, and hears what the agent sends
+//  the host (server messages, its output text, the user's transcript). Every call is synchronous and on
 //  the main actor, in the order the engine makes the change, so a host sees each
 //  transition in the same turn as the state assignment.
 //
@@ -68,6 +69,18 @@ public protocol CallEngineDelegate: AnyObject {
     /// `CallEngine.voipPushToken` is nil until PushKit issues a new one, which comes
     /// as `callEngine(_:didUpdateVoIPPushToken:)`. Tell your server to forget it.
     func callEngineDidInvalidateVoIPPushToken(_ engine: CallEngine)
+    /// The agent sent an RTVI server message: `data` is the message's `data`, as UTF-8
+    /// JSON (`null` when it had none). Only while a call is in progress (connecting,
+    /// connected or reconnecting), from that call's transport; never during a ring,
+    /// a pre-connected one included (what its transport receives before the answer is
+    /// dropped), and never once the call has ended.
+    func callEngine(_ engine: CallEngine, didReceiveServerMessage data: Data)
+    /// The agent produced text (RTVI `bot-output`), for captions. Delivered as
+    /// `callEngine(_:didReceiveServerMessage:)` is.
+    func callEngine(_ engine: CallEngine, didReceiveBotOutput output: BotOutput)
+    /// The agent heard the user say something (RTVI `user-transcription`). Delivered
+    /// as `callEngine(_:didReceiveServerMessage:)` is.
+    func callEngine(_ engine: CallEngine, didReceiveUserTranscript transcript: UserTranscript)
 }
 
 /// The defaults: no target for an incoming call (so every ring is ended as an
@@ -85,4 +98,7 @@ extension CallEngineDelegate {
     public func callEngine(_ engine: CallEngine, ringStatusBearerForTarget id: UUID) -> String? { nil }
     public func callEngine(_ engine: CallEngine, didUpdateVoIPPushToken token: Data) {}
     public func callEngineDidInvalidateVoIPPushToken(_ engine: CallEngine) {}
+    public func callEngine(_ engine: CallEngine, didReceiveServerMessage data: Data) {}
+    public func callEngine(_ engine: CallEngine, didReceiveBotOutput output: BotOutput) {}
+    public func callEngine(_ engine: CallEngine, didReceiveUserTranscript transcript: UserTranscript) {}
 }

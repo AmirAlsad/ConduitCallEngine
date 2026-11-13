@@ -959,6 +959,9 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         case .connecting, .botStartedSpeaking, .botStoppedSpeaking, .userStartedSpeaking,
              .userStoppedSpeaking, .remoteAudioLevel, .audioDevicesChanged:
             break
+        case .serverMessage, .botOutput, .userTranscript:
+            // Nothing from the agent reaches the host before the answer.
+            Log.debug(.call, "Ring preparation: \(event.logDescription) before the answer; dropped")
         }
     }
 
@@ -1184,7 +1187,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
                 // call's.
                 guard let self else { return }
                 guard self.transport === transport || self.ringTransport === transport else {
-                    Log.info(.call, "Event \(event) from a transport that is no longer the call's; ignored")
+                    Log.info(.call, "Event \(event.logDescription) from a transport that is no longer the call's; ignored")
                     continue
                 }
                 self.handle(event)
@@ -1205,7 +1208,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         guard state != .incomingRinging else { return }
         // No call: a ring that ended straight back to idle leaves nothing to end.
         guard state != .idle else {
-            Log.info(.call, "Event \(event) with no call in progress; ignored")
+            Log.info(.call, "Event \(event.logDescription) with no call in progress; ignored")
             return
         }
         completeConnectionBefore(event)
@@ -1240,7 +1243,27 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
 
         case .error(let error):
             handleError(error)
+
+        case .serverMessage(let data):
+            guard isPassingAgentMessages(event) else { return }
+            delegate?.callEngine(self, didReceiveServerMessage: data)
+
+        case .botOutput(let output):
+            guard isPassingAgentMessages(event) else { return }
+            delegate?.callEngine(self, didReceiveBotOutput: output)
+
+        case .userTranscript(let transcript):
+            guard isPassingAgentMessages(event) else { return }
+            delegate?.callEngine(self, didReceiveUserTranscript: transcript)
         }
+    }
+
+    /// Whether what the agent sends the host reaches the delegate: only while the
+    /// call is in progress, not once it has ended (a ring's events never get here).
+    private func isPassingAgentMessages(_ event: TransportEvent) -> Bool {
+        guard state.isTerminal else { return true }
+        Log.debug(.call, "Event \(event.logDescription) after the call ended; dropped")
+        return false
     }
 
     private func handleConnected() {
@@ -2453,6 +2476,36 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         let accepted = await callProvider.setHeld(id, onHold: onHold)
         if !accepted, pendingHostHold == onHold, activeCallID == id { pendingHostHold = nil }
         await mediaTask?.value
+    }
+
+    // MARK: - Host messages
+
+    /// Send `message` to the agent on the call in progress, through the call's
+    /// transport, and return what became of it. Sent only when the engine would send
+    /// a call-control signal: the call is connected (held or not), or connecting
+    /// with its transport joined; never during a ring, not even to a pre-connected
+    /// ring's transport, and not while the call is dialing, reconnecting or over.
+    /// One attempt, made at once: the engine neither queues nor repeats it, and does
+    /// not order it with its own signals. Returns `.failed` when there is no call
+    /// that can carry it, when the transport could not send it, and for a type the
+    /// engine uses itself (`CallMessage.reservedTypes`) or an empty one; `.unsupported`
+    /// when the transport carries no host messages; `.sent` once the transport handed
+    /// it to the connection, which does not mean the agent acted on it.
+    @discardableResult
+    public func send(_ message: CallMessage) async -> CallSignalDelivery {
+        guard !message.isRefused else {
+            Log.warning(.call, "Host message \"\(message.type)\" refused: an empty type, or one the engine uses itself")
+            return .failed
+        }
+        guard let transport, canSignal else {
+            Log.info(.call, "Host message \(message.type) not sent: no call can carry it now (\(String(describing: state)))")
+            return .failed
+        }
+        let delivery = await transport.send(message)
+        if delivery == .failed {
+            Log.warning(.call, "Host message \(message.type) did not leave the device")
+        }
+        return delivery
     }
 
     // MARK: - Audio route (driven through the transport so the SDK honors it)

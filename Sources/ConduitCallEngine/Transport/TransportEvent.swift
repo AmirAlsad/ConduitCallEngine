@@ -45,4 +45,30 @@ public enum TransportEvent: Equatable, Sendable {
     /// An error. It fails a call that is still connecting; during a call only
     /// `.authenticationFailed` while reconnecting changes anything (`.badToken`).
     case error(TransportError)
+    /// An RTVI server message from the agent: the message's `data`, as UTF-8 JSON
+    /// (`null` when it had none). Passed to
+    /// `CallEngineDelegate.callEngine(_:didReceiveServerMessage:)` while a call is in
+    /// progress; dropped during a ring.
+    case serverMessage(Data)
+    /// Text the agent produced (RTVI `bot-output`). Passed to
+    /// `CallEngineDelegate.callEngine(_:didReceiveBotOutput:)` while a call is in
+    /// progress; dropped during a ring.
+    case botOutput(BotOutput)
+    /// What the agent heard the user say (RTVI `user-transcription`). Passed to
+    /// `CallEngineDelegate.callEngine(_:didReceiveUserTranscript:)` while a call is in
+    /// progress; dropped during a ring.
+    case userTranscript(UserTranscript)
+}
+
+extension TransportEvent {
+    /// The event for a log line: a host message's payload and the words of a
+    /// transcript are left out.
+    package var logDescription: String {
+        switch self {
+        case .serverMessage(let data): "serverMessage(\(data.count) bytes)"
+        case .botOutput(let output): "botOutput(\(output.text.count) characters)"
+        case .userTranscript(let transcript): "userTranscript(\(transcript.text.count) characters, final \(transcript.isFinal))"
+        default: String(describing: self)
+        }
+    }
 }

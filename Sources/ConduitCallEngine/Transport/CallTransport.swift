@@ -94,6 +94,18 @@ public protocol CallTransport: AnyObject {
     @discardableResult
     func send(_ signal: CallSignal) async -> CallSignalDelivery
 
+    /// Deliver a host's message to the remote agent, and say what became of it
+    /// (`CallEngine.send(_:)`, which calls it once and returns its result to the
+    /// host). The engine calls it only while it would send a signal, never on a
+    /// ring's transport before the answer, and never with a reserved type. Return
+    /// `.sent` once the message is handed to the connection, `.failed` when it could
+    /// not be, and `.unsupported` if you carry no host messages. The engine does not
+    /// send it again. Must not throw, and must return promptly when the connection
+    /// is gone (bound your wait). The default implementation drops the message and
+    /// returns `.unsupported`.
+    @discardableResult
+    func send(_ message: CallMessage) async -> CallSignalDelivery
+
     /// Whether the engine may join this transport while an incoming call is still
     /// ringing (`connectWhileRinging(_:)`), before the answer and before CallKit
     /// activates the audio session (pre-connect's `.media` tier). True only if that
@@ -126,4 +138,9 @@ extension CallTransport {
     /// agent uninformed, and the call works as before.
     @discardableResult
     public func send(_ signal: CallSignal) async -> CallSignalDelivery { .unsupported }
+
+    /// Drops the message: a transport that does not implement `send(_:)` for host
+    /// messages carries none, and `CallEngine.send(_:)` returns `.unsupported`.
+    @discardableResult
+    public func send(_ message: CallMessage) async -> CallSignalDelivery { .unsupported }
 }

@@ -104,6 +104,13 @@ final class MainActorTransport: CallTransport {
         signals.append(signal)
         return .sent
     }
+
+    private(set) var messages: [CallMessage] = []
+
+    func send(_ message: CallMessage) async -> CallSignalDelivery {
+        messages.append(message)
+        return .sent
+    }
 }
 
 // MARK: - A host-written transport that is an actor
@@ -126,7 +133,7 @@ actor ActorTransport: CallTransport {
     func setAudioDevice(_ id: String) async {}
     func attachAudioSession() async {}
     func detachAudioSession() async {}
-    // `send(_:)` and `canConnectWhileRinging` come from the protocol's defaults.
+    // Both `send(_:)`s and `canConnectWhileRinging` come from the protocol's defaults.
 }
 
 // MARK: - A delegate implementing every callback
@@ -186,6 +193,22 @@ final class Swift6Host: CallEngineDelegate {
 
     func callEngineDidInvalidateVoIPPushToken(_ engine: CallEngine) {
         invalidations += 1
+    }
+
+    private(set) var serverMessages: [Data] = []
+    private(set) var captions: [String] = []
+    private(set) var transcripts: [UserTranscript] = []
+
+    func callEngine(_ engine: CallEngine, didReceiveServerMessage data: Data) {
+        serverMessages.append(data)
+    }
+
+    func callEngine(_ engine: CallEngine, didReceiveBotOutput output: BotOutput) {
+        if output.isSpoken != false { captions.append(output.text) }
+    }
+
+    func callEngine(_ engine: CallEngine, didReceiveUserTranscript transcript: UserTranscript) {
+        transcripts.append(transcript)
     }
 }
 
@@ -252,6 +275,9 @@ func describe(_ event: TransportEvent) -> String {
         @unknown default: "other"
         }
     case .remoteAudioLevel(let level): "\(level)"
+    case .serverMessage(let data): "\(data.count)"
+    case .botOutput(let output): output.text
+    case .userTranscript(let transcript): "\(transcript.text) \(transcript.isFinal)"
     case .error(let error):
         switch error {
         case .connectionFailed(let message), .underlying(let message): message
@@ -358,8 +384,45 @@ struct Swift6HostTests {
         #expect(await transport.connectCount == 1)
         #expect(!transport.canConnectWhileRinging)
         #expect(await transport.send(.held) == .unsupported)
+        #expect(await transport.send(CallMessage(type: "ping")) == .unsupported)
+        #expect(await engine.send(CallMessage(type: "ping")) == .unsupported)
         await engine.endCall()
         #expect(host.records.map(\.outcome) == [.completed])
+    }
+
+    @Test func aHostExchangesItsOwnMessagesWithTheAgent() async throws {
+        struct Context: Encodable, Sendable { let screen: String }
+        let transport = MainActorTransport()
+        let target = CallTarget(id: UUID(), displayName: "Agent", handle: nil,
+                                makeTransport: { transport }, connect: { _ in roomConnection })
+        #expect(await engine.send(CallMessage(type: "ping")) == .failed) // no call
+
+        await engine.placeCall(target)
+        #expect(system.deliverTransportEvent(.connected))
+        let context = try CallMessage(type: "set-context", payload: Context(screen: "home"))
+        let raw = try #require(CallMessage(type: "raw", data: Data(#"{"a":[1,true,null]}"#.utf8)))
+        #expect(await engine.send(context) == .sent)
+        #expect(await engine.send(raw) == .sent)
+        #expect(await engine.send(CallMessage(type: CallSignal.connected.rawValue)) == .failed)
+        #expect(transport.messages == [context, raw])
+        #expect(CallMessage(type: "bad", data: Data("not json".utf8)) == nil)
+        #expect(CallMessage.reservedTypes.contains("end-call"))
+
+        #expect(system.deliverTransportEvent(.serverMessage(Data(#"{"kind":"note"}"#.utf8))))
+        #expect(system.deliverTransportEvent(.botOutput(BotOutput(
+            text: "Hello.", isSpoken: true, aggregatedBy: "sentence", spokenStatus: "completed",
+            spokenProgress: BotOutput.SpokenProgress(accumulatedText: "Hello.", remainingText: ""), segmentID: 1
+        ))))
+        #expect(system.deliverTransportEvent(.userTranscript(UserTranscript(text: "Hi", isFinal: true))))
+        #expect(host.serverMessages == [Data(#"{"kind":"note"}"#.utf8)])
+        #expect(host.captions == ["Hello."])
+        #expect(host.transcripts.map(\.isFinal) == [true])
+        #expect(describe(.botOutput(BotOutput(text: "x", aggregatedBy: "word"))) == "x")
+
+        await engine.endCall()
+        system.deliverTransportEvent(.userTranscript(UserTranscript(text: "late", isFinal: true)))
+        #expect(host.transcripts.count == 1)
+        #expect(await engine.send(context) == .failed)
     }
 
     @Test func aPreconnectedRingIsAnsweredWithTheTestingProduct() async throws {
