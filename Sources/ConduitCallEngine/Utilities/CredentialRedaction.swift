@@ -68,8 +68,9 @@ package enum CredentialRedaction {
         pattern: #"\beyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+(\.[A-Za-z0-9_\-]*)?"#
     )
     /// A credential-named key, its separator, and its value: quoted, wrapped in
-    /// `Optional("…")`, or up to the next separator.
+    /// `Optional("…")`, or up to the next separator. A key ending in one of the names
+    /// counts (`meeting_token`, `dailyToken`, `client_secret`, `x_api_key`).
     private static let keyedValue = try! NSRegularExpression(
-        pattern: #"(?i)\b(access_token|refresh_token|token|api[_\-]?key|apikey|secret|password|authorization)(["']?\s*[=:]\s*)(Optional\("[^"]*"\)|"[^"]*"|'[^']*'|[^\s&,;)\]}"']+)"#
+        pattern: #"(?i)\b(\w*(?:token|api[_\-]?key|secret|password)|authorization)(["']?\s*[=:]\s*)(Optional\("[^"]*"\)|"[^"]*"|'[^']*'|[^\s&,;)\]}"']+)"#
     )
 }

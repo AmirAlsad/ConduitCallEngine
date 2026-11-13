@@ -217,7 +217,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     /// with its audio unsubscribed). The resume starts the deadline again.
     private var isAwaitingAgent = false
     /// Ends the wait for a transport that is healing itself; see `enterReconnectingDisplay`.
-    private var selfHealDeadlineTask: Task<Void, Never>?
+    private var transportHealDeadlineTask: Task<Void, Never>?
     private var activationTask: Task<Void, Never>?
     /// Ends the ring if nobody answers it in time; see `startRingTimer`.
     private var ringTimerTask: Task<Void, Never>?
@@ -1260,7 +1260,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
             reconnectAttempt = 0
             stopReconnectAttempt()
             isReconnectionPaused = false
-            cancelSelfHealDeadline()
+            cancelTransportHealDeadline()
             transition(to: .connected(since: firstConnectedAt ?? now()))
             applyMic()
             // A new connection may be a new agent session: tell it again, the
@@ -1419,37 +1419,37 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     /// against the reconnection budget or schedule our own retry — the budget is
     /// owned solely by `scheduleReconnect` (driven by `.disconnected`). The transport
     /// must follow a `.reconnecting` with a `.connected` or `.disconnected`; if it
-    /// says neither within `policy.selfHealTimeout`, the engine treats it as dropped
+    /// says neither within `policy.transportHealTimeout`, the engine treats it as dropped
     /// and reconnects itself, with fresh credentials from the target's `connect`.
     private func enterReconnectingDisplay() {
         transition(to: .reconnecting(attempt: reconnectAttempt))
-        startSelfHealDeadline()
+        startTransportHealDeadline()
     }
 
-    private func startSelfHealDeadline() {
-        cancelSelfHealDeadline()
+    private func startTransportHealDeadline() {
+        cancelTransportHealDeadline()
         guard let transport else { return }
-        let timeout = policy.selfHealTimeout
-        selfHealDeadlineTask = startTimer(.selfHealTimeout, after: timeout) { [weak self] in
+        let timeout = policy.transportHealTimeout
+        transportHealDeadlineTask = startTimer(.transportHealTimeout, after: timeout) { [weak self] in
             guard let self, self.transport === transport,
                   self.state == .reconnecting(attempt: 0), self.reconnectTask == nil
             else { return }
             Log.warning(.call, "Transport still healing after \(timeout); reconnecting")
-            self.selfHealDeadlineTask = nil
+            self.transportHealDeadlineTask = nil
             self.scheduleReconnect()
         }
     }
 
-    private func cancelSelfHealDeadline() {
-        selfHealDeadlineTask?.cancel()
-        selfHealDeadlineTask = nil
-        timerExpiries[.selfHealTimeout] = nil
+    private func cancelTransportHealDeadline() {
+        transportHealDeadlineTask?.cancel()
+        transportHealDeadlineTask = nil
+        timerExpiries[.transportHealTimeout] = nil
     }
 
     /// Schedule the next attempt after its backoff, or `immediately`; while the
     /// call is held, pause reconnection instead until the resume.
     private func scheduleReconnect(immediately: Bool = false) {
-        cancelSelfHealDeadline()
+        cancelTransportHealDeadline()
         cancelJoinDeadline()
         if isOnHold {
             pauseReconnection()
@@ -1638,9 +1638,9 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         case .joinTimeout:
             joinDeadlineTask?.cancel()
             joinDeadlineTask = nil
-        case .selfHealTimeout:
-            selfHealDeadlineTask?.cancel()
-            selfHealDeadlineTask = nil
+        case .transportHealTimeout:
+            transportHealDeadlineTask?.cancel()
+            transportHealDeadlineTask = nil
         case .signalRetry:
             signalRetryTask?.cancel()
             signalRetryTask = nil
@@ -2347,8 +2347,13 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     }
 
     /// Mute or unmute, mirrored to CallKit. Unmuting opens the mic only once CallKit
-    /// has activated the session and while nothing interrupts it.
+    /// has activated the session and while nothing interrupts it. Ignored when no call
+    /// is in progress (idle, or a finished call): every call starts unmuted.
     public func setMuted(_ muted: Bool) async {
+        guard state != .idle, !state.isTerminal else {
+            Log.info(.call, "setMuted ignored; no call is in progress")
+            return
+        }
         isMuted = muted
         if !muted { endInterruptionAwaitingActivation() }
         // Captured first: after the await below this may be a newer call.
@@ -2699,7 +2704,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         reconnectTask?.cancel()
         reconnectTask = nil
         timerExpiries[.reconnectBackoff] = nil
-        cancelSelfHealDeadline()
+        cancelTransportHealDeadline()
         cancelJoinDeadline()
         cancelMinimumConnecting()
         isConnectionPending = false
@@ -2881,7 +2886,8 @@ extension CallEngine {
     /// ring) and `"preconnect"` (a ring push may carry `preconnect`; see
     /// `RingPreparation`). An engine that lacks a feature ignores its key, or, for a
     /// cancel, shows it as a brief incoming call that ends at once. Later versions add
-    /// features to this set; servers must ignore names they do not know.
+    /// features to this set; servers must ignore names they do not know. A `Set` has
+    /// no order and encodes in an arbitrary one, so send `supportedPushFeatures.sorted()`.
     nonisolated public static let supportedPushFeatures: Set<String> = ["cancel", "ring_timeout", "preconnect"]
 }
 

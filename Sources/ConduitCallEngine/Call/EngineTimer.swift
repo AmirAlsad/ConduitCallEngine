@@ -15,7 +15,7 @@ package enum EngineTimer: Hashable, CaseIterable, Sendable {
     /// first connect, a reconnect attempt, or a ring's join.
     case joinTimeout
     /// The wait for a transport that reported `.reconnecting`.
-    case selfHealTimeout
+    case transportHealTimeout
     /// The backoff before the next reconnect attempt.
     case reconnectBackoff
     /// The wait before a signal that did not leave the device is sent again.

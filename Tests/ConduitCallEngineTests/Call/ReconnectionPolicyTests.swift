@@ -36,7 +36,7 @@ struct ReconnectionPolicyTests {
     }
 
     @Test func selfHealIsWaitedForAsLongAsTheLongestBackoff() {
-        #expect(policy.selfHealTimeout == .seconds(30))
-        #expect(policy.selfHealTimeout == policy.delay(forAttempt: 7))
+        #expect(policy.transportHealTimeout == .seconds(30))
+        #expect(policy.transportHealTimeout == policy.delay(forAttempt: 7))
     }
 }

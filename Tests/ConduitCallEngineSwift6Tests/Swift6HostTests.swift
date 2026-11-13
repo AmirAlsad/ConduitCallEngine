@@ -491,7 +491,7 @@ struct Swift6HostTests {
         system.resetProvider()
         system.setMutedFromSystem(UUID(), muted: true)
         await system.awaitPendingReconnect()
-        _ = SimulatedCallSystem.RingReceipt(status: "answered", callID: UUID(), endpoint: roomConnection.url, bearer: "")
+        _ = SimulatedCallSystem.RingReceipt(status: "answered", callID: UUID(), endpoint: roomConnection.url, bearer: nil)
         _ = SimulatedCallSystem.HoldRequest(callID: UUID(), onHold: true)
         _ = SimulatedCallSystem.ReportedCall(id: UUID(), handle: "h", displayName: "d")
     }

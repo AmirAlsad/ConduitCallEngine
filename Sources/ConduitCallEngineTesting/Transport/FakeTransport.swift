@@ -57,7 +57,8 @@ public final class FakeTransport: CallTransport {
     /// still needs.
     public private(set) var canceledConnectCount = 0
 
-    /// When set, the next `connect(_:)` throws this instead of succeeding.
+    /// While set, every `connect(_:)` (and `connectWhileRinging(_:)`) throws this
+    /// instead of succeeding, until the test sets it back to nil.
     public var connectError: TransportError?
 
     /// What the transport declares to the engine; false (the protocol's default)

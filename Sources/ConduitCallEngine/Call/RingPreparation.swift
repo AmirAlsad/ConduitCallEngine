@@ -19,7 +19,8 @@ import Foundation
 /// if not, `.media` becomes `.credentials`). Any of them at `.none` gives the
 /// ring exactly the behaviour it would have without pre-connect.
 ///
-/// Closed: the package adds no case to this enum within a major version, so a
+/// Closed: the package adds no case to this enum within a minor version while it is
+/// 0.x (from 1.0, within a major version), so a
 /// `switch` may list every case. The tiers are ordered
 /// (`Comparable`) from least to most.
 public enum RingPreparation: Int, CaseIterable, Comparable, Sendable {

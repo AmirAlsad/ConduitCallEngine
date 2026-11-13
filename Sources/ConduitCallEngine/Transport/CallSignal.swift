@@ -67,7 +67,8 @@ public enum CallSignal: String, CaseIterable, Sendable {
 /// the connection changes. Neither result says the agent acted on the signal; only
 /// whether it left the device.
 ///
-/// Closed: the package adds no case to this enum within a major version, so a
+/// Closed: the package adds no case to this enum within a minor version while it is
+/// 0.x (from 1.0, within a major version), so a
 /// `switch` may list every case.
 public enum CallSignalDelivery: Equatable, Sendable {
     /// Handed to the connection to the agent (for the bundled adapters: published on

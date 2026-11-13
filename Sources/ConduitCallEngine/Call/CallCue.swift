@@ -54,7 +54,8 @@ import Foundation
 /// may stay silent for a call ready at the answer, so the agent hears the user at
 /// once; see the Integration Guide's cue section.
 ///
-/// Closed: the package adds no case to this enum within a major version. Its payloads,
+/// Closed: the package adds no case to this enum within a minor version while it is
+/// 0.x (from 1.0, within a major version). Its payloads,
 /// `RepeatingCue` and `CallMoment`, are open, so a `switch` that matches them inside
 /// a cue (`case .moment(.connected):`) ends with `@unknown default`.
 public enum CallCue: Equatable, Sendable {

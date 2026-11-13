@@ -233,6 +233,36 @@ struct CallEngineTests {
         #expect(h.provider.muteStates[h.callID] == true)
     }
 
+    /// With no call in progress there is nothing to mute: CallKit has no call to tell,
+    /// and a mute kept for later would start the next call muted without CallKit
+    /// knowing. The next call starts unmuted, and its mic opens when it connects.
+    @Test func muteWithNoCallInProgressIsIgnored() async throws {
+        let h = CallEngineHarness()
+        await h.engine.setMuted(true)
+        #expect(!h.engine.isMuted)
+
+        await h.placeCall()
+        h.engine.handle(.connected)
+        await h.engine.activate(FakeAudioSession())
+        await h.engine.awaitPendingMediaWork()
+
+        #expect(!h.engine.isMuted)
+        #expect(h.transport.isMicEnabled)
+        #expect(h.provider.muteStates.isEmpty)
+    }
+
+    @Test func muteAfterTheCallEndedIsIgnored() async throws {
+        let h = CallEngineHarness()
+        await h.placeCall()
+        h.engine.handle(.connected)
+        await h.engine.endCall()
+
+        await h.engine.setMuted(true)
+
+        #expect(!h.engine.isMuted)
+        #expect(h.provider.muteStates.isEmpty)
+    }
+
     @Test func systemMuteDoesNotCallBackIntoProvider() async throws {
         let h = CallEngineHarness()
         await h.placeCall()

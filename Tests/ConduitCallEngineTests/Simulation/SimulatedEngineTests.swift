@@ -192,6 +192,21 @@ struct SimulatedEngineTests {
         #expect(engine.state == .connected(since: now))
     }
 
+    /// A receipt the host gave no bearer carries no `Authorization` header, and the
+    /// simulated system says so with nil, as the delegate does.
+    @Test(arguments: [nil, ""] as [String?])
+    func aReceiptWithoutABearerHasNone(_ bearer: String?) async {
+        host.bearer = bearer
+        let callID = UUID()
+        #expect(ring(callID: callID))
+
+        await system.answerIncomingCall()
+
+        #expect(system.ringReceipts == [
+            SimulatedCallSystem.RingReceipt(status: "answered", callID: callID, endpoint: statusURL, bearer: nil),
+        ])
+    }
+
     @Test func anUnansweredRingTimesOutOnTheHostsClock() async throws {
         let system = SimulatedCallSystem()
         let sleeper = ManualSleeper()

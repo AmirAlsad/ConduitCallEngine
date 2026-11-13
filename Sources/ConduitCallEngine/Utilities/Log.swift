@@ -28,7 +28,8 @@ import Synchronization
 public enum CallEngineLog {
     /// How severe an event is.
     ///
-    /// Closed: the package adds no case to this enum within a major version.
+    /// Closed: the package adds no case to this enum within a minor version while it is
+    /// 0.x (from 1.0, within a major version).
     public enum Level: Int, Comparable, CaseIterable, Sendable {
         /// Verbose detail.
         case debug

@@ -141,6 +141,11 @@ struct CallEngineLogTests {
          "CallConnection(url: https://x.example/room, token: <redacted>)"),
         (#"{"api_key": "k-123", "status": "busy"}"#, #"{"api_key": <redacted>, "status": "busy"}"#),
         ("password=hunter2&user=me", "password=<redacted>&user=me"),
+        ("join failed: meeting_token=abc123&room=x", "join failed: meeting_token=<redacted>&room=x"),
+        ("Daily join failed: dailyToken: s3cret", "Daily join failed: dailyToken: <redacted>"),
+        (#"{"meetingToken": "xyz", "room": "a"}"#, #"{"meetingToken": <redacted>, "room": "a"}"#),
+        ("client_secret=abc&grant=x", "client_secret=<redacted>&grant=x"),
+        ("x_api_key: k-1 rejected", "x_api_key: <redacted> rejected"),
     ])
     func credentialsAreRemoved(_ input: String, _ expected: String) {
         #expect(CredentialRedaction.redact(input) == expected)
@@ -151,6 +156,8 @@ struct CallEngineLogTests {
         "Ring preparation: credentials failed: connectionFailed(\"backend down\")",
         "Connected",
         "Daily connect: the session's bot never got ready (connected); leaving it and joining with a new client",
+        "Daily meeting token rejected by the room",
+        "tokenExpired: true",
     ])
     func messagesWithoutCredentialsAreUnchanged(_ message: String) {
         #expect(CredentialRedaction.redact(message) == message)

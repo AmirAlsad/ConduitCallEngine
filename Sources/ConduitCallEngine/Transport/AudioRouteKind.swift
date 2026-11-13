@@ -15,7 +15,8 @@ import Foundation
 /// The kind of an audio route, derived from an `AudioDeviceInfo.id` or an
 /// `AVAudioSession` port.
 ///
-/// Closed: the package adds no case to this enum within a major version, so a
+/// Closed: the package adds no case to this enum within a minor version while it is
+/// 0.x (from 1.0, within a major version), so a
 /// `switch` may list every case. A route that fits none of the
 /// named kinds is `.other`.
 public enum AudioRouteKind: Equatable, Sendable {

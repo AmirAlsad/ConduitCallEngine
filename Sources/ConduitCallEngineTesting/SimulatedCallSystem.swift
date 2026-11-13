@@ -322,7 +322,7 @@ public final class SimulatedCallSystem {
         switch timer {
         case .ringTimeout: return engine.fireTimer(.ringTimeout)
         case .joinTimeout: return engine.fireTimer(.joinTimeout)
-        case .transportHealTimeout: return engine.fireTimer(.selfHealTimeout)
+        case .transportHealTimeout: return engine.fireTimer(.transportHealTimeout)
         case .reconnectBackoff: return engine.fireTimer(.reconnectBackoff)
         case .signalRetry: return engine.fireTimer(.signalRetry)
         case .micWithholdTimeout: return engine.fireTimer(.micWithholdTimeout)
@@ -379,13 +379,16 @@ public final class SimulatedCallSystem {
 
     /// A ring-status receipt the engine sent.
     public struct RingReceipt: Equatable, Sendable {
-        /// `answered`, `declined`, `busy`, `suppressed_by_focus`, `unanswered` or `canceled`.
+        /// `answered`, `declined`, `busy`, `suppressed_by_focus`, `unanswered` or `canceled`:
+        /// the `status` the receipt's body carries, as a server reads it.
         public let status: String
         public let callID: UUID
         public let endpoint: URL
-        public let bearer: String
+        /// The bearer the receipt's `Authorization` header carries, or nil when it has
+        /// none (the delegate returned nil or an empty string).
+        public let bearer: String?
 
-        public init(status: String, callID: UUID, endpoint: URL, bearer: String) {
+        public init(status: String, callID: UUID, endpoint: URL, bearer: String?) {
             self.status = status
             self.callID = callID
             self.endpoint = endpoint
@@ -436,7 +439,12 @@ public final class SimulatedCallSystem {
     /// The ring-status receipts the engine sent, in order.
     public var ringReceipts: [RingReceipt] {
         ringStatusReporter.reports.map {
-            RingReceipt(status: $0.status.rawValue, callID: $0.callID, endpoint: $0.endpoint, bearer: $0.apiKey)
+            RingReceipt(
+                status: $0.status.rawValue,
+                callID: $0.callID,
+                endpoint: $0.endpoint,
+                bearer: $0.apiKey.isEmpty ? nil : $0.apiKey
+            )
         }
     }
 }

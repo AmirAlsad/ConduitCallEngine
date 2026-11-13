@@ -17,18 +17,18 @@ package struct ReconnectionPolicy: Equatable, Sendable {
     package let maxDelaySeconds: Double
     /// How long a transport that reported `.reconnecting` may take to report
     /// `.connected` or `.disconnected` before the engine treats it as dropped.
-    package let selfHealTimeoutSeconds: Double
+    package let transportHealTimeoutSeconds: Double
 
     package init(
         maxAttempts: Int,
         baseDelaySeconds: Double,
         maxDelaySeconds: Double,
-        selfHealTimeoutSeconds: Double = 30
+        transportHealTimeoutSeconds: Double = 30
     ) {
         self.maxAttempts = maxAttempts
         self.baseDelaySeconds = baseDelaySeconds
         self.maxDelaySeconds = maxDelaySeconds
-        self.selfHealTimeoutSeconds = selfHealTimeoutSeconds
+        self.transportHealTimeoutSeconds = transportHealTimeoutSeconds
     }
 
     /// The self-heal bound is the backoff cap: the engine never leaves a dropped
@@ -37,10 +37,10 @@ package struct ReconnectionPolicy: Equatable, Sendable {
         maxAttempts: 6,
         baseDelaySeconds: 1,
         maxDelaySeconds: 30,
-        selfHealTimeoutSeconds: 30
+        transportHealTimeoutSeconds: 30
     )
 
-    package var selfHealTimeout: Duration { .seconds(selfHealTimeoutSeconds) }
+    package var transportHealTimeout: Duration { .seconds(transportHealTimeoutSeconds) }
 
     /// Whether an attempt numbered `attempt` (1-based) is still within budget.
     package func canAttempt(_ attempt: Int) -> Bool {

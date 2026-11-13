@@ -19,7 +19,8 @@ import Foundation
 
 /// Where the call is in its lifecycle (`CallEngine.state`).
 ///
-/// Closed: the package adds no case to this enum within a major version, so a
+/// Closed: the package adds no case to this enum within a minor version while it is
+/// 0.x (from 1.0, within a major version), so a
 /// `switch` may list every case.
 public enum CallState: Equatable, Sendable {
     /// No call in progress.
