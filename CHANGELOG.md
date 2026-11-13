@@ -1,5 +1,54 @@
 # Changelog
 
+## 0.3.0 - Unreleased
+
+0.3 lets a host exchange its own messages with its agent over the call: `CallEngine.send(_:)` sends an RTVI client message (a type and an optional JSON payload) on the call in progress, and three new delegate callbacks pass on the agent's RTVI server messages, its output text (for captions) and the user's transcript, on both bundled adapters. Every credential request of a call now carries the call's CallKit id, outgoing calls included. A 0.2 host that uses none of this needs no change, unless it switches over `TransportEvent` or `FakeTransport.Command` without a default branch. Everything new is verified in unit tests only: no device run and no running agent.
+
+### Breaking changes and how to migrate from 0.2
+
+> **Depend on `.upToNextMinor(from: "0.3.0")`** once you have migrated, as for 0.2. Nothing below stops the package from resolving: the dependency floors and ranges are unchanged.
+
+**Compile errors**
+
+1. **`TransportEvent` gains `.serverMessage(Data)`, `.botOutput(BotOutput)` and `.userTranscript(UserTranscript)`.** It is open, as documented: a `switch` over it that ends with `@unknown default` (or `default`) still compiles, with a warning naming the new cases, until you handle them; one that lists every 0.2 case and has no default no longer compiles. Add the cases (a transport of your own ignores them; code that inspects events, such as a logging wrapper around a transport, can treat them as data) or an `@unknown default`.
+2. **The Testing product's `FakeTransport.Command` gains `.message(CallMessage)`**, which records a host message in `commands`. A test that switches over it exhaustively without a default no longer compiles; it is now documented as open, so end such a switch with `@unknown default`. Tests that compare `commands` with `==` are unaffected unless they send host messages.
+
+Not an error: `CallTransport` gains `send(_ message: CallMessage) async -> CallSignalDelivery` with a default implementation that returns `.unsupported`, so a 0.2 transport compiles unchanged and carries no host messages (`CallEngine.send(_:)` then returns `.unsupported`). `CallEngineDelegate` gains three callbacks, each with an empty default. Neither breaks source.
+
+**What an unchanged host sees**
+
+3. **`ConnectRequest.callID` is never nil.** For a call the user placed it was nil on every request (`.outgoing` and each `.reconnect(attempt:)`); it is now the id the engine gave CallKit for the call, the same on every request of the call and new for each call. Incoming calls are unchanged: every request carries the ring's `call_id`. A host that told an outgoing call from an incoming one by `callID == nil` must use `purpose` (`.outgoing`, or `ActiveCall.direction` for a reconnect) instead. A host that sends `callID` to its server now sends it for outgoing calls too; write it as `uuidString.lowercased()`, as for a ring.
+
+**Custom transports**
+
+4. **To carry host messages, implement `send(_ message: CallMessage) async -> CallSignalDelivery`** with exactly that signature (one with another return type does not implement the requirement, and the default drops every message), and emit `.serverMessage`, `.botOutput` and `.userTranscript` for what your agent sends the host. The engine calls it once per `CallEngine.send(_:)`, only when it would send a signal, never on a ring's transport before the answer, and never with a reserved type (Integration Guide, section 12).
+
+### Added
+
+**Host messages**
+
+- **`CallMessage`** (`Equatable`, `Sendable`): `type` (the RTVI client message's `t`) and `data` (its `d`, UTF-8 JSON, nil for none). `init(type:)`, `init?(type:data:)` (nil when the data is not JSON) and `init(type:payload:) throws` (an `Encodable` encoded with `JSONEncoder`). `CallMessage.reservedTypes`: `end-call` and every `CallSignal` raw value.
+- **`CallEngine.send(_:) async -> CallSignalDelivery`** (discardable): sends a `CallMessage` on the call's own transport, once and at once, only while the engine would send a call-control signal (connected, held or not, or connecting with the transport joined), and returns the transport's result. `.failed` with no call that can carry it (idle, dialing, before the join, reconnecting, ringing, a pre-connected ring included, or ended), when the transport could not send it, or for a reserved or empty type (logged as a warning). Not queued, not repeated, not ordered with the engine's own signals.
+- **`CallTransport.send(_ message: CallMessage) async -> CallSignalDelivery`**, defaulting to `.unsupported`.
+- **What the agent sends the host:** `TransportEvent.serverMessage(Data)` (the RTVI `server-message`'s `data` as UTF-8 JSON), `.botOutput(BotOutput)` and `.userTranscript(UserTranscript)`, passed to the new `CallEngineDelegate.callEngine(_:didReceiveServerMessage:)`, `callEngine(_:didReceiveBotOutput:)` and `callEngine(_:didReceiveUserTranscript:)` (main actor, synchronous, empty defaults) only while a call is in progress, from its transport. During a ring, a pre-connected one included, they are dropped, not kept for the answer; once the call has ended nothing is delivered. The engine's log lines show their size, not their text.
+- **`BotOutput`**: `text`, `isSpoken` (RTVI `will_be_spoken`, or `spoken` from an RTVI 1.x agent), `aggregatedBy` (`"word"`, `"sentence"`, or what the agent sends), `spokenStatus`, `spokenProgress` (`BotOutput.SpokenProgress`: `accumulatedText`, `remainingText`) and `segmentID`. **`UserTranscript`**: `text`, `isFinal`. Both `Equatable` and `Sendable`, with public initializers.
+- **`PipecatDailyTransport`** sends host messages as RTVI client messages through Daily's app-message send, with the payload as `d` (`null` without one; converted to Pipecat's `Value`, whose numbers are doubles), with the signals' joined-state guard, fallback and results, and passes on Pipecat's `onServerMessage` (its `Value` encoded back to JSON), `onBotOutput` and `onUserTranscript`. The deprecated `onBotTranscript` is not used.
+- **`LiveKitTransport`** publishes host messages in the signals' envelope with `d` (left out without one), reliably, under the same rules and 2-second bound, and reads the room's data packets: an RTVI `server-message` becomes `.serverMessage`, and a `bot-output` or `user-transcription` whose `data` has the shape Pipecat's iOS client decodes becomes `.botOutput` or `.userTranscript`; everything else is ignored.
+
+**`ConduitCallEngineTesting`**
+
+- `FakeTransport.sentMessages`, `FakeTransport.messageDeliveries` (the results of its next host-message sends; `.sent` once empty) and `FakeTransport.Command.message(_:)`. `SimulatedCallSystem.deliverTransportEvent(_:)` delivers the new events to the delegate synchronously (dropped during a ring, as on a device).
+
+### Behaviour changes
+
+- `ConnectRequest.callID` is the call's CallKit id on every request, outgoing calls included (above).
+- `PipecatDailyTransport.send(_:)` for a signal and for a host message share one path; a signal's behaviour, results and log lines are unchanged. A host message's "sent" line is logged at debug, not info.
+
+### Known limitations
+
+- **Verified in unit tests only.** Host messages and what the agent sends the host have not been carried on a device or to a running agent, on either adapter. On LiveKit, that a Pipecat agent sends its RTVI messages to the client as the data packets the adapter reads is assumed from the RTVI shapes, not checked.
+- **On Daily, a JSON null in an agent's message can crash the app.** `pipecat-client-ios` 1.3.0 reads every RTVI message it receives into its `Value` type, which has no null; a `server-message`, `bot-output` or `user-transcription` whose `data` contains a null, or is null or missing, then reaches a force-unwrap in the client. This is in the Pipecat client, before the adapter sees anything, and was read from its source, not seen on a device. Have the agent leave such keys out.
+
 ## 0.2.0 - 2026-11-12
 
 0.2 adds pre-connect (preparing an incoming call while it rings), ring timeouts and cancel pushes, call-control signals to the agent (among them `call-connected`, which tells the agent when to start speaking), sound cues, a minimum time a call the user placed shows as connecting, a bound on how long a call waits for its agent, and a log hook, with call hold as an experimental opt-in that is off by default; makes the public API usable from a Swift 6 host; lets a host test drive every feature deterministically; and fixes many ordering and recovery bugs found on devices, in both adapters and the engine. A 0.1 host needs a few source changes and should read the behaviour changes below: several defaults now do something 0.1 did not (calls start on the earpiece, rings time out, a call whose agent never comes fails, the mic opens only once the call is connected). A phone call the user accepts during a call still ends it, as in 0.1.
