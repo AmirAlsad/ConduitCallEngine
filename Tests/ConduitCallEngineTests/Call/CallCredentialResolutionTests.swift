@@ -387,10 +387,25 @@ struct CallCredentialResolutionTests {
         await h.engine.awaitPendingReconnect()
 
         #expect(h.target.requests == [
-            ConnectRequest(purpose: .outgoing, callID: nil),
-            ConnectRequest(purpose: .reconnect(attempt: 1), callID: nil),
-            ConnectRequest(purpose: .reconnect(attempt: 2), callID: nil),
+            ConnectRequest(purpose: .outgoing, callID: h.callID),
+            ConnectRequest(purpose: .reconnect(attempt: 1), callID: h.callID),
+            ConnectRequest(purpose: .reconnect(attempt: 2), callID: h.callID),
         ])
+    }
+
+    /// A server tells the calls apart by the id: each placed call has its own.
+    @Test func eachOutgoingCallHasAnIDOfItsOwn() async throws {
+        let h = CallEngineHarness()
+        await h.placeCall()
+        h.engine.handle(.connected)
+        await h.engine.endCall()
+        await h.placeCall()
+
+        let ids = h.target.requests.map(\.callID)
+        #expect(h.target.requests.map(\.purpose) == [.outgoing, .outgoing])
+        #expect(ids.first == h.callID)
+        #expect(ids.allSatisfy { $0 != nil })
+        #expect(Set(ids).count == 2)
     }
 
     @Test func anIncomingCallsRequestsCarryTheRingsID() async throws {

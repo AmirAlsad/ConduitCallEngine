@@ -820,10 +820,11 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         }
     }
 
-    /// For an incoming call every request carries the ring's id; an outgoing call's
-    /// CallKit id is the engine's own, which no server knows.
+    /// Every request carries the call's CallKit id: the ring's `call_id` for an
+    /// incoming call, the id the engine gave CallKit for an outgoing one, so a
+    /// server can tell which call each request belongs to.
     private func connectRequest(_ purpose: ConnectRequest.Purpose) -> ConnectRequest {
-        ConnectRequest(purpose: purpose, callID: callDirection == .incoming ? activeCallID : nil)
+        ConnectRequest(purpose: purpose, callID: activeCallID)
     }
 
     // MARK: - Ring preparation (pre-connect)

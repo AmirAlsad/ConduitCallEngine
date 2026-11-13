@@ -3,8 +3,8 @@
 //  ConduitCallEngine
 //
 //  What the engine hands `CallTarget.connect` each time it asks for credentials:
-//  why it is asking, and for an incoming call, which ring. A host can pass it on
-//  to its backend, for example to tell a reconnect from a new call.
+//  why it is asking, and which call it is for. A host can pass it on to its
+//  backend, for example to tell a reconnect from a new call.
 //
 
 import Foundation
@@ -50,21 +50,22 @@ public struct ConnectRequest: Equatable, Sendable {
 
     /// What the credentials are for.
     public let purpose: Purpose
-    /// The ring's `call_id` (the CallKit call id the push carried) on every request
-    /// for an incoming call, reconnects included; nil for an outgoing call. When you
-    /// send it to your server, write it as `uuidString.lowercased()`, the form the
-    /// engine's ring-status receipts use (`uuidString` is uppercase).
+    /// The call's CallKit id, on every request of the call, reconnects included: for
+    /// an incoming call the ring's `call_id` (the id the push carried), for an
+    /// outgoing call the id the engine gave CallKit when it started the call, which
+    /// your server learns from the call's first request (`.outgoing`). The same id
+    /// on every request of one call, and a new one for each call, so your server can
+    /// tell which call a request belongs to. When you send it to your server, write
+    /// it as `uuidString.lowercased()`, the form the engine's ring-status receipts
+    /// use (`uuidString` is uppercase).
     ///
-    /// The engine guarantees it is never nil when `purpose` is `.answered` or
-    /// `.ringing(joinsBeforeAnswer:)`, and always nil for `.outgoing`; for
-    /// `.reconnect(attempt:)` it is nil exactly when the call is outgoing. So in
-    /// those two cases you can unwrap it (`request.callID!`) or treat nil as a
-    /// programming error. The initializer does not enforce this, so tests can build
-    /// any request.
+    /// The engine never makes a request with a nil `callID`, so you can unwrap it
+    /// (`request.callID!`) or treat nil as a programming error. The initializer does
+    /// not enforce it, so tests can build any request.
     public let callID: UUID?
 
-    /// A request as the engine makes it. The engine never pairs `.answered` or
-    /// `.ringing` with a nil `callID`; see `callID`.
+    /// A request as the engine makes it. The engine never makes one with a nil
+    /// `callID`; see `callID`.
     public init(purpose: Purpose, callID: UUID?) {
         self.purpose = purpose
         self.callID = callID
