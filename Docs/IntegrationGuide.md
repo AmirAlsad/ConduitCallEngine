@@ -841,7 +841,8 @@ CallKit and PushKit do not work in the iOS Simulator, and both WebRTC SDKs abort
 
 `ConduitCallEngineTesting` provides:
 
-- `CallEngine.simulated(configuration:system:now:sleep:)`: an engine over a `SimulatedCallSystem` instead of CallKit, PushKit, the audio-interruption source and receipts. `system` defaults to nil, which gives the engine a fresh system of its own; pass one you keep when you want to drive the engine.
+- `CallEngine.simulated(configuration:system:now:sleep:)`: an engine over a `SimulatedCallSystem` instead of CallKit, PushKit, the audio-interruption source and receipts. `system` defaults to nil, which gives the engine a fresh system of its own; pass one you keep when you want to drive the engine. Its clock and timers run on the machine's time, which a simulator build needs.
+- `CallEngine.simulatedForTesting(configuration:system:now:)`: the same engine for unit tests, with nothing on the machine's time: its clock stands still at `SimulatedCallSystem.testEpoch` unless you pass a `now` of your own, and its timers wait on `SimulatedCallSystem.sleepUntilCancelled(_:)`, so none runs out until the test runs it out ([Time](#time-in-tests), below).
 - `SimulatedCallSystem`: stands in for those services, lets you drive them, and exposes what the engine reported.
 - `FakeTransport`: a `CallTransport` that records what the engine did and emits events you give it.
 
@@ -873,7 +874,7 @@ final class Calls {
 
 **A simulated engine never activates the call's audio by itself.** On a device CallKit's activation is what attaches the transport, opens the mic once the call is connected, and delivers `.moment(.connected)` and `call-connected`; in the simulator only `activateAudioSession()` stands in for it. Without that call a simulated call reaches `.connected` with its transport never attached, its mic closed and no connected moment, so a host's connected sound and anything driven by `isAudioActivated` never happen. In `makeTransport`, return a `FakeTransport(reportsConnectedAfter: .seconds(1))` in the simulator, as `Example/` does, so a call reaches the connected state by itself a second after it connects. A plain `FakeTransport()` reports `.connected` only when you emit it.
 
-**In unit tests.** `SimulatedCallSystem` drives the system side. Every step is deterministic: a test never needs to sleep or poll. Each driver either returns once the engine has applied it (`answerIncomingCall()`, `activateAudioSession()`, `setHeldFromSystem(_:onHold:)`) or takes effect at once in the engine's state and is followed, where the test checks the transport, by `awaitPendingWork()`.
+**In unit tests.** Build the engine with `CallEngine.simulatedForTesting(system:)`; `SimulatedCallSystem` drives the system side. Every step is deterministic: a test never needs to sleep or poll. Each driver either returns once the engine has applied it (`answerIncomingCall()`, `activateAudioSession()`, `setHeldFromSystem(_:onHold:)`) or takes effect at once in the engine's state and is followed, where the test checks the transport, by `awaitPendingWork()`.
 
 | Member | Does |
 |---|---|
@@ -899,9 +900,11 @@ final class Calls {
 | `suspendsOutgoingStarts`, `pendingOutgoingStartCount`, `releaseOutgoingStarts()` | Hold outgoing call starts, to test ending a call while it dials. |
 | `startedCallIDs`, `reportedIncomingCalls`, `updatedCalls`, `ringReceipts`, `holdRequests` | What the engine reported or requested, in plain types. Each outgoing call gets a CallKit id of its own. `ReportedCall`, `RingReceipt` and `HoldRequest` have public initializers, so you can write expected values; a `RingReceipt` sent without a bearer has `bearer` nil. Like CallKit, the simulated system performs each requested hold through the engine, for a call it holds that was reported as holdable. |
 | `reportedSupportsHolding(_:) -> Bool?` | Whether the engine last reported a call as holdable (`CallEngineConfiguration.supportsHolding`); nil for a call it never reported. |
-| `presentConnectedCall(_:secondsElapsed:botSpeaking:) -> Bool` | Puts a connected call on the engine's observed state without CallKit, a transport or any delegate callback, for screenshots of your in-call UI. Works only on the engine `CallEngine.simulated` made for this system; returns false otherwise. |
+| `presentConnectedCall(_:secondsElapsed:botSpeaking:) -> Bool` | Puts a connected call on the engine's observed state without CallKit, a transport or any delegate callback, for screenshots of your in-call UI. Works only on the engine `CallEngine.simulated` (or `simulatedForTesting`) made for this system; returns false otherwise. |
+| `SimulatedCallSystem.testEpoch` | A fixed date: the clock of an engine from `CallEngine.simulatedForTesting` unless you pass `now`. Start a clock of your own here when a test moves time. |
+| `SimulatedCallSystem.sleepUntilCancelled(_:)` | A sleep that never runs out by itself: it throws `CancellationError` when its task is cancelled, which is how `fireTimer(_:)` runs a timer out and how the engine stops one. `simulatedForTesting` gives it to the engine; pass it to any other sleep your test must end by cancelling it, such as the timeouts of a transport of your own. It is `@Sendable` and callable from any isolation. |
 
-**Time.** The engine's timeouts and backoffs wait on the `sleep` given to `CallEngine.simulated`, real time by default, so in a fast test none of them runs out by itself: keep the default configuration and end the one you want with `fireTimer(_:)`. A clock you pass as `now:` makes `CallRecord.duration` deterministic. A `sleep` that returns at once also works, for instant reconnect backoff, but then every timer runs out on the engine's next suspension, every ring times out and every call waiting for its agent fails as `.agentUnreachable`, so pair it with `configuration: CallEngineConfiguration(ringTimeout: nil, joinTimeout: nil)`.
+<a id="time-in-tests"></a>**Time.** The engine's timeouts and backoffs wait on its `sleep`, and what it measures by its clock (the outgoing minimum connecting time, `CallRecord.duration`) reads its `now`. `CallEngine.simulated` gives it the machine's time for both, and a test must not rely on that: a slow or stalled machine (a busy CI runner can stop a test process for seconds) lets a real timer run out by itself, and the real clock alone lets a non-zero `minimumOutgoingConnectingDuration` elapse, so the test sees a ring time out, a call fail as `.agentUnreachable` or a call connect that it did not ask for. Build the engine with `CallEngine.simulatedForTesting`, which keeps the default configuration's timers but stills the clock (`SimulatedCallSystem.testEpoch`) and parks every wait (`SimulatedCallSystem.sleepUntilCancelled(_:)`), then drive time yourself: end the timer you want with `fireTimer(_:)` and wait for its effects with `awaitPendingWork()` (`awaitPendingReconnect()` after `.reconnectBackoff`). To make `CallRecord.duration` a value you choose, pass a clock you advance as `now:`. A `sleep` that returns at once, through `CallEngine.simulated(sleep:)`, also works, for instant reconnect backoff, but then every timer runs out on the engine's next suspension, every ring times out and every call waiting for its agent fails as `.agentUnreachable`, so pair it with `configuration: CallEngineConfiguration(ringTimeout: nil, joinTimeout: nil)`, and pass `now: { SimulatedCallSystem.testEpoch }` (or a clock of your own) with it.
 
 `FakeTransport` is a main-actor class (its `init`, `emit(_:)`, `finish()`, `events`, `canConnectWhileRinging` and `reportsConnectedAfter` work from anywhere).
 
@@ -945,7 +948,7 @@ final class TestHost: CallEngineDelegate {
 @MainActor
 @Test func answeredRingConnectsAndIsRecorded() async throws {
     let system = SimulatedCallSystem()
-    let engine = CallEngine.simulated(system: system)
+    let engine = CallEngine.simulatedForTesting(system: system)
     let host = TestHost()
     engine.delegate = host
     engine.startPushRegistration()
@@ -970,6 +973,22 @@ final class TestHost: CallEngineDelegate {
     system.endCallFromSystem(callID)
     #expect(engine.state == .ended(.completed))
     #expect(host.records.map(\.outcome) == [.completed])
+}
+
+@MainActor
+@Test func unansweredRingTimesOutWhenTheTestSays() async {
+    let system = SimulatedCallSystem()
+    let engine = CallEngine.simulatedForTesting(system: system)
+    let host = TestHost()
+    engine.delegate = host
+    engine.startPushRegistration()
+
+    system.deliverPush(["target_id": host.targetID.uuidString, "call_id": UUID().uuidString]) {}
+    #expect(engine.state == .incomingRinging) // its ring timeout waits for the test, however slow the machine
+
+    #expect(system.fireTimer(.ringTimeout))
+    await system.awaitPendingWork()
+    #expect(host.records.map(\.missedReason) == [.ringTimedOut])
 }
 ```
 
