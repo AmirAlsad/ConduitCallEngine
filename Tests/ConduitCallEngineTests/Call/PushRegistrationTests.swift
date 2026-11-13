@@ -54,7 +54,7 @@ struct PushRegistrationTests {
             interruptionObserver: FakeAudioInterruptionObserver(),
             ringStatusReporter: FakeRingStatusReporter(),
             pushRegistry: registry,
-            now: { Date() },
+            now: { testEpoch },
             sleep: { _ in }
         )
     }

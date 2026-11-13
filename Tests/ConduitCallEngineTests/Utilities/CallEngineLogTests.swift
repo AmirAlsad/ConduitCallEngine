@@ -30,6 +30,7 @@ struct CallEngineLogTests {
         at level: CallEngineLog.Level = .debug,
         _ body: (LogSink) async throws -> Void
     ) async rethrows {
+        _ = QuietEngineLog.installed
         let sink = LogSink()
         let previous = (CallEngineLog.handler, CallEngineLog.minimumLevel)
         CallEngineLog.handler = { sink.record($0) }
@@ -84,7 +85,9 @@ struct CallEngineLogTests {
             let system = SimulatedCallSystem()
             let engine = CallEngine.simulated(
                 configuration: CallEngineConfiguration(ringTimeout: nil, joinTimeout: nil),
-                system: system
+                system: system,
+                now: { testEpoch },
+                sleep: parkedSleep
             )
             engine.startPushRegistration()
             // CallKit has not accepted the report yet, so the ring rings on.
@@ -105,7 +108,7 @@ struct CallEngineLogTests {
     @Test func aWithholdTheBoundEndsIsLoggedAsAWarning() async throws {
         try await capturing { sink in
             let system = SimulatedCallSystem()
-            let engine = CallEngine.simulated(system: system)
+            let engine = CallEngine.simulated(system: system, now: { testEpoch }, sleep: parkedSleep)
             let target = CallTarget(
                 id: UUID(),
                 displayName: "Assistant",

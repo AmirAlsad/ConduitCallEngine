@@ -501,7 +501,7 @@ struct MinimumConnectingTests {
             supportsHolding: order.contains(.hold),
             minimumOutgoingConnectingDuration: minimum,
             now: clock.now,
-            sleep: { _ in try await Task.sleep(for: .seconds(24 * 60 * 60)) }
+            sleep: parkedSleep
         )
         await h.placeCall()
         await h.engine.setMuted(true)

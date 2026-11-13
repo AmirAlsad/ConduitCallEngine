@@ -19,7 +19,7 @@ struct ConnectedSignalTests {
     /// A harness whose timers wait until the call ends, so the withhold's bound
     /// never runs out by itself (the default sleep would release it at once).
     private func patientHarness(supportsHolding: Bool = false) -> CallEngineHarness {
-        CallEngineHarness(supportsHolding: supportsHolding, sleep: { _ in try await Task.sleep(for: .seconds(24 * 60 * 60)) })
+        CallEngineHarness(supportsHolding: supportsHolding, sleep: parkedSleep)
     }
 
     private func activate(_ h: CallEngineHarness) async {
@@ -360,7 +360,7 @@ struct ConnectedSignalTests {
     }
 
     private func run(_ order: [ConnectedSignalEvent]) async -> String? {
-        let h = CallEngineHarness(supportsHolding: order.contains(.hold), sleep: { _ in try await Task.sleep(for: .seconds(24 * 60 * 60)) })
+        let h = CallEngineHarness(supportsHolding: order.contains(.hold), sleep: parkedSleep)
         await h.placeCall()
         var isConnected = false, isActivated = false, isHeld = false, isWithheld = false
         var isDue = false

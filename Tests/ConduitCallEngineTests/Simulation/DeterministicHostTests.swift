@@ -6,8 +6,9 @@
 //  alone and without sleeping or polling: each step either returns once the
 //  engine has applied it, or is followed by `awaitPendingWork()`,
 //  `awaitRingPreparation()` or `awaitPendingReconnect()`. The engine keeps its
-//  default timeouts and real-time sleep, so no timer runs out unless a test ends it
-//  with `fireTimer(_:)`. Imports without `@testable`.
+//  default timeouts on a sleep that never runs out by itself (`parkedSleep`) and a
+//  clock that stands still, so no timer runs out unless a test ends it with
+//  `fireTimer(_:)`, however slow the machine. Imports without `@testable`.
 //
 
 import Foundation
@@ -47,7 +48,12 @@ struct DeterministicHostTests {
     init() {
         // The experimental hold is opted in, as a host that tests it would; the
         // tests that do not hold behave as they would with it off.
-        engine = CallEngine.simulated(configuration: CallEngineConfiguration(supportsHolding: true), system: system)
+        engine = CallEngine.simulated(
+            configuration: CallEngineConfiguration(supportsHolding: true),
+            system: system,
+            now: { testEpoch },
+            sleep: parkedSleep
+        )
         engine.delegate = host
         engine.startPushRegistration()
         host.target = target()
@@ -179,7 +185,9 @@ struct DeterministicHostTests {
         let host = Host()
         let engine = CallEngine.simulated(
             configuration: CallEngineConfiguration(minimumOutgoingConnectingDuration: .seconds(3)),
-            system: system
+            system: system,
+            now: { testEpoch },
+            sleep: parkedSleep
         )
         engine.delegate = host
         await engine.placeCall(target())

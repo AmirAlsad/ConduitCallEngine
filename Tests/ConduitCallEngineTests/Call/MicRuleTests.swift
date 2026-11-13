@@ -384,7 +384,7 @@ enum MicRuleScenario {
     static func run(_ order: [MicEvent], shouldResume: Bool, unmuted: Bool = false) async -> String? {
         // A sleep that lasts until the call's end cancels it, so the withhold's
         // bound never runs out by itself.
-        let h = CallEngineHarness(supportsHolding: order.contains(.hold), sleep: { _ in try await Task.sleep(for: .seconds(24 * 60 * 60)) })
+        let h = CallEngineHarness(supportsHolding: order.contains(.hold), sleep: parkedSleep)
         await h.placeCall()
         if !order.contains(.connect) { h.engine.handle(.connected) }
         await h.engine.setMuted(!unmuted)

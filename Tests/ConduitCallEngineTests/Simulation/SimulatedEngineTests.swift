@@ -210,7 +210,7 @@ struct SimulatedEngineTests {
     @Test func anUnansweredRingTimesOutOnTheHostsClock() async throws {
         let system = SimulatedCallSystem()
         let sleeper = ManualSleeper()
-        let engine = CallEngine.simulated(system: system, sleep: { await sleeper.sleep($0) })
+        let engine = CallEngine.simulated(system: system, now: { testEpoch }, sleep: { await sleeper.sleep($0) })
         engine.delegate = host
         engine.startPushRegistration()
         let callID = UUID()
@@ -451,6 +451,7 @@ struct SimulatedEngineTests {
         let engine = CallEngine.simulated(
             configuration: CallEngineConfiguration(ringTimeout: nil, joinTimeout: nil, supportsHolding: true),
             system: system,
+            now: { testEpoch },
             sleep: { _ in }
         )
         engine.delegate = host
