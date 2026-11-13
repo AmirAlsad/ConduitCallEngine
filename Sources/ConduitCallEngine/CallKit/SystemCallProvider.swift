@@ -17,7 +17,7 @@ import Foundation
 @MainActor
 final class SystemCallProvider: NSObject, CallProviding, CXProviderDelegate, CXCallObserverDelegate {
     weak var delegate: CallProviderDelegate?
-    var supportsHolding = true
+    var supportsHolding = false
 
     private let provider: CXProvider
     private let callController = CXCallController()

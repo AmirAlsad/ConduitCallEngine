@@ -18,9 +18,14 @@ import ConduitCallEngineTesting
 struct MicWithholdTests {
     private let sleeper = ManualSleeper()
 
-    private func harness(micWithholdTimeout: Duration = .seconds(5), pushToTalk: Bool = false) -> CallEngineHarness {
+    private func harness(
+        micWithholdTimeout: Duration = .seconds(5),
+        pushToTalk: Bool = false,
+        supportsHolding: Bool = false
+    ) -> CallEngineHarness {
         let sleeper = sleeper
         return CallEngineHarness(
+            supportsHolding: supportsHolding,
             pushToTalk: pushToTalk,
             micWithholdTimeout: micWithholdTimeout,
             sleep: { await sleeper.sleep($0) }
@@ -115,7 +120,7 @@ struct MicWithholdTests {
 
     @Test(arguments: OtherReason.allCases)
     func aReleaseLeavesTheMicClosedWhileAnotherInputCloses(_ reason: OtherReason) async throws {
-        let h = harness()
+        let h = harness(supportsHolding: reason == .held)
         await liveCall(h)
         await withhold(h, true)
 

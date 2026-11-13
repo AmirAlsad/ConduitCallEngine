@@ -75,14 +75,24 @@ public struct CallEngineConfiguration: @unchecked Sendable {
     /// user cannot see is closed is the failure it prevents. Measured with the
     /// engine's injected sleep. Default 5 seconds.
     public var micWithholdTimeout: Duration
-    /// Whether calls are reported to CallKit as holdable. When true (the default),
-    /// iOS can put the call on hold (for example to answer or place a phone call)
-    /// and the host can hold it with `CallEngine.setOnHold(_:)`; see
-    /// `CallEngine.isOnHold`. When false, CallKit offers no hold for the call, and a
-    /// phone call that starts during it ends it.
+    /// EXPERIMENTAL; do not enable it in a shipping app yet. Whether calls are
+    /// reported to CallKit as holdable. When false (the default), as in 0.1,
+    /// CallKit offers no hold for the call, a hold action is refused, and a phone
+    /// call the user accepts or places during the call ends it: the engine tears
+    /// down as for any end, sends the end-call signal, and records the call once.
+    /// When true, iOS can put the call on hold (for example to answer or place a
+    /// phone call) and the host can hold it with `CallEngine.setOnHold(_:)`; see
+    /// `CallEngine.isOnHold`. In-app hold and resume, with no other call, was
+    /// verified on a device (iOS 27.0) with the bundled Daily and LiveKit
+    /// transports. Resuming after a real phone call did not bring the audio back
+    /// in either direction in those tests: on LiveKit every start of the audio
+    /// engine failed (`LiveKitError` 801, "Audio engine returned error code:
+    /// -4010") for at least six seconds; on Daily no error surfaced and the audio
+    /// was simply absent. After that phone call, the system call screen also showed
+    /// the call as still held while the engine reported it resumed.
     public var supportsHolding: Bool
-    /// Whether the engine resumes a call iOS held for another call once that call
-    /// has ended. When the system holds the call (a `CXSetHeldCallAction` your app
+    /// Part of the experimental hold (`supportsHolding`). Whether the engine
+    /// resumes a call iOS held for another call once that call has ended. When the system holds the call (a `CXSetHeldCallAction` your app
     /// did not request with `CallEngine.setOnHold(_:)`, as when the user takes a
     /// phone call), the engine watches the other calls on the device through
     /// CallKit's call observer; once every call it saw during the hold has ended and
@@ -116,7 +126,7 @@ public struct CallEngineConfiguration: @unchecked Sendable {
         joinTimeout: Duration? = .seconds(30),
         minimumOutgoingConnectingDuration: Duration = .zero,
         micWithholdTimeout: Duration = .seconds(5),
-        supportsHolding: Bool = true,
+        supportsHolding: Bool = false,
         resumesAfterSystemHold: Bool = true,
         defaultsToSpeaker: Bool = false,
         isPushToTalkEnabled: @escaping @MainActor () -> Bool = { false }

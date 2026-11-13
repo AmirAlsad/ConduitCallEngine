@@ -45,7 +45,9 @@ struct DeterministicHostTests {
     }
 
     init() {
-        engine = CallEngine.simulated(system: system)
+        // The experimental hold is opted in, as a host that tests it would; the
+        // tests that do not hold behave as they would with it off.
+        engine = CallEngine.simulated(configuration: CallEngineConfiguration(supportsHolding: true), system: system)
         engine.delegate = host
         engine.startPushRegistration()
         host.target = target()

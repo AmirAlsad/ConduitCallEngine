@@ -17,9 +17,9 @@ import ConduitCallEngineTesting
 struct SignalDeliveryTests {
     private let sleeper = ManualSleeper()
 
-    private func harness() -> CallEngineHarness {
+    private func harness(supportsHolding: Bool = false) -> CallEngineHarness {
         let sleeper = sleeper
-        return CallEngineHarness(sleep: { await sleeper.sleep($0) })
+        return CallEngineHarness(supportsHolding: supportsHolding, sleep: { await sleeper.sleep($0) })
     }
 
     /// Placed, connected and activated, with the agent told the user is on the line.
@@ -38,7 +38,7 @@ struct SignalDeliveryTests {
     }
 
     @Test func aResumeThatFailsToSendIsSentAgain() async throws {
-        let h = harness()
+        let h = harness(supportsHolding: true)
         await liveCall(h)
         await setHeld(h, true)
         h.transport.signalDeliveries = [.failed]
@@ -56,7 +56,7 @@ struct SignalDeliveryTests {
     }
 
     @Test func aHoldThatFailsToSendIsSentAgainWhileHeld() async throws {
-        let h = harness()
+        let h = harness(supportsHolding: true)
         await liveCall(h)
         h.transport.signalDeliveries = [.failed]
 
@@ -70,7 +70,7 @@ struct SignalDeliveryTests {
 
     /// A retry sends the call's state when it runs, not the signal that failed.
     @Test func aRetryAfterTheStateChangedSendsTheCurrentState() async throws {
-        let h = harness()
+        let h = harness(supportsHolding: true)
         await liveCall(h)
         h.transport.signalDeliveries = [.failed]
         await setHeld(h, true)
@@ -84,7 +84,7 @@ struct SignalDeliveryTests {
     }
 
     @Test func aSignalThatKeepsFailingIsRetriedAFewTimesThenOnTheNextConnection() async throws {
-        let h = harness()
+        let h = harness(supportsHolding: true)
         await liveCall(h)
         await setHeld(h, true)
         h.transport.signalDeliveries = Array(repeating: .failed, count: 7)
@@ -109,7 +109,7 @@ struct SignalDeliveryTests {
 
     /// Before, a resume was taken as heard the moment it was queued.
     @Test func aResumeThatFailedIsSentAgainAfterAReconnect() async throws {
-        let h = harness()
+        let h = harness(supportsHolding: true)
         await liveCall(h)
         await setHeld(h, true)
         h.transport.signalDeliveries = [.failed]
@@ -140,7 +140,7 @@ struct SignalDeliveryTests {
     }
 
     @Test func aTransportWithoutSignalsIsNeverAskedAgain() async throws {
-        let h = harness()
+        let h = harness(supportsHolding: true)
         await liveCall(h)
         h.transport.signalDeliveries = [.unsupported, .unsupported]
 
@@ -153,7 +153,7 @@ struct SignalDeliveryTests {
     }
 
     @Test func aRetryPendingWhenTheCallEndsChangesNothing() async throws {
-        let h = harness()
+        let h = harness(supportsHolding: true)
         await liveCall(h)
         h.transport.signalDeliveries = [.failed]
         await setHeld(h, true)

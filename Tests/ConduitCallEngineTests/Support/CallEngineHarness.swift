@@ -303,14 +303,16 @@ final class CallEngineHarness {
     /// because the default `sleep` returns at once and would end every ring, and
     /// every attempt waiting for the agent, on the next yield. Tests of those
     /// timeouts pass one and a `ManualSleeper`.
+    /// `supportsHolding` is off by default, as the package's is; it comes first so
+    /// any test can turn the experimental hold on.
     init(
+        supportsHolding: Bool = false,
         policy: ReconnectionPolicy = .default,
         pushToTalk: Bool = false,
         ringTimeout: Duration? = nil,
         joinTimeout: Duration? = nil,
         minimumOutgoingConnectingDuration: Duration = .zero,
         micWithholdTimeout: Duration = .seconds(5),
-        supportsHolding: Bool = true,
         resumesAfterSystemHold: Bool = true,
         defaultsToSpeaker: Bool = false,
         now: @escaping () -> Date = { Date() },

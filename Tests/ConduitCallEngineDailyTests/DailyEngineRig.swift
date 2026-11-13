@@ -83,7 +83,9 @@ final class DailyEngineRig {
     var holdsCredentials = false
     private var pendingCredentials: CheckedContinuation<Void, Never>?
 
+    /// `supportsHolding` is off by default, as the package's is.
     init(
+        supportsHolding: Bool = false,
         joinTimeout: Duration? = .seconds(30),
         minimumOutgoingConnecting: Duration = .zero,
         defaultsToSpeaker: Bool = false
@@ -94,6 +96,7 @@ final class DailyEngineRig {
                 ringTimeout: nil,
                 joinTimeout: joinTimeout,
                 minimumOutgoingConnectingDuration: minimumOutgoingConnecting,
+                supportsHolding: supportsHolding,
                 defaultsToSpeaker: defaultsToSpeaker
             ),
             system: system,

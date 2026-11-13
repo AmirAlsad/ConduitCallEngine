@@ -145,7 +145,8 @@ public final class SimulatedCallSystem {
 
     /// The user or the system held or resumed `callID` from the system UI (for
     /// example, iOS holds it so the user can take a phone call). Returns whether the
-    /// engine performed the action; CallKit fails one it refuses. Returns once the
+    /// engine performed the action; CallKit fails one it refuses, as the engine
+    /// refuses every one unless the experimental `supportsHolding` is on. Returns once the
     /// engine has applied the change to the call's transport (mic, attach and the
     /// agent's signal).
     @discardableResult
@@ -165,8 +166,9 @@ public final class SimulatedCallSystem {
 
     /// Another call started on the device (a phone call rings or is placed, or
     /// another app's call), as CallKit's call observer reports it. Returns its id.
-    /// It changes nothing by itself: when the user accepts it, iOS holds the
-    /// engine's call, which you show with `setHeldFromSystem(_:onHold: true)`.
+    /// It changes nothing by itself: when the user accepts it, iOS ends the
+    /// engine's call (`endCallFromSystem(_:)`), or, with the experimental hold on,
+    /// holds it, which you show with `setHeldFromSystem(_:onHold: true)`.
     @discardableResult
     public func startOtherCall() -> UUID {
         provider.simulateOtherCallStarted()

@@ -107,9 +107,11 @@ public enum CallMoment: Equatable, Sendable {
     /// The connection dropped (`.connected` to `.reconnecting`, or at the resume
     /// for an outage that began on hold). Once per outage.
     case connectionLost
-    /// The call was put on hold (`CallEngine.isOnHold` became true). A call that ends
+    /// The call was put on hold (`CallEngine.isOnHold` became true); only with the
+    /// experimental `CallEngineConfiguration.supportsHolding` on. A call that ends
     /// while held gets no `.resumed`.
     case held
-    /// A held call was resumed (`CallEngine.isOnHold` became false).
+    /// A held call was resumed (`CallEngine.isOnHold` became false); only with the
+    /// experimental hold.
     case resumed
 }

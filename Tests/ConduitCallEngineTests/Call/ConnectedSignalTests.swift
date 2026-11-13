@@ -18,8 +18,8 @@ import ConduitCallEngineTesting
 struct ConnectedSignalTests {
     /// A harness whose timers wait until the call ends, so the withhold's bound
     /// never runs out by itself (the default sleep would release it at once).
-    private func patientHarness() -> CallEngineHarness {
-        CallEngineHarness(sleep: { _ in try await Task.sleep(for: .seconds(24 * 60 * 60)) })
+    private func patientHarness(supportsHolding: Bool = false) -> CallEngineHarness {
+        CallEngineHarness(supportsHolding: supportsHolding, sleep: { _ in try await Task.sleep(for: .seconds(24 * 60 * 60)) })
     }
 
     private func activate(_ h: CallEngineHarness) async {
@@ -168,7 +168,7 @@ struct ConnectedSignalTests {
     }
 
     @Test func aCallThatConnectsWhileHeldIsToldAfterTheResume() async throws {
-        let h = CallEngineHarness()
+        let h = CallEngineHarness(supportsHolding: true)
         await h.placeCall()
         await activate(h)
         await setHeld(h, true)
@@ -182,7 +182,7 @@ struct ConnectedSignalTests {
     }
 
     @Test func aHoldAfterItWasSentDoesNotSendItAgainAtTheResume() async throws {
-        let h = CallEngineHarness()
+        let h = CallEngineHarness(supportsHolding: true)
         await h.placeCall()
         h.engine.handle(.connected)
         await activate(h)
@@ -336,7 +336,7 @@ struct ConnectedSignalTests {
     /// The connected cue comes at the resume; the agent must not be told before
     /// the host's "Connected" is done.
     @Test func anAnsweredCallThatConnectsDuringAHoldIsToldOnlyAfterTheConnectedSound() async throws {
-        let h = patientHarness()
+        let h = patientHarness(supportsHolding: true)
         h.delegate.onCue = { engine, cue in
             if cue == .moment(.connected) { engine.setMicWithheld(true) }
         }
@@ -360,7 +360,7 @@ struct ConnectedSignalTests {
     }
 
     private func run(_ order: [ConnectedSignalEvent]) async -> String? {
-        let h = CallEngineHarness(sleep: { _ in try await Task.sleep(for: .seconds(24 * 60 * 60)) })
+        let h = CallEngineHarness(supportsHolding: order.contains(.hold), sleep: { _ in try await Task.sleep(for: .seconds(24 * 60 * 60)) })
         await h.placeCall()
         var isConnected = false, isActivated = false, isHeld = false, isWithheld = false
         var isDue = false

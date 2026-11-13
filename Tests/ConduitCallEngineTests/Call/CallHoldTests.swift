@@ -51,7 +51,7 @@ struct CallHoldTests {
     }
 
     @Test func aCorrectedRingStaysHoldable() async throws {
-        let h = CallEngineHarness()
+        let h = CallEngineHarness(supportsHolding: true)
         let id = UUID()
         h.ring(callID: id, displayName: "Someone else") // corrected to the target's name
 
@@ -62,7 +62,7 @@ struct CallHoldTests {
     // MARK: - Holding and resuming
 
     @Test func holdClosesTheMicStopsMediaAndTellsTheAgent() async throws {
-        let h = CallEngineHarness()
+        let h = CallEngineHarness(supportsHolding: true)
         await liveCall(h)
         let state = h.engine.state
         #expect(h.transport.isMicEnabled)
@@ -81,7 +81,7 @@ struct CallHoldTests {
     }
 
     @Test func resumeRestartsMediaReopensTheMicAndTellsTheAgent() async throws {
-        let h = CallEngineHarness()
+        let h = CallEngineHarness(supportsHolding: true)
         await liveCall(h)
         await setHeld(h, true)
 
@@ -97,7 +97,7 @@ struct CallHoldTests {
     }
 
     @Test func resumeBeforeCallKitReactivatesWaitsForTheActivation() async throws {
-        let h = CallEngineHarness()
+        let h = CallEngineHarness(supportsHolding: true)
         await liveCall(h)
         await setHeld(h, true)
         h.provider.simulateDeactivate(FakeAudioSession())
@@ -115,7 +115,7 @@ struct CallHoldTests {
     }
 
     @Test func anActivationWhileHeldWaitsForTheResume() async throws {
-        let h = CallEngineHarness()
+        let h = CallEngineHarness(supportsHolding: true)
         await liveCall(h)
         await setHeld(h, true)
         h.provider.simulateDeactivate(FakeAudioSession())
@@ -134,7 +134,7 @@ struct CallHoldTests {
     }
 
     @Test func anInterruptionEndingWhileHeldKeepsTheMicClosed() async throws {
-        let h = CallEngineHarness()
+        let h = CallEngineHarness(supportsHolding: true)
         await liveCall(h)
         h.interruption.simulateBegan()
         await setHeld(h, true)
@@ -155,7 +155,7 @@ struct CallHoldTests {
 
     @Test(arguments: UserMicControl.allCases)
     func theUsersMicControlsWhileHeldTakeEffectOnResume(control: UserMicControl) async throws {
-        let h = CallEngineHarness(pushToTalk: control == .pushToTalk)
+        let h = CallEngineHarness(supportsHolding: true, pushToTalk: control == .pushToTalk)
         await liveCall(h)
         if control != .pushToTalk { await h.engine.setMuted(true) }
         await setHeld(h, true)
@@ -175,7 +175,7 @@ struct CallHoldTests {
     }
 
     @Test func aRepeatedHoldOrResumeChangesNothing() async throws {
-        let h = CallEngineHarness()
+        let h = CallEngineHarness(supportsHolding: true)
         await liveCall(h)
         #expect(await setHeld(h, false)) // not held: nothing to resume
 
@@ -194,7 +194,7 @@ struct CallHoldTests {
 
     /// A harness whose timers wait until a test fires them.
     private func timedHarness() -> CallEngineHarness {
-        CallEngineHarness(sleep: { _ in try await Task.sleep(for: .seconds(24 * 60 * 60)) })
+        CallEngineHarness(supportsHolding: true, sleep: { _ in try await Task.sleep(for: .seconds(24 * 60 * 60)) })
     }
 
     /// Held by the system, CallKit deactivated the audio, and the resume came with
@@ -255,7 +255,7 @@ struct CallHoldTests {
 
     @Test func theWaitIsTheEnginesSleep() async throws {
         let sleeper = ManualSleeper()
-        let h = CallEngineHarness(sleep: { await sleeper.sleep($0) })
+        let h = CallEngineHarness(supportsHolding: true, sleep: { await sleeper.sleep($0) })
         await resumedWithoutAudio(h)
         await waitUntil { sleeper.pendingCount == 1 }
 
@@ -538,7 +538,7 @@ struct CallHoldTests {
     }
 
     @Test func turnedOffTheCallStaysHeld() async throws {
-        let h = CallEngineHarness(resumesAfterSystemHold: false, sleep: { _ in try await Task.sleep(for: .seconds(24 * 60 * 60)) })
+        let h = CallEngineHarness(supportsHolding: true, resumesAfterSystemHold: false, sleep: { _ in try await Task.sleep(for: .seconds(24 * 60 * 60)) })
         let other = await heldForAnotherCall(h)
 
         h.provider.simulateOtherCallEnded(other)
@@ -589,7 +589,7 @@ struct CallHoldTests {
     // MARK: - Refusals (the action names the call; the call must be holdable)
 
     @Test func holdForAnotherCallIsRefused() async throws {
-        let h = CallEngineHarness()
+        let h = CallEngineHarness(supportsHolding: true)
         await liveCall(h)
 
         let performed = await setHeld(h, true, id: UUID()) // e.g. a busy ring's id
@@ -613,7 +613,7 @@ struct CallHoldTests {
     }
 
     @Test func aRingingCallCannotBeHeld() async throws {
-        let h = CallEngineHarness()
+        let h = CallEngineHarness(supportsHolding: true)
         let id = UUID()
         h.ring(callID: id)
 
@@ -623,7 +623,7 @@ struct CallHoldTests {
     }
 
     @Test func anEndedCallCannotBeResumed() async throws {
-        let h = CallEngineHarness()
+        let h = CallEngineHarness(supportsHolding: true)
         await liveCall(h)
         await setHeld(h, true)
         await h.engine.endCall()
@@ -635,7 +635,7 @@ struct CallHoldTests {
     // MARK: - The host's hold
 
     @Test func setOnHoldAsksCallKitWhichPerformsIt() async throws {
-        let h = CallEngineHarness()
+        let h = CallEngineHarness(supportsHolding: true)
         await liveCall(h)
 
         await h.engine.setOnHold(true)
@@ -653,7 +653,7 @@ struct CallHoldTests {
     }
 
     @Test func setOnHoldWithNoCallAsksNothing() async throws {
-        let h = CallEngineHarness()
+        let h = CallEngineHarness(supportsHolding: true)
         await h.engine.setOnHold(true)
 
         h.ring()
@@ -667,7 +667,7 @@ struct CallHoldTests {
 
     @Test func aDropWhileHeldWaitsForTheResumeThenRetriesAtOnce() async throws {
         let sleeper = ManualSleeper()
-        let h = CallEngineHarness(sleep: { await sleeper.sleep($0) })
+        let h = CallEngineHarness(supportsHolding: true, sleep: { await sleeper.sleep($0) })
         await liveCall(h)
         await setHeld(h, true)
 
@@ -692,7 +692,7 @@ struct CallHoldTests {
 
     @Test func holdPausesAPendingRetryAndResumeRestartsAtAttemptOne() async throws {
         let sleeper = ManualSleeper()
-        let h = CallEngineHarness(sleep: { await sleeper.sleep($0) })
+        let h = CallEngineHarness(supportsHolding: true, sleep: { await sleeper.sleep($0) })
         await liveCall(h)
         h.engine.handle(.disconnected(reason: .networkDropped))
         await waitUntil { sleeper.pendingCount == 1 }
@@ -718,7 +718,7 @@ struct CallHoldTests {
 
     @Test func aSelfHealThatOutlastsItsDeadlineWhileHeldWaitsForTheResume() async throws {
         let sleeper = ManualSleeper()
-        let h = CallEngineHarness(sleep: { await sleeper.sleep($0) })
+        let h = CallEngineHarness(supportsHolding: true, sleep: { await sleeper.sleep($0) })
         await liveCall(h)
         await setHeld(h, true)
 
@@ -738,7 +738,7 @@ struct CallHoldTests {
 
     @Test func aTransportThatRecoversWhileHeldNeedsNoRetry() async throws {
         let sleeper = ManualSleeper()
-        let h = CallEngineHarness(sleep: { await sleeper.sleep($0) })
+        let h = CallEngineHarness(supportsHolding: true, sleep: { await sleeper.sleep($0) })
         await liveCall(h)
         await setHeld(h, true)
         h.engine.handle(.disconnected(reason: .networkDropped))
@@ -757,7 +757,7 @@ struct CallHoldTests {
     /// `call-resumed` tells the agent the user can hear it again, so it follows the
     /// attach the resume issued (Daily subscribes to the agent's audio there).
     @Test func aResumeReachesTheAgentAfterTheAttach() async throws {
-        let h = CallEngineHarness()
+        let h = CallEngineHarness(supportsHolding: true)
         await liveCall(h)
         await setHeld(h, true)
         h.transport.suspendAttach = true
@@ -776,7 +776,7 @@ struct CallHoldTests {
     /// `call-resumed` says the user can hear and speak again, which is true only
     /// once CallKit has activated the resumed call's audio.
     @Test func aResumeBeforeTheActivationTellsTheAgentAtTheActivation() async throws {
-        let h = CallEngineHarness()
+        let h = CallEngineHarness(supportsHolding: true)
         await liveCall(h)
         await setHeld(h, true)
         h.provider.simulateDeactivate(FakeAudioSession())
@@ -809,7 +809,7 @@ struct CallHoldTests {
 
     /// A call held again before the activation came never says it was back.
     @Test func aResumeHeldAgainBeforeTheActivationTellsTheAgentNothing() async throws {
-        let h = CallEngineHarness()
+        let h = CallEngineHarness(supportsHolding: true)
         await liveCall(h)
         await setHeld(h, true)
         h.provider.simulateDeactivate(FakeAudioSession())
@@ -822,7 +822,7 @@ struct CallHoldTests {
     }
 
     @Test func aHeldCallTellsTheAgentAgainAfterEveryReconnect() async throws {
-        let h = CallEngineHarness()
+        let h = CallEngineHarness(supportsHolding: true)
         await liveCall(h)
         await setHeld(h, true)
         h.engine.handle(.disconnected(reason: .networkDropped))
@@ -836,7 +836,7 @@ struct CallHoldTests {
     }
 
     @Test func aResumeWhileDisconnectedReachesTheAgentOnReconnect() async throws {
-        let h = CallEngineHarness()
+        let h = CallEngineHarness(supportsHolding: true)
         await liveCall(h)
         await setHeld(h, true)
         h.engine.handle(.disconnected(reason: .networkDropped))
@@ -856,7 +856,7 @@ struct CallHoldTests {
     /// connecting reaches it at once, and the call showing connected later tells it
     /// nothing twice.
     @Test func aHoldWhileConnectingReachesTheAgentAtOnce() async throws {
-        let h = CallEngineHarness()
+        let h = CallEngineHarness(supportsHolding: true)
         await h.placeCall()
         await h.engine.activate(FakeAudioSession())
 
@@ -885,7 +885,7 @@ struct CallHoldTests {
     /// minimum; a hold then reaches the agent, which is in the room, at once.
     @Test func aHoldDuringTheOutgoingMinimumReachesTheAgentAtOnce() async throws {
         let sleeper = ManualSleeper()
-        let h = CallEngineHarness(
+        let h = CallEngineHarness(supportsHolding: true, 
             minimumOutgoingConnectingDuration: .seconds(3), sleep: { await sleeper.sleep($0) }
         )
         await h.placeCall()
@@ -909,7 +909,7 @@ struct CallHoldTests {
 
     /// Before the join there is nothing to tell the agent over; the join tells it.
     @Test func aHoldBeforeTheJoinReachesTheAgentAtTheJoin() async throws {
-        let h = CallEngineHarness()
+        let h = CallEngineHarness(supportsHolding: true)
         h.target.suspend = true
         let placing = Task { await h.placeCall() }
         await waitUntil { h.target.pendingCount == 1 }
@@ -927,7 +927,7 @@ struct CallHoldTests {
 
     /// An answered ring still connecting: the agent the ring started is told too.
     @Test func aHoldOfAnAnsweredCallStillConnectingReachesTheAgentAtOnce() async throws {
-        let h = CallEngineHarness()
+        let h = CallEngineHarness(supportsHolding: true)
         h.ring(callID: h.callID)
         await h.engine.answer()
         await h.engine.activate(FakeAudioSession())
@@ -945,7 +945,7 @@ struct CallHoldTests {
     }
 
     @Test func aHeldSignalStillQueuedWhenTheCallEndsDoesNotReachTheNextCall() async throws {
-        let h = CallEngineHarness()
+        let h = CallEngineHarness(supportsHolding: true)
         await liveCall(h)
         let first = h.transport
 
@@ -965,7 +965,7 @@ struct CallHoldTests {
     // MARK: - Cues
 
     @Test func holdStopsTheRetryingLoopAndResumeRestartsIt() async throws {
-        let h = CallEngineHarness()
+        let h = CallEngineHarness(supportsHolding: true)
         await liveCall(h)
         h.engine.handle(.reconnecting) // a self-heal: connectionLost, start(retrying)
 
@@ -984,7 +984,7 @@ struct CallHoldTests {
     }
 
     @Test func anOutageThatStartsWhileHeldIsMarkedOnResume() async throws {
-        let h = CallEngineHarness()
+        let h = CallEngineHarness(supportsHolding: true)
         await liveCall(h)
         await setHeld(h, true)
         h.engine.handle(.reconnecting)
@@ -1001,7 +1001,7 @@ struct CallHoldTests {
     }
 
     @Test func aCallThatConnectsWhileHeldIsMarkedConnectedOnce() async throws {
-        let h = CallEngineHarness()
+        let h = CallEngineHarness(supportsHolding: true)
         await h.placeCall()
         await h.engine.activate(FakeAudioSession())
         await setHeld(h, true)
@@ -1015,7 +1015,7 @@ struct CallHoldTests {
     }
 
     @Test func anOutageThatHealsWhileHeldIsNotMarked() async throws {
-        let h = CallEngineHarness()
+        let h = CallEngineHarness(supportsHolding: true)
         await liveCall(h)
         await setHeld(h, true)
         h.engine.handle(.reconnecting)
@@ -1031,7 +1031,7 @@ struct CallHoldTests {
 
     @Test func endingWhileHeldRecordsOnceWithTheHeldTime() async throws {
         let clock = MutableClock()
-        let h = CallEngineHarness(now: { clock.now() })
+        let h = CallEngineHarness(supportsHolding: true, now: { clock.now() })
         await liveCall(h)
         clock.advance(10)
         await setHeld(h, true)
@@ -1048,7 +1048,7 @@ struct CallHoldTests {
     }
 
     @Test func aProviderResetWhileHeldFailsTheCallOnce() async throws {
-        let h = CallEngineHarness()
+        let h = CallEngineHarness(supportsHolding: true)
         await liveCall(h)
         await setHeld(h, true)
 

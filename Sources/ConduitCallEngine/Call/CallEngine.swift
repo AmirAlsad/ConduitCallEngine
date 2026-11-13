@@ -93,7 +93,9 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     /// up without having seen the cue. Updated before the cue is delivered.
     public private(set) var repeatingCue: RepeatingCue?
     /// Whether the call is on hold: iOS held it (typically so the user can take
-    /// or place a phone call) or the host did with `setOnHold(_:)`. The state does
+    /// or place a phone call) or the host did with `setOnHold(_:)`. Always false
+    /// unless the host opted in to the experimental
+    /// `CallEngineConfiguration.supportsHolding`. The state does
     /// not change on hold. While held the mic is closed, media is stopped, the
     /// agent has been sent `CallSignal.held` once the transport has joined (also
     /// while the call shows connecting), no cues are delivered, and a dropped
@@ -2056,7 +2058,8 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     // the hold has ended and none is left.
 
     package func providerDidObserveCallChange(_ call: ObservedCall) {
-        guard let id = activeCallID, call.id != id else { return }
+        // Other calls matter only to a call that can be held.
+        guard configuration.supportsHolding, let id = activeCallID, call.id != id else { return }
         if call.hasEnded, isActivationRecoveryWaitingForOtherCall,
            activationRecoveryAttempts < Self.activationRecoveryAttemptLimit {
             Log.info(.callKit, "A call that kept the engine from asking CallKit again for the audio ended; asking now")
@@ -2424,7 +2427,8 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         isMicWithheld = false
     }
 
-    /// Ask CallKit to hold or resume the call, as the system UI would. CallKit
+    /// EXPERIMENTAL (see `CallEngineConfiguration.supportsHolding`, off by default):
+    /// ask CallKit to hold or resume the call, as the system UI would. CallKit
     /// performs the hold through the engine, which then updates `isOnHold`; on a
     /// device that can land just after this returns. Does nothing without a call
     /// that can be held (connecting, connected or reconnecting), or when

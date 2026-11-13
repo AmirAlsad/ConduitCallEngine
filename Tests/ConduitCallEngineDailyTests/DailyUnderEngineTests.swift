@@ -22,7 +22,7 @@ struct DailyUnderEngineTests {
     /// ready until the resume. The join bound must not fail the call meanwhile.
     @Test(.timeLimit(.minutes(1)))
     func aCallHeldBeforeItsAgentIsReadyConnectsAfterTheResume() async throws {
-        let rig = DailyEngineRig()
+        let rig = DailyEngineRig(supportsHolding: true)
         let id = try await rig.placeActivatedCall()
         #expect(rig.engine.state == .connecting)
         #expect(rig.sleeper.pendingCount == 1) // the join bound
@@ -52,7 +52,7 @@ struct DailyUnderEngineTests {
     /// After the resume the bound applies again, from the resume.
     @Test(.timeLimit(.minutes(1)))
     func aHeldCallWhoseAgentNeverComesFailsOnceResumed() async throws {
-        let rig = DailyEngineRig()
+        let rig = DailyEngineRig(supportsHolding: true)
         let id = try await rig.placeActivatedCall()
         await rig.system.setHeldFromSystem(id, onHold: true)
         rig.sleeper.wakeAll()
@@ -72,8 +72,11 @@ struct DailyUnderEngineTests {
     /// A rig whose target lets a ring join during the ring, rung with `media`; returns
     /// once the device has joined the ring's room. The answered call must not wait
     /// for the outgoing minimum, so every rig here sets one.
-    private func ringJoined(botThere: Bool) async throws -> (DailyEngineRig, UUID, FakePipecatTransport) {
-        let rig = DailyEngineRig(minimumOutgoingConnecting: .seconds(3))
+    private func ringJoined(
+        botThere: Bool,
+        supportsHolding: Bool = false
+    ) async throws -> (DailyEngineRig, UUID, FakePipecatTransport) {
+        let rig = DailyEngineRig(supportsHolding: supportsHolding, minimumOutgoingConnecting: .seconds(3))
         rig.ringPreparation = .media
         rig.refreshTarget()
         let id = rig.ring()
@@ -192,7 +195,7 @@ struct DailyUnderEngineTests {
     /// resume brings it back.
     @Test(.timeLimit(.minutes(1)))
     func aHoldAfterARingJoinSilencesTheAgentUntilTheResume() async throws {
-        let (rig, id, pipecat) = try await ringJoined(botThere: true)
+        let (rig, id, pipecat) = try await ringJoined(botThere: true, supportsHolding: true)
         await rig.system.answerIncomingCall()
         await rig.system.activateAudioSession()
         await rig.system.awaitPendingWork()
@@ -397,7 +400,7 @@ struct DailyUnderEngineTests {
     /// closed its audio on `call-held` stayed closed for the rest of the call.
     @Test(.timeLimit(.minutes(1)))
     func aResumeDailyCouldNotSendReachesTheAgentOnARetry() async throws {
-        let rig = DailyEngineRig()
+        let rig = DailyEngineRig(supportsHolding: true)
         let id = try await rig.placeActivatedCall()
         let pipecat = try #require(rig.pipecat)
         pipecat.botJoins()
@@ -473,7 +476,7 @@ struct DailyUnderEngineTests {
     /// a new attempt at once, on a client that is still in room 2.
     @Test(.timeLimit(.minutes(1)))
     func theResumeAfterAHeldReconnectJoinsTheNextRoom() async throws {
-        let rig = DailyEngineRig()
+        let rig = DailyEngineRig(supportsHolding: true)
         _ = try await firstAttemptJoined(rig)
         let id = try #require(rig.system.startedCallIDs.first)
 

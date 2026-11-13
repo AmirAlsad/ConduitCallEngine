@@ -19,7 +19,8 @@ struct TransportSelfHealTests {
     private let h: CallEngineHarness
 
     init() {
-        h = CallEngineHarness(now: { [clock] in clock.now() })
+        // Holding is on for the one test that holds; nothing else here holds.
+        h = CallEngineHarness(supportsHolding: true, now: { [clock] in clock.now() })
     }
 
     private func selfHealingCall() async {

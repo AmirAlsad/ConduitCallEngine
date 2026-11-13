@@ -27,12 +27,14 @@ struct MinimumConnectingTests {
 
     /// Timers wait on a sleeper the test ends by hand; the clock moves by hand.
     private func harness(
+        supportsHolding: Bool = false,
         minimum: Duration? = nil,
         joinTimeout: Duration? = nil,
         micWithholdTimeout: Duration = .seconds(5)
     ) -> CallEngineHarness {
         let sleeper = sleeper
         return CallEngineHarness(
+            supportsHolding: supportsHolding,
             joinTimeout: joinTimeout,
             minimumOutgoingConnectingDuration: minimum ?? self.minimum,
             micWithholdTimeout: micWithholdTimeout,
@@ -205,7 +207,7 @@ struct MinimumConnectingTests {
     /// loop again, but no minimum: a transport ready during the hold connects at the
     /// resume.
     @Test func anAnsweredCallReadyWhileHeldConnectsAtTheResume() async throws {
-        let h = harness()
+        let h = harness(supportsHolding: true)
         h.ring(callID: h.callID)
         await h.engine.answer()
         await activate(h)
@@ -381,7 +383,7 @@ struct MinimumConnectingTests {
     /// A hold stops the ringback, so the wait stops too; the resume starts the
     /// ringback again and the full minimum with it.
     @Test func aHoldDuringTheWaitRestartsItInFullAtTheResume() async throws {
-        let h = harness(joinTimeout: .seconds(30))
+        let h = harness(supportsHolding: true, joinTimeout: .seconds(30))
         await h.placeCall()
         await activate(h)
         h.engine.handle(.connected)
@@ -413,7 +415,7 @@ struct MinimumConnectingTests {
     }
 
     @Test func aTransportReadyWhileHeldWaitsForTheResumeAndTheMinimum() async throws {
-        let h = harness()
+        let h = harness(supportsHolding: true)
         await h.placeCall()
         await activate(h)
         await setHeld(h, true)
@@ -430,7 +432,7 @@ struct MinimumConnectingTests {
     }
 
     @Test func aZeroMinimumConnectsWhileHeldAsBefore() async throws {
-        let h = harness(minimum: .zero)
+        let h = harness(supportsHolding: true, minimum: .zero)
         await h.placeCall()
         await setHeld(h, true)
 
@@ -496,6 +498,7 @@ struct MinimumConnectingTests {
     private func run(_ order: [WaitEvent]) async -> String? {
         let clock = MutableClock()
         let h = CallEngineHarness(
+            supportsHolding: order.contains(.hold),
             minimumOutgoingConnectingDuration: minimum,
             now: clock.now,
             sleep: { _ in try await Task.sleep(for: .seconds(24 * 60 * 60)) }

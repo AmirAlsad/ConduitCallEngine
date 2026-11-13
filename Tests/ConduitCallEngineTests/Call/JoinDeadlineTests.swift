@@ -18,11 +18,12 @@ struct JoinDeadlineTests {
     private let sleeper = ManualSleeper()
 
     private func harness(
+        supportsHolding: Bool = false,
         joinTimeout: Duration? = .seconds(30),
         policy: ReconnectionPolicy = .default
     ) -> CallEngineHarness {
         let sleeper = sleeper
-        return CallEngineHarness(policy: policy, joinTimeout: joinTimeout, sleep: { await sleeper.sleep($0) })
+        return CallEngineHarness(supportsHolding: supportsHolding, policy: policy, joinTimeout: joinTimeout, sleep: { await sleeper.sleep($0) })
     }
 
     @Test func theDefaultBoundIsThirtySeconds() {
@@ -132,7 +133,7 @@ struct JoinDeadlineTests {
     /// not waiting for it. The bound runs again, in full, from the resume.
     @Test(arguments: Direction.allCases)
     func aHoldWhileWaitingForTheAgentStopsTheBoundUntilTheResume(direction: Direction) async throws {
-        let h = harness()
+        let h = harness(supportsHolding: true)
         await firstConnectWaitingForTheAgent(h, direction)
         let id = try callID(h, direction)
 
@@ -153,7 +154,7 @@ struct JoinDeadlineTests {
     }
 
     @Test func aJoinThatReturnsWhileHeldStartsItsBoundAtTheResume() async throws {
-        let h = harness()
+        let h = harness(supportsHolding: true)
         h.transport.suspendConnect = true
         let place = Task { await h.placeCall() }
         await waitUntil { h.transport.connectCount == 1 }
@@ -306,7 +307,7 @@ struct JoinDeadlineTests {
     }
 
     @Test func aHoldWhileWaitingPausesTheReconnect() async throws {
-        let h = harness()
+        let h = harness(supportsHolding: true)
         await attemptWaitingForTheAgent(h)
 
         #expect(h.engine.providerPerformSetHeld(h.callID, onHold: true))

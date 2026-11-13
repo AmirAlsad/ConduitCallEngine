@@ -432,8 +432,23 @@ struct SimulatedEngineTests {
 
     // MARK: - Hold
 
+    /// An engine over its own system with the experimental hold opted in.
+    private func holdingEngine() -> (CallEngine, SimulatedCallSystem) {
+        let system = SimulatedCallSystem()
+        let engine = CallEngine.simulated(
+            configuration: CallEngineConfiguration(ringTimeout: nil, joinTimeout: nil, supportsHolding: true),
+            system: system,
+            sleep: { _ in }
+        )
+        engine.delegate = host
+        return (engine, system)
+    }
+
     @Test func holdFromTheSystemHoldsAndResumesTheCall() async throws {
-        let callID = try await connectedOutgoingCall()
+        let (engine, system) = holdingEngine()
+        await engine.placeCall(target)
+        #expect(system.deliverTransportEvent(.connected))
+        let callID = try #require(system.startedCallIDs.first)
         await system.activateAudioSession()
         #expect(system.reportedSupportsHolding(callID) == true)
 
@@ -452,7 +467,10 @@ struct SimulatedEngineTests {
     }
 
     @Test func theHostsHoldGoesThroughCallKit() async throws {
-        let callID = try await connectedOutgoingCall()
+        let (engine, system) = holdingEngine()
+        await engine.placeCall(target)
+        #expect(system.deliverTransportEvent(.connected))
+        let callID = try #require(system.startedCallIDs.first)
 
         await engine.setOnHold(true)
 
@@ -460,19 +478,27 @@ struct SimulatedEngineTests {
         #expect(engine.isOnHold)
     }
 
-    @Test func holdingCanBeTurnedOff() async throws {
-        let system = SimulatedCallSystem()
-        let engine = CallEngine.simulated(
-            configuration: CallEngineConfiguration(ringTimeout: nil, joinTimeout: nil, supportsHolding: false),
-            system: system,
-            sleep: { _ in }
-        )
-        await engine.placeCall(target)
-        let callID = try #require(system.startedCallIDs.first)
-
+    /// Holding off, the default: iOS ends the call for a phone call the user
+    /// accepts, and the host sees an ordinary end and one record.
+    @Test func withHoldingOffAPhoneCallEndsTheCall() async throws {
+        let callID = try await connectedOutgoingCall()
+        await system.activateAudioSession()
         #expect(system.reportedSupportsHolding(callID) == false)
+
+        let phoneCall = system.startOtherCall()
         #expect(!(await system.setHeldFromSystem(callID, onHold: true)))
+        system.beginAudioInterruption()
+        system.endCallFromSystem(callID)
+        system.deactivateAudioSession()
+        await system.awaitPendingWork()
+        await system.endOtherCall(phoneCall)
+
+        #expect(engine.state == .ended(.completed))
         #expect(!engine.isOnHold)
+        #expect(system.holdRequests.isEmpty)
+        #expect(transport.disconnectCount == 1)
+        #expect(transport.sentSignals == [.connected])
+        #expect(host.records.map(\.outcome) == [.completed])
     }
 
     // MARK: - Screenshot projection

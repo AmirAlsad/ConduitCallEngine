@@ -17,8 +17,16 @@ import ConduitCallEngineTesting
 
 @MainActor
 struct DailyRouteUnderEngineTests {
-    private func earpieceRig(defaultsToSpeaker: Bool = false, minimumOutgoingConnecting: Duration = .zero) -> DailyEngineRig {
-        let rig = DailyEngineRig(minimumOutgoingConnecting: minimumOutgoingConnecting, defaultsToSpeaker: defaultsToSpeaker)
+    private func earpieceRig(
+        supportsHolding: Bool = false,
+        defaultsToSpeaker: Bool = false,
+        minimumOutgoingConnecting: Duration = .zero
+    ) -> DailyEngineRig {
+        let rig = DailyEngineRig(
+            supportsHolding: supportsHolding,
+            minimumOutgoingConnecting: minimumOutgoingConnecting,
+            defaultsToSpeaker: defaultsToSpeaker
+        )
         rig.outputPort = .builtInReceiver
         rig.mics = ["earpiece", "speakerphone"]
         return rig
@@ -113,7 +121,7 @@ struct DailyRouteUnderEngineTests {
 
     @Test(.timeLimit(.minutes(1)))
     func aHoldAndResumeChangeNoRoute() async throws {
-        let rig = earpieceRig()
+        let rig = earpieceRig(supportsHolding: true)
         let id = try await rig.placeActivatedCall()
         let pipecat = try #require(rig.pipecat)
         await connect(rig, pipecat)

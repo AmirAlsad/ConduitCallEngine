@@ -21,8 +21,8 @@ import ConduitCallEngineTesting
 struct MicRuleTests {
 
     /// Placed, connected and activated: the mic is live.
-    private func liveCall() async -> CallEngineHarness {
-        let h = CallEngineHarness()
+    private func liveCall(supportsHolding: Bool = false) async -> CallEngineHarness {
+        let h = CallEngineHarness(supportsHolding: supportsHolding)
         await h.placeCall()
         h.engine.handle(.connected)
         await h.engine.activate(FakeAudioSession())
@@ -73,7 +73,7 @@ struct MicRuleTests {
     }
 
     @Test func anActivationWhileHeldEndsTheInterruptionAtTheResume() async throws {
-        let h = await liveCall()
+        let h = await liveCall(supportsHolding: true)
         h.interruption.simulateBegan()
         h.provider.simulateSetHeld(h.callID, onHold: true)
         h.provider.simulateDeactivate(FakeAudioSession())
@@ -384,7 +384,7 @@ enum MicRuleScenario {
     static func run(_ order: [MicEvent], shouldResume: Bool, unmuted: Bool = false) async -> String? {
         // A sleep that lasts until the call's end cancels it, so the withhold's
         // bound never runs out by itself.
-        let h = CallEngineHarness(sleep: { _ in try await Task.sleep(for: .seconds(24 * 60 * 60)) })
+        let h = CallEngineHarness(supportsHolding: order.contains(.hold), sleep: { _ in try await Task.sleep(for: .seconds(24 * 60 * 60)) })
         await h.placeCall()
         if !order.contains(.connect) { h.engine.handle(.connected) }
         await h.engine.setMuted(!unmuted)

@@ -19,8 +19,8 @@ import ConduitCallEngineTesting
 struct LiveKitAudioStartFailureTests {
 
     /// A connected, activated call and its call id.
-    private func connectedCall() async throws -> (LiveKitEngineRig, UUID) {
-        let rig = LiveKitEngineRig()
+    private func connectedCall(supportsHolding: Bool = false) async throws -> (LiveKitEngineRig, UUID) {
+        let rig = LiveKitEngineRig(supportsHolding: supportsHolding)
         await rig.engine.placeCall(rig.target)
         await waitUntil { rig.engine.state.isConnected }
         await rig.system.activateAudioSession()
@@ -62,7 +62,7 @@ struct LiveKitAudioStartFailureTests {
     /// waits until it runs.
     @Test(.timeLimit(.minutes(1)))
     func aRefusedStartIsAttachedAgainBeforeTheAgentHearsOfTheResume() async throws {
-        let (rig, id) = try await connectedCall()
+        let (rig, id) = try await connectedCall(supportsHolding: true)
         await rig.system.setHeldFromSystem(id, onHold: true)
         rig.system.deactivateAudioSession()
         await rig.system.awaitPendingWork()
@@ -90,7 +90,7 @@ struct LiveKitAudioStartFailureTests {
     /// The engine attaches again a bounded number of times, then tells the agent.
     @Test(.timeLimit(.minutes(1)))
     func theAgentIsToldOnceTheAttemptsAreSpent() async throws {
-        let (rig, id) = try await connectedCall()
+        let (rig, id) = try await connectedCall(supportsHolding: true)
         await rig.system.setHeldFromSystem(id, onHold: true)
         rig.system.deactivateAudioSession()
         await rig.system.awaitPendingWork()
@@ -117,7 +117,7 @@ struct LiveKitAudioStartFailureTests {
     /// A hold while the engine waits to attach again ends the attempts.
     @Test(.timeLimit(.minutes(1)))
     func aHoldDuringTheWaitStopsTheAttempts() async throws {
-        let (rig, id) = try await connectedCall()
+        let (rig, id) = try await connectedCall(supportsHolding: true)
         await rig.system.setHeldFromSystem(id, onHold: true)
         rig.system.deactivateAudioSession()
         await rig.system.awaitPendingWork()

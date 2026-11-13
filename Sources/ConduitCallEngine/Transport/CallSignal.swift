@@ -43,6 +43,7 @@ public enum CallSignal: String, CaseIterable, Sendable {
     /// follows the attach and mic commands issued before it, so the mic the host
     /// released is open by then.
     case connected = "call-connected"
+    /// Sent only with the experimental `CallEngineConfiguration.supportsHolding` on.
     /// The user's side put the call on hold (for example to take a phone call).
     /// The user cannot hear the agent and the mic is closed until `resumed`; the
     /// agent should stop speaking and wait, greet no one (a fallback greeting
@@ -51,6 +52,7 @@ public enum CallSignal: String, CaseIterable, Sendable {
     /// while the call still shows connecting, so an agent can get it before
     /// `connected`; a hold before the join is sent at the join.
     case held = "call-held"
+    /// Sent only with the experimental `CallEngineConfiguration.supportsHolding` on.
     /// The call is back from hold: the user can hear and speak to the agent again.
     /// Sent once the call is resumed and CallKit has activated its audio, which can
     /// come a moment after the resume, or seconds later when CallKit has to be

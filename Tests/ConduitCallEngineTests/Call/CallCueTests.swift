@@ -93,7 +93,7 @@ struct CallCueTests {
     }
 
     @Test func aCallHeldBeforeCallKitActivatedIsMarkedConnectedOnceResumedAndActive() async throws {
-        let h = CallEngineHarness()
+        let h = CallEngineHarness(supportsHolding: true)
         await h.placeCall()
         h.engine.handle(.connected)
         #expect(h.engine.providerPerformSetHeld(h.callID, onHold: true))

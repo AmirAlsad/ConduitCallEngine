@@ -37,7 +37,7 @@ struct AudioStartFailureTests {
 
     @Test(.timeLimit(.minutes(1))) func aStartThatFailsIsAttachedAgainBeforeTheResumeIsSent() async throws {
         let sleeper = ManualSleeper()
-        let h = CallEngineHarness(sleep: { await sleeper.sleep($0) })
+        let h = CallEngineHarness(supportsHolding: true, sleep: { await sleeper.sleep($0) })
         await liveCall(h)
         await heldWithTheAudioHandedBack(h)
         h.transport.failingAttaches = 1
@@ -56,7 +56,7 @@ struct AudioStartFailureTests {
 
     @Test(.timeLimit(.minutes(1))) func theAgentIsToldOnceTheAttemptsAreSpent() async throws {
         let sleeper = ManualSleeper()
-        let h = CallEngineHarness(sleep: { await sleeper.sleep($0) })
+        let h = CallEngineHarness(supportsHolding: true, sleep: { await sleeper.sleep($0) })
         await liveCall(h)
         await heldWithTheAudioHandedBack(h)
         h.transport.failingAttaches = 100
@@ -77,7 +77,7 @@ struct AudioStartFailureTests {
 
     @Test(.timeLimit(.minutes(1))) func aHoldDuringTheWaitEndsTheAttempts() async throws {
         let sleeper = ManualSleeper()
-        let h = CallEngineHarness(sleep: { await sleeper.sleep($0) })
+        let h = CallEngineHarness(supportsHolding: true, sleep: { await sleeper.sleep($0) })
         await liveCall(h)
         await heldWithTheAudioHandedBack(h)
         h.transport.failingAttaches = 100
@@ -114,7 +114,7 @@ struct AudioStartFailureTests {
 
     @Test(.timeLimit(.minutes(1))) func anAttachThatStartsAsksForNoRetry() async throws {
         let sleeper = ManualSleeper()
-        let h = CallEngineHarness(sleep: { await sleeper.sleep($0) })
+        let h = CallEngineHarness(supportsHolding: true, sleep: { await sleeper.sleep($0) })
         await liveCall(h)
         await heldWithTheAudioHandedBack(h)
 

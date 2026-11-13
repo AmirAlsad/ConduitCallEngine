@@ -17,7 +17,7 @@ package final class FakeCallProvider: CallProviding {
     package init() {}
 
     package weak var delegate: CallProviderDelegate?
-    package var supportsHolding = true
+    package var supportsHolding = false
 
     package private(set) var startedCalls: [UUID] = []
     package private(set) var startedHandles: [CallHandle] = []

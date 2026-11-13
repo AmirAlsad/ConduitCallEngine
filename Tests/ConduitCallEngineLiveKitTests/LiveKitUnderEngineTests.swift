@@ -201,7 +201,7 @@ struct LiveKitUnderEngineTests {
     /// down; the newer connect must supersede the older one instead.
     @Test(.timeLimit(.minutes(1)))
     func aQuickHoldAndResumeDuringAJoinEndsInOneJoin() async throws {
-        let rig = LiveKitEngineRig()
+        let rig = LiveKitEngineRig(supportsHolding: true)
         let (room, id) = try await attemptJoining(rig)
 
         await rig.system.setHeldFromSystem(id, onHold: true)

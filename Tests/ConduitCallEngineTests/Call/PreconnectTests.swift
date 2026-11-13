@@ -25,11 +25,12 @@ struct PreconnectTests {
         allows tier: RingPreparation = .media,
         capable: Bool = true,
         joinTimeout: Duration? = nil,
+        supportsHolding: Bool = false,
         sleep: ((Duration) async -> Void)? = nil
     ) -> CallEngineHarness {
         let h = sleep.map { sleep in
-            CallEngineHarness(joinTimeout: joinTimeout, defaultsToSpeaker: true, sleep: { await sleep($0) })
-        } ?? CallEngineHarness(joinTimeout: joinTimeout, defaultsToSpeaker: true)
+            CallEngineHarness(supportsHolding: supportsHolding, joinTimeout: joinTimeout, defaultsToSpeaker: true, sleep: { await sleep($0) })
+        } ?? CallEngineHarness(supportsHolding: supportsHolding, joinTimeout: joinTimeout, defaultsToSpeaker: true)
         h.allowRingPreparation(tier)
         h.transport.canConnectWhileRinging = capable
         return h
@@ -463,7 +464,7 @@ struct PreconnectTests {
     }
 
     @Test func aHeldCallIsToldOfTheAnswerOnlyOnTheResume() async throws {
-        let h = harness()
+        let h = harness(supportsHolding: true)
         let callID = UUID()
         await readyRing(h, callID: callID)
         await h.engine.answer()
