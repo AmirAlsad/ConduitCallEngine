@@ -6,7 +6,7 @@ struct ExampleApp: App {
 
     var body: some Scene {
         WindowGroup {
-            CallView(engine: appDelegate.engine)
+            CallView(engine: appDelegate.engine, placeCall: appDelegate.placeCall)
         }
     }
 }

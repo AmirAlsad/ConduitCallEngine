@@ -3,10 +3,11 @@ import SwiftUI
 
 struct CallView: View {
     let engine: CallEngine
+    let placeCall: @MainActor () async -> Void
 
     var body: some View {
         VStack(spacing: 24) {
-            Text(ExampleAgent.target.displayName)
+            Text(ExampleAgent.displayName)
                 .font(.title)
             Text(statusText)
                 .font(.headline)
@@ -14,7 +15,7 @@ struct CallView: View {
 
             HStack(spacing: 16) {
                 Button("Call") {
-                    Task { await engine.placeCall(ExampleAgent.target) }
+                    Task { await placeCall() }
                 }
                 .disabled(isCallInProgress)
 
