@@ -60,6 +60,12 @@
 //  ready it takes the session over with a new client. See
 //  `DailyConnectionGate.planConnect`.
 //
+//  Host messages go out as signals do, through Daily's app-message send, with the
+//  payload converted to Pipecat's `Value`. What the agent sends the host arrives
+//  through Pipecat's delegate: a server message (as its `Value`, encoded back to
+//  JSON), its output text (`onBotOutput`) and the user's transcript
+//  (`onUserTranscript`); the deprecated `onBotTranscript` is not used.
+//
 //  Teardown: `disconnect()` sends the end-call signal, leaves, then releases the
 //  Pipecat client, whose Daily transport and call client otherwise outlive the call.
 //  A released client cannot connect again, so a `connect` after `disconnect()`
@@ -290,25 +296,55 @@ public final class PipecatDailyTransport: CallTransport {
     /// Daily could not send it.
     @discardableResult
     public func send(_ signal: CallSignal) async -> CallSignalDelivery {
+        await sendAppMessage(.clientMessage(msgType: signal.rawValue), named: signal.rawValue, logsSent: true)
+    }
+
+    /// Delivers a host message as an RTVI client message, with its type as `t` and its
+    /// payload as `d` (`null` without one), the way `send(_:)` delivers a signal and
+    /// with the same results. A payload's numbers travel as Pipecat's `Value`, as
+    /// doubles. `.failed` for a reserved or empty type.
+    @discardableResult
+    public func send(_ message: CallMessage) async -> CallSignalDelivery {
+        guard !message.isRefused else {
+            Log.warning(.transport, "Daily client message \"\(message.type)\" refused: an empty type, or one the engine uses itself")
+            return .failed
+        }
+        let data: Value?
+        do {
+            data = try message.data.map(PipecatValueConversion.value(fromJSON:)) ?? nil
+        } catch {
+            Log.warning(.transport, "Daily client message \(message.type) dropped: its payload is not JSON Pipecat can carry")
+            return .failed
+        }
+        return await sendAppMessage(.clientMessage(msgType: message.type, data: data), named: message.type, logsSent: false)
+    }
+
+    /// Sends `message` (named `name` in the log) on Daily's call client once the call
+    /// is joined; see `send(_:)`.
+    private func sendAppMessage(_ message: RTVIMessageOutbound, named name: String, logsSent: Bool) async -> CallSignalDelivery {
         guard let session else {
-            Log.info(.transport, "Daily client message \(signal.rawValue) dropped: no session")
+            Log.info(.transport, "Daily client message \(name) dropped: no session")
             return .failed
         }
         let state = session.client.state
         guard Self.statesJoined.contains(state) else {
-            Log.info(.transport, "Daily client message \(signal.rawValue) dropped: the call is not joined (\(state))")
+            Log.info(.transport, "Daily client message \(name) dropped: the call is not joined (\(state))")
             return .failed
         }
         guard let callControl = session.callControl else {
-            return Self.sendClientMessage(signal.rawValue, on: session.client) ? .sent : .failed
+            return Self.sendClientMessage(message, named: name, on: session.client) ? .sent : .failed
         }
         do {
-            let json = try JSONEncoder().encode(RTVIMessageOutbound.clientMessage(msgType: signal.rawValue))
+            let json = try JSONEncoder().encode(message)
             try await callControl.sendAppMessage(json)
-            Log.info(.transport, "Daily client message \(signal.rawValue) sent")
+            if logsSent {
+                Log.info(.transport, "Daily client message \(name) sent")
+            } else {
+                Log.debug(.transport, "Daily client message \(name) sent")
+            }
             return .sent
         } catch {
-            Log.warning(.transport, "Daily client message \(signal.rawValue) failed: \(error)")
+            Log.warning(.transport, "Daily client message \(name) failed: \(error)")
             return .failed
         }
     }
@@ -322,17 +358,21 @@ public final class PipecatDailyTransport: CallTransport {
     /// Delivery is fire and forget; Daily reports no result to it.
     @discardableResult
     private static func sendClientMessage(_ type: String, on client: PipecatClient) -> Bool {
+        sendClientMessage(.clientMessage(msgType: type), named: type, on: client)
+    }
+
+    private static func sendClientMessage(_ message: RTVIMessageOutbound, named name: String, on client: PipecatClient) -> Bool {
         let state = client.state
         guard statesJoined.contains(state) else {
-            Log.info(.transport, "Daily client message \(type) dropped: the call is not joined (\(state))")
+            Log.info(.transport, "Daily client message \(name) dropped: the call is not joined (\(state))")
             return false
         }
         do {
-            try client.transport.sendMessage(message: .clientMessage(msgType: type))
-            Log.info(.transport, "Daily client message \(type) sent")
+            try client.transport.sendMessage(message: message)
+            Log.info(.transport, "Daily client message \(name) sent")
             return true
         } catch {
-            Log.warning(.transport, "Daily client message \(type) failed: \(error)")
+            Log.warning(.transport, "Daily client message \(name) failed: \(error)")
             return false
         }
     }
@@ -653,5 +693,71 @@ private final class PipecatEventMapper: PipecatClientDelegate {
 
     nonisolated func onError(message: RTVIMessageInbound) {
         continuation.yield(.error(.underlying(CredentialRedaction.redact(String(describing: message)))))
+    }
+
+    // MARK: - What the agent sends the host
+
+    /// Pipecat delivers a server message's data as its `Value` (and the result of an
+    /// append-to-context request here too, which this package never sends).
+    nonisolated func onServerMessage(data: Any) {
+        guard let json = PipecatValueConversion.json(fromServerMessage: data) else {
+            Log.warning(.transport, "Daily server message dropped: its data could not be encoded as JSON")
+            return
+        }
+        continuation.yield(.serverMessage(json))
+    }
+
+    /// Read through the message's JSON rather than `BotOutputData`'s properties, so an
+    /// agent on RTVI 1.x (`spoken` instead of `will_be_spoken`) is understood without
+    /// touching Pipecat's deprecated property.
+    nonisolated func onBotOutput(data: BotOutputData) {
+        guard let json = try? JSONEncoder().encode(data), let output = try? BotOutput(rtviData: json) else {
+            Log.warning(.transport, "Daily bot output dropped: it could not be read")
+            return
+        }
+        continuation.yield(.botOutput(output))
+    }
+
+    nonisolated func onUserTranscript(data: Transcript) {
+        continuation.yield(.userTranscript(UserTranscript(text: data.text, isFinal: data.final ?? false)))
+    }
+}
+
+/// Converts between the JSON `Data` the engine speaks and Pipecat's `Value`, which
+/// has no null: a null inside an object or an array is a missing `Value?`.
+enum PipecatValueConversion {
+    struct NotJSON: Error {}
+
+    /// The `Value` for UTF-8 JSON; nil for JSON `null`. Throws for data that is not JSON.
+    static func value(fromJSON data: Data) throws -> Value? {
+        let object = try JSONSerialization.jsonObject(with: data, options: .fragmentsAllowed)
+        return try value(from: object)
+    }
+
+    private static func value(from object: Any) throws -> Value? {
+        switch object {
+        case is NSNull:
+            return nil
+        case let number as NSNumber:
+            // JSONSerialization gives booleans as NSNumber too; only CFBoolean is one.
+            if CFGetTypeID(number) == CFBooleanGetTypeID() { return .boolean(number.boolValue) }
+            return .number(number.doubleValue)
+        case let string as String:
+            return .string(string)
+        case let array as [Any]:
+            return .array(try array.map { try value(from: $0) })
+        case let dictionary as [String: Any]:
+            return .object(try dictionary.mapValues { try value(from: $0) })
+        default:
+            throw NotJSON()
+        }
+    }
+
+    /// The JSON for what Pipecat passes `onServerMessage(data:)`: a `Value`, or, should
+    /// it ever pass one, a JSON-serializable Foundation object. nil when it is neither.
+    static func json(fromServerMessage data: Any) -> Data? {
+        if let value = data as? Value { return try? JSONEncoder().encode(value) }
+        guard JSONSerialization.isValidJSONObject(data) else { return nil }
+        return try? JSONSerialization.data(withJSONObject: data)
     }
 }

@@ -5,9 +5,10 @@
 //  The adapter over a real `PipecatClient` whose Daily transport is replaced by a
 //  fake, because Daily's WebRTC audio unit aborts in the simulator. Covers teardown
 //  (the end-call signal goes out before the leave, and the client is released after
-//  it, without touching a client a later connect created) and the RTVI client
-//  messages that carry call-control signals. Audio and the real Daily call client
-//  are verified on device.
+//  it, without touching a client a later connect created), the RTVI client
+//  messages that carry call-control signals and host messages, and the agent's
+//  server messages, output text and user transcripts reaching the engine. Audio
+//  and the real Daily call client are verified on device.
 //
 
 import Foundation
@@ -409,6 +410,177 @@ struct PipecatDailyTransportTests {
         await transport.send(.held)
 
         #expect(fake.calls == ["connect", "send client-message", "send client-message"])
+    }
+
+    // MARK: - Host messages
+
+    @Test func aHostMessageWithoutDataIsSentAsAnRTVIClientMessage() async throws {
+        let transport = makeTransport()
+        try await transport.connect(connection)
+        let fake = try #require(clients.made.first)
+
+        #expect(await transport.send(CallMessage(type: "ping")) == .sent)
+
+        let message = try lastMessage(fake)
+        #expect(message["label"] as? String == "rtvi-ai")
+        #expect(message["type"] as? String == "client-message")
+        #expect((message["id"] as? String)?.count == 8)
+        let data = try #require(message["data"] as? [String: Any])
+        #expect(data["t"] as? String == "ping")
+        #expect(data["d"] is NSNull)
+    }
+
+    @Test func aHostMessageCarriesItsDataAsD() async throws {
+        let transport = makeTransport()
+        try await transport.connect(connection)
+        let fake = try #require(clients.made.first)
+        let json = #"{"screen":"home","count":3,"ratio":0.5,"on":true,"off":false,"none":null,"list":[1,"two",null,{"x":false}]}"#
+        let sent = try #require(CallMessage(type: "set-context", data: Data(json.utf8)))
+
+        #expect(await transport.send(sent) == .sent)
+
+        let data = try #require(try lastMessage(fake)["data"] as? [String: Any])
+        #expect(data["t"] as? String == "set-context")
+        let d = try #require(data["d"] as? NSDictionary)
+        let expected = try #require(try JSONSerialization.jsonObject(with: Data(json.utf8)) as? NSDictionary)
+        #expect(d == expected)
+        #expect((d["on"] as? NSNumber).map { CFGetTypeID($0) == CFBooleanGetTypeID() } == true)
+        #expect((d["count"] as? NSNumber).map { CFGetTypeID($0) == CFBooleanGetTypeID() } == false)
+    }
+
+    @Test(arguments: [#""text""#, "42", "true", "[1,2]", "null"])
+    func aHostMessageCarriesAnyJSONValueAsD(_ json: String) async throws {
+        let transport = makeTransport()
+        try await transport.connect(connection)
+        let fake = try #require(clients.made.first)
+
+        #expect(await transport.send(try #require(CallMessage(type: "value", data: Data(json.utf8)))) == .sent)
+
+        let data = try #require(try lastMessage(fake)["data"] as? [String: Any])
+        let d = try #require(data["d"])
+        let expected = try JSONSerialization.jsonObject(with: Data(json.utf8), options: .fragmentsAllowed)
+        #expect((d as? NSObject) == (expected as? NSObject))
+    }
+
+    @Test func aHostMessageReportsWhetherDailySentIt() async throws {
+        clientsJoinOnConnect(false)
+        let transport = makeTransport()
+        try await transport.connect(connection)
+        let fake = try #require(clients.made.first)
+        let control = try #require(clients.controls.first)
+
+        #expect(await transport.send(CallMessage(type: "ping")) == .failed) // not joined
+        fake.completeJoin()
+        #expect(await transport.send(CallMessage(type: "ping")) == .sent)
+        control.appMessageError = FakeDailyCallControl.Refused()
+        #expect(await transport.send(CallMessage(type: "ping")) == .failed)
+        await transport.disconnect()
+        #expect(await transport.send(CallMessage(type: "ping")) == .failed)
+    }
+
+    @Test(arguments: Array(CallMessage.reservedTypes) + [""])
+    func aHostMessageWithAReservedTypeIsNotSent(_ type: String) async throws {
+        let transport = makeTransport()
+        try await transport.connect(connection)
+        let fake = try #require(clients.made.first)
+
+        #expect(await transport.send(CallMessage(type: type)) == .failed)
+        #expect(fake.calls == ["connect"])
+    }
+
+    // MARK: - What the agent sends the host
+
+    /// Hands the client what Daily delivers as an app message from the bot.
+    private func receive(_ type: String, data: String, on fake: FakePipecatTransport) {
+        fake.onMessage?(RTVIMessageInbound(type: type, data: data))
+    }
+
+    private func agentEvents(_ log: EventLog) -> [TransportEvent] {
+        log.events.filter {
+            switch $0 {
+            case .serverMessage, .botOutput, .userTranscript: true
+            default: false
+            }
+        }
+    }
+
+    @Test func aServerMessageReachesTheEngineAsJSON() async throws {
+        let transport = makeTransport()
+        let log = record(transport)
+        try await transport.connect(connection)
+        let fake = try #require(clients.made.first)
+        fake.becomeReady()
+
+        receive("server-message", data: #"{"kind":"note","items":[1,"two"],"ok":true}"#, on: fake)
+        await drain()
+
+        let events = agentEvents(log)
+        #expect(events.count == 1)
+        guard case .serverMessage(let json) = events.first else {
+            Issue.record("expected a server message, got \(events)")
+            return
+        }
+        let object = try #require(try JSONSerialization.jsonObject(with: json) as? NSDictionary)
+        #expect(object == ["kind": "note", "items": [1, "two"], "ok": true] as NSDictionary)
+    }
+
+    @Test func theBotsOutputReachesTheEngine() async throws {
+        let transport = makeTransport()
+        let log = record(transport)
+        try await transport.connect(connection)
+        let fake = try #require(clients.made.first)
+        fake.becomeReady()
+
+        receive("bot-output", data: """
+            {"text":"Hello there.","aggregated_by":"sentence","will_be_spoken":true,"spoken_status":"in-progress",\
+            "spoken_progress":{"accumulated_text":"Hello","remaining_text":" there."},"segment_id":4}
+            """, on: fake)
+        receive("bot-output", data: #"{"text":"Hi","aggregated_by":"word","spoken":false}"#, on: fake)
+        await drain()
+
+        #expect(agentEvents(log) == [
+            .botOutput(BotOutput(
+                text: "Hello there.", isSpoken: true, aggregatedBy: "sentence", spokenStatus: "in-progress",
+                spokenProgress: BotOutput.SpokenProgress(accumulatedText: "Hello", remainingText: " there."),
+                segmentID: 4
+            )),
+            .botOutput(BotOutput(text: "Hi", isSpoken: false, aggregatedBy: "word")),
+        ])
+    }
+
+    @Test func theUsersTranscriptReachesTheEngine() async throws {
+        let transport = makeTransport()
+        let log = record(transport)
+        try await transport.connect(connection)
+        let fake = try #require(clients.made.first)
+        fake.becomeReady()
+
+        receive("user-transcription", data: #"{"text":"I want","final":false,"user_id":"u","timestamp":"t"}"#, on: fake)
+        receive("user-transcription", data: #"{"text":"I want to stretch","final":true}"#, on: fake)
+        receive("user-transcription", data: #"{"text":"no flag"}"#, on: fake)
+        await drain()
+
+        #expect(agentEvents(log) == [
+            .userTranscript(UserTranscript(text: "I want", isFinal: false)),
+            .userTranscript(UserTranscript(text: "I want to stretch", isFinal: true)),
+            .userTranscript(UserTranscript(text: "no flag", isFinal: false)),
+        ])
+    }
+
+    /// The deprecated bot-transcription, and every other RTVI message, is not the host's.
+    @Test func otherAgentMessagesDoNotReachTheEngine() async throws {
+        let transport = makeTransport()
+        let log = record(transport)
+        try await transport.connect(connection)
+        let fake = try #require(clients.made.first)
+        fake.becomeReady()
+
+        receive("bot-transcription", data: #"{"text":"Hello"}"#, on: fake)
+        receive("bot-llm-text", data: #"{"text":"Hello"}"#, on: fake)
+        receive("metrics", data: #"{}"#, on: fake)
+        await drain()
+
+        #expect(agentEvents(log).isEmpty)
     }
 
     // MARK: - Being held
