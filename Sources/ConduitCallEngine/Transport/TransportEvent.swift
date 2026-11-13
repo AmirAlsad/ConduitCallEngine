@@ -14,7 +14,7 @@
 import Foundation
 
 /// What a transport reports through `CallTransport.events`. The engine's reaction to
-/// each is in the Integration Guide, section 10.
+/// each is in the Integration Guide, section 12.
 ///
 /// Open: later versions may add cases. End a `switch` over it with `@unknown default`,
 /// which keeps it compiling, with a warning that names the new case, when one is added.

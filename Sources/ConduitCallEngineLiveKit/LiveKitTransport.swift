@@ -39,7 +39,7 @@ import LiveKit
 /// participant is present. Supports joining while ringing. Main-actor isolated;
 /// create one per call, on a device only (LiveKit's WebRTC audio aborts in the
 /// simulator). Turns off LiveKit's automatic `AVAudioSession` configuration for the
-/// whole process. The Integration Guide, section 11, has what the server side must do.
+/// whole process. The Integration Guide, section 13, has what the server side must do.
 @MainActor
 public final class LiveKitTransport: CallTransport {
     public nonisolated let events: AsyncStream<TransportEvent>

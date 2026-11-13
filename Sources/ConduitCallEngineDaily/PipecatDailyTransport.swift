@@ -78,7 +78,7 @@ import PipecatClientIOSDaily
 /// reports ready, or, for a join made while the call rings, once the agent is in the
 /// room. Supports joining while ringing. Main-actor isolated; create one per call, on
 /// a device only (Daily's WebRTC audio aborts in the simulator). The Integration
-/// Guide, section 11, has what the server side must do.
+/// Guide, section 13, has what the server side must do.
 @MainActor
 public final class PipecatDailyTransport: CallTransport {
     public nonisolated let events: AsyncStream<TransportEvent>

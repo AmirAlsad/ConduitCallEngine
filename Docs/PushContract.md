@@ -107,7 +107,8 @@ CallKit shows `display_name` as the caller. Without it, the lock screen first sh
 Putting `room_url` and `token` in the push lets the device join without a round trip to your backend after answering. Two cautions:
 
 - The push sits in APNs and on the lock screen for as long as the phone rings, so use a short-lived token scoped to one room.
-- How the app reconnects after a drop is up to its `connect` code. A host that returns the push's credentials for every attempt, as the package's quick start does, reconnects with the same token, so it must stay valid for the length of the call.
+- How the app reconnects after a drop is up to its `connect` code. A host that returns the push's credentials for every attempt, as the package's quick start does, reconnects with the same `room_url` and token, so both must stay valid for the whole call, reconnects included. A token that expires after five minutes ends the call at its first reconnect after five minutes.
+- A reconnect is a new credential request, or a new join with the same credentials. If your server answers a request with a new room and a new agent, the user gets a fresh agent session, which does not know the conversation so far. To let the call carry on, return the room the call was in while its agent is still there; the request carries the ring's `call_id`.
 
 ## Cancelling a ring
 
@@ -134,7 +135,7 @@ Send a cancel only to devices that list `cancel` among their capabilities ([Devi
 
 The engine remembers each cancelled `call_id` for 10 minutes (the most recent 32), so if APNs delivers the ring after its cancel, or delivers it again, that ring is reported and ended at once, with no missed call and no receipt.
 
-A cancel that arrives after the user answered never ends the call; end a call in progress through your agent instead (Integration Guide, [section 11](IntegrationGuide.md#11-what-the-server-side-must-do)). Apple's guidance is not to cancel through pushes at all but over a connection the app already has; when your ring has not reached the device yet or you are unsure, prefer letting `ring_timeout` end it.
+A cancel that arrives after the user answered never ends the call; end a call in progress through your agent instead (Integration Guide, [section 13](IntegrationGuide.md#13-what-the-server-side-must-do)). Apple's guidance is not to cancel through pushes at all but over a connection the app already has; when your ring has not reached the device yet or you are unsure, prefer letting `ring_timeout` end it.
 
 ## Pre-connect
 
@@ -171,7 +172,7 @@ With `"media"` the device can be in the room, and your agent can hear its partic
 
 1. **Produce no audio until `call-connected` arrives.** Do not greet when the device joins, or on the client-ready event: the user has not answered yet. Start the greeting when the message arrives.
 2. **Treat `end-call` as for any call:** end at once. Declining, a ring timeout and a cancel all send it while the device's connection is up.
-3. **End by itself if nothing comes.** If no `call-connected` arrives within the ring's timeout plus 15 seconds of the agent's start, end the session: the ring is over and the device may have no connection left to tell you. Send `ring_timeout` with every `preconnect` ring, so the agent knows that timeout ([How long a ring lasts](#how-long-a-ring-lasts)).
+3. **End by itself if the ring is never answered.** If, within the ring's timeout plus 15 seconds of the agent's start, neither `call-connected` nor an `answered` receipt has arrived, end the session: the ring is over and the device may have no connection left to tell you. Once the user has answered (an `answered` receipt), this bound no longer applies; the fallback in point 4 does. Send `ring_timeout` with every `preconnect` ring, so the agent knows that timeout ([How long a ring lasts](#how-long-a-ring-lasts)).
 4. **Use the receipts as a fallback, not as the signal** (inline rings need `status_url` for this). The engine sends `answered` the moment the user answers, before iOS has activated the call's audio and often before the device has (re)joined, so it always arrives before `call-connected`; a greeting released on it plays into audio that is not up yet. Wait for `call-connected`, and only if it has not come within a grace period (5 seconds or more; 10 is safer, see the Integration Guide's fallback) after both the `answered` receipt and the device being in the room, whichever is later, release the greeting then: a `call-connected` lost on the way. `declined`, `unanswered`, `canceled`, `busy` and `suppressed_by_focus` mean end the agent at once.
 5. **Treat the user's first audio as a hint only.** The device never opens its microphone before the answer, so audio from the user's side also means the user answered, but it can be absent for a while (a muted user, push-to-talk).
 
