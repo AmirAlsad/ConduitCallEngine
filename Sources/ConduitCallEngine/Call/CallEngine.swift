@@ -112,12 +112,6 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     /// it before `startPushRegistration()`.
     @ObservationIgnored public weak var delegate: CallEngineDelegate?
 
-    /// EXPERIMENTAL, not supported API: what the engine does to the audio session
-    /// when CallKit hands back the audio of a call whose media was detached during an
-    /// audio interruption, read each time. Nothing (`.off`) by default.
-    @_spi(InterruptionRecoveryExperiment)
-    @ObservationIgnored public var sessionInterruptionRecovery: @MainActor () -> SessionInterruptionRecovery = { .off }
-
     private let configuration: CallEngineConfiguration
     private let callProvider: CallProviding
     private let interruptionObserver: AudioInterruptionObserving
@@ -159,8 +153,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     /// first attach.
     private var isMediaDetached = false
     /// Whether an audio interruption was in progress while the live transport's
-    /// media was detached, since its last attach: the next attach is followed by
-    /// `recoverMediaAfterInterruption()`.
+    /// media was detached, since its last attach: the next attach logs the session.
     private var isMediaInterruptedWhileDetached = false
     /// The session CallKit last activated for the call, until it deactivates it.
     @ObservationIgnored private var activatedSession: AudioSessionActivating?
@@ -1749,10 +1742,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         // that (the usual order: the credential fetch and the join come after), this
         // closes it and `handleConnected` opens it.
         let mic = applyMic()
-        if !isOnHold {
-            recoverMediaAfterInterruptionIfDue()
-            confirmAudioStarted()
-        }
+        if !isOnHold { confirmAudioStarted() }
         await mic?.value
         guard self.transport === transport else { return }
         // After the attach and the mic, so an agent that waits for them starts
@@ -1930,10 +1920,7 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
         }
         if isAudioActivated { attachMedia() }
         applyMic()
-        if isAudioActivated {
-            recoverMediaAfterInterruptionIfDue()
-            confirmAudioStarted()
-        }
+        if isAudioActivated { confirmAudioStarted() }
         syncHoldSignal()
         delegate?.callEngine(self, cue: .moment(.resumed))
         markConnectedIfDue()
@@ -2562,27 +2549,18 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
     /// Queue the live transport's attach, and return that command.
     @discardableResult
     private func attachMedia() -> Task<Void, Never>? {
-        if isMediaInterruptedWhileDetached, transport != nil { recoverSessionAfterInterruption() }
+        if isMediaInterruptedWhileDetached, transport != nil { logAttachAfterInterruption() }
         isMediaDetached = false
         return enqueueMedia { await $0.attachAudioSession() }
     }
 
-    /// Before the attach that follows an audio interruption: log the session now and
-    /// a second and three seconds later, and run the experimental session recovery,
-    /// if one is chosen, as a media command ahead of the attach.
-    private func recoverSessionAfterInterruption() {
+    /// The attach that follows an audio interruption during a detach: log the
+    /// session now and a second and three seconds later, once per such attach.
+    private func logAttachAfterInterruption() {
+        isMediaInterruptedWhileDetached = false
         let session = activatedSession
-        let recovery = sessionInterruptionRecovery()
-        Log.info(.callKit, "Attaching after an audio interruption (session recovery \(recovery.rawValue)); session: \(session?.diagnosticDescription ?? "none")")
+        Log.info(.callKit, "Attaching after an audio interruption; session: \(session?.diagnosticDescription ?? "none")")
         logSessionLater(session)
-        guard recovery != .off, let session else { return }
-        enqueueMedia { _ in
-            Log.info(.callKit, "Session recovery \(recovery.rawValue): \(session.reapplyCallConfiguration())")
-            if recovery == .reapplyCategoryAndActivate {
-                Log.warning(.callKit, "Session recovery E-B, experimental, activating the session although CallKit owns activation: \(session.activateAgain())")
-            }
-            Log.info(.callKit, "Session recovery \(recovery.rawValue) done; session: \(session.diagnosticDescription)")
-        }
     }
 
     /// Logs `session` a second and three seconds from now, while the call lasts.
@@ -2608,21 +2586,11 @@ public final class CallEngine: CallProviderDelegate, AudioInterruptionObserverDe
 
     private func noteInterruptionWhileDetached() {
         guard !isMediaInterruptedWhileDetached else { return }
-        Log.info(.call, "An audio interruption while the call's media is detached; the transport will be asked to recover its media at the next attach")
+        Log.info(.call, "An audio interruption while the call's media is detached; the next attach logs the session")
         isMediaInterruptedWhileDetached = true
     }
 
-    /// After an attach and its mic command, and before anything the engine sends
-    /// the agent after them: a transport whose media was detached during a real
-    /// audio interruption is asked to recover it, once per such attach.
-    private func recoverMediaAfterInterruptionIfDue() {
-        guard isMediaInterruptedWhileDetached, !isMediaDetached, transport != nil else { return }
-        isMediaInterruptedWhileDetached = false
-        Log.info(.call, "Media attached after an audio interruption; asking the transport to recover it")
-        enqueueMedia { await $0.recoverMediaAfterInterruption() }
-    }
-
-    /// After an attach (and the mic and recovery commands issued with it): if the
+    /// After an attach (and the mic command issued with it): if the
     /// transport says its audio did not start, attach it again a few times, while
     /// the call stays activated, attached and not held. What the engine sends the
     /// agent after the attach (`call-resumed`, `call-connected`) waits for this, so

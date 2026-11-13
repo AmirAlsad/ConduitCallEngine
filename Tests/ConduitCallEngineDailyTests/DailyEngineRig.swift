@@ -13,7 +13,7 @@ import AVFoundation
 import Foundation
 import ConduitCallEngine
 import ConduitCallEngineTesting
-@_spi(InterruptionRecoveryExperiment) @testable import ConduitCallEngineDaily
+@testable import ConduitCallEngineDaily
 
 /// A sleep the test ends by hand, recording how long each sleeper asked for.
 @MainActor
@@ -79,14 +79,6 @@ final class DailyEngineRig {
     var dailyDropsPreferenceAtJoin = false
     /// The audio devices each new Daily session lists.
     var mics: [String] = []
-    /// Whether each new Pipecat transport's join fails.
-    var failsJoins = false
-    /// Whether each new Pipecat transport records its mic changes in `calls`.
-    var recordsMic = false
-    /// What each new transport does when the engine asks it to recover its media.
-    var interruptionRecovery: DailyInterruptionRecovery = .off
-    /// Every pause the transports took, in order; each returns at once.
-    private(set) var transportPauses: [Duration] = []
     /// While true, the target's credential fetch waits for `releaseCredentials()`.
     var holdsCredentials = false
     private var pendingCredentials: CheckedContinuation<Void, Never>?
@@ -135,8 +127,6 @@ final class DailyEngineRig {
             makePipecatTransport: { [unowned self] in
                 let fake = FakePipecatTransport()
                 fake.mics = mics
-                fake.recordsMic = recordsMic
-                if failsJoins { fake.connectError = TransportError.connectionFailed("join refused") }
                 pipecats.append(fake)
                 return fake
             },
@@ -153,9 +143,7 @@ final class DailyEngineRig {
                 return control
             },
             readOutputPort: { [unowned self] in outputPort },
-            readAvailableInputs: { [unowned self] in availableInputs },
-            interruptionRecovery: interruptionRecovery,
-            sleep: { [unowned self] in transportPauses.append($0) }
+            readAvailableInputs: { [unowned self] in availableInputs }
         )
         transports.append(transport)
         return transport

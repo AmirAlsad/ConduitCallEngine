@@ -4,9 +4,7 @@
 //
 //  Real `AudioSessionActivating` over `AVAudioSession`. CallKit owns activation;
 //  this pre-configures the category and mode, without activating, before a call
-//  is reported, and describes the session for logs. Configuring or activating the
-//  session after CallKit activated it is done only by the experimental recovery
-//  after an audio interruption, which is off by default.
+//  is reported (or a held call resumed), and describes the session for logs.
 //
 
 import AVFoundation
@@ -42,24 +40,6 @@ final class SystemAudioSession: AudioSessionActivating {
         sampleRate \(session.sampleRate), inputAvailable \(session.isInputAvailable), \
         inputs \(inputs), outputs \(outputs)
         """
-    }
-
-    func reapplyCallConfiguration() -> String {
-        do {
-            try prepareForVoIPCall()
-            return "setCategory(playAndRecord, voiceChat) ok"
-        } catch {
-            return "setCategory(playAndRecord, voiceChat) failed: \(error)"
-        }
-    }
-
-    func activateAgain() -> String {
-        do {
-            try session.setActive(true)
-            return "setActive(true) ok"
-        } catch {
-            return "setActive(true) failed: \(error)"
-        }
     }
 
     private static func describe(_ options: AVAudioSession.CategoryOptions) -> String {

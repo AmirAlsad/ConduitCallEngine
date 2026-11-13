@@ -39,19 +39,16 @@ public final class FakeTransport: CallTransport {
     public private(set) var micEnabledHistory: [Bool] = []
     /// Whether the last of `attachAudioSession()` and `detachAudioSession()` was an attach.
     public private(set) var isAudioAttached = false
-    /// How many times the engine called `recoverMediaAfterInterruption()`.
-    public private(set) var mediaRecoveryCount = 0
 
     /// A media command or signal the engine gave the transport.
     public enum Command: Equatable, Sendable {
         case attach
         case detach
         case mic(Bool)
-        case recoverMediaAfterInterruption
         case send(CallSignal)
     }
 
-    /// Every attach, detach, mic command, media recovery and signal, in the order
+    /// Every attach, detach, mic command and signal, in the order
     /// the engine made them, so a test can check how they interleave.
     public private(set) var commands: [Command] = []
     /// How many `connect(_:)` calls found their task cancelled when they finished.
@@ -207,11 +204,6 @@ public final class FakeTransport: CallTransport {
         commands.append(.detach)
         startFailure = nil
         isAudioAttached = false
-    }
-
-    public func recoverMediaAfterInterruption() async {
-        commands.append(.recoverMediaAfterInterruption)
-        mediaRecoveryCount += 1
     }
 
     /// Every call-control signal the engine sent, in order, whatever became of it.

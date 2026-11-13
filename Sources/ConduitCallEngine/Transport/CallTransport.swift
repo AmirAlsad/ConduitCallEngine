@@ -71,23 +71,9 @@ public protocol CallTransport: AnyObject {
     /// Stop media when CallKit deactivates the session, the call is put on hold,
     /// or the call ends. Can be called more than once in a row; make it idempotent.
     func detachAudioSession() async
-    /// Restart media that a real audio interruption may have left dead. Called after
-    /// an `attachAudioSession()` that follows one: an `AVAudioSession` interruption
-    /// (a phone call, typically) was in progress while the engine had this
-    /// transport's media detached, whether it began during a hold or a deactivation
-    /// or the hold or deactivation came during it. Called once per such attach, as
-    /// a media command after that attach and the `setMicEnabled(_:)` issued with it,
-    /// and before the `CallSignal.resumed` or `.connected` the engine sends after
-    /// them, which wait for it. Never for a hold or deactivation with no interruption,
-    /// never during a ring, and never on another call's transport. It must leave the
-    /// mic as the engine last set it and the agent's audio attached, must not touch
-    /// `AVAudioSession` itself, and should return once media is running again or it
-    /// has given up. An SDK whose audio survives an interruption needs nothing here:
-    /// the default implementation does nothing.
-    func recoverMediaAfterInterruption() async
     /// Why the audio the last `attachAudioSession()` was to start did not start, or
     /// nil if it started (or the transport cannot tell). Asked after each attach, as
-    /// a media command after the attach and the commands issued with it; for a
+    /// a media command after the attach and the mic command issued with it; for a
     /// failure, the engine attaches again a few times, half a second, one and two
     /// seconds apart, while the call stays activated and not held, and what it sends
     /// the agent after the attach (`CallSignal.resumed`, `.connected`) waits for
@@ -132,9 +118,6 @@ extension CallTransport {
     public func connectWhileRinging(_ connection: CallConnection) async throws {
         try await connect(connection)
     }
-
-    /// Does nothing: the attach restarts this transport's media.
-    public func recoverMediaAfterInterruption() async {}
 
     /// Nil: a transport that does not implement it is taken to have started its audio.
     public func audioStartFailure() async -> String? { nil }

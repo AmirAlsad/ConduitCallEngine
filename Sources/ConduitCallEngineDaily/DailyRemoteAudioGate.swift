@@ -95,15 +95,6 @@ struct DailyRemoteAudioGate {
         refused = nil
     }
 
-    /// The adapter changed the subscription itself (a recovery after an
-    /// interruption) and Daily accepted `state`: it counts as applied in this
-    /// session, unless an application is still in flight, which decides instead.
-    mutating func subscriptionChangedOutsideTheGate(to state: DailyRemoteAudio) {
-        refused = nil
-        guard !isApplying else { return }
-        applied = state
-    }
-
     /// The next change to apply, or `nil` if there is none or one is in flight.
     mutating func beginApplying() -> Application? {
         guard !isApplying, let wanted, wanted != applied, wanted != refused else { return nil }

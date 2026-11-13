@@ -38,12 +38,6 @@ protocol DailyCallControlling: AnyObject {
     var preferredAudioRoute: DailyAudioRoute? { get }
     /// Daily's preferred and current audio device and its microphone input, for logs.
     var audioRouteDescription: String { get }
-    /// The route Daily reports playing on now.
-    var currentAudioRoute: DailyAudioRoute? { get }
-    /// Daily's media as it reports it, for logs: the local microphone's state and
-    /// input, the agent's microphone state and subscription, the call state, the
-    /// preferred and current audio device, and the audio levels.
-    var mediaStateDescription: String { get }
 }
 
 /// Controls the call client of a Pipecat `DailyTransport`. Holds the transport weakly:
@@ -112,26 +106,6 @@ final class DailyCallClientControl: DailyCallControlling {
         let preferred = callClient.preferredAudioDevice.map(\.deviceID) ?? "none (Daily default)"
         let input = callClient.inputs.microphone.settings.deviceID ?? "none"
         return "preferred \(preferred), current \(callClient.audioDevice.deviceID), mic input device \(input)"
-    }
-
-    var currentAudioRoute: DailyAudioRoute? {
-        transport?.dailyCallClient.flatMap { DailyAudioRoute($0.audioDevice) }
-    }
-
-    var mediaStateDescription: String {
-        guard let callClient = transport?.dailyCallClient else { return "no Daily call client" }
-        let local = callClient.participants.local.media?.microphone
-        let input = callClient.inputs.microphone
-        let remoteLevels = callClient.remoteParticipantsAudioLevel.values.map { Self.level($0) }
-        return """
-        local mic \(local.map { "\($0.state)" } ?? "no media") (input enabled \(input.isEnabled)), \
-        agent \(remoteAudioDescription), call \(callClient.callState), \(audioRouteDescription), \
-        audio level local \(Self.level(callClient.localAudioLevel)) remote \(remoteLevels)
-        """
-    }
-
-    private static func level(_ value: Float) -> String {
-        String(format: "%.3f", value)
     }
 
     /// The connection parameters of a join that prefers `route` from its start: the
