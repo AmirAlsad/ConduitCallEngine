@@ -234,7 +234,9 @@ public final class SimulatedCallSystem {
 
     /// The live call's transport emitted `event`, delivered synchronously. Delivered
     /// only while a call has a transport, the only time a real transport's events
-    /// reach the engine; returns whether it was delivered.
+    /// reach the engine; returns whether it was delivered. `.serverMessage`,
+    /// `.botOutput` and `.userTranscript` reach the delegate before this returns,
+    /// except during a ring, when the engine drops them.
     @discardableResult
     public func deliverTransportEvent(_ event: TransportEvent) -> Bool {
         guard let engine, engine.hasTransport else { return false }
