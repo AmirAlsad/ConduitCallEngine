@@ -34,8 +34,10 @@ struct PipecatDailyTransportTests {
     private let clients = Clients()
     private let connection = CallConnection(url: URL(string: "https://example.daily.co/room")!, token: "t")
 
+    /// The end-call flush returns at once unless the test brings a `sleep`; the
+    /// attach's bound never runs out by itself.
     private func makeTransport(
-        sleep: @escaping @MainActor (Duration) async -> Void = { try? await Task.sleep(for: $0) }
+        sleep: @escaping @MainActor (Duration) async -> Void = { _ in }
     ) -> PipecatDailyTransport {
         PipecatDailyTransport(
             makePipecatTransport: { [clients] in
@@ -56,7 +58,8 @@ struct PipecatDailyTransportTests {
                 return control
             },
             readOutputPort: { nil },
-            sleep: sleep
+            sleep: sleep,
+            attachBoundSleep: { try? await parkedSleep($0) }
         )
     }
 

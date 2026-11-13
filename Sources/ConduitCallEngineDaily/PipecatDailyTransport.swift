@@ -89,6 +89,7 @@ public final class PipecatDailyTransport: CallTransport {
     private let readOutputPort: @MainActor () -> AVAudioSession.Port?
     private let readAvailableInputs: @MainActor () -> [AVAudioSession.Port]
     private let sleep: @MainActor (Duration) async -> Void
+    private let attachBoundSleep: @MainActor (Duration) async -> Void
     private var remoteAudio = DailyRemoteAudioGate()
     private var routes = DailyAudioRouteGate()
 
@@ -128,7 +129,8 @@ public final class PipecatDailyTransport: CallTransport {
         readAvailableInputs: @escaping @MainActor () -> [AVAudioSession.Port] = {
             AVAudioSession.sharedInstance().availableInputs?.map(\.portType) ?? []
         },
-        sleep: @escaping @MainActor (Duration) async -> Void = { try? await Task.sleep(for: $0) }
+        sleep: @escaping @MainActor (Duration) async -> Void = { try? await Task.sleep(for: $0) },
+        attachBoundSleep: @escaping @MainActor (Duration) async -> Void = { try? await Task.sleep(for: $0) }
     ) {
         let (stream, continuation) = AsyncStream.makeStream(of: TransportEvent.self)
         self.events = stream
@@ -139,6 +141,7 @@ public final class PipecatDailyTransport: CallTransport {
         self.readOutputPort = readOutputPort
         self.readAvailableInputs = readAvailableInputs
         self.sleep = sleep
+        self.attachBoundSleep = attachBoundSleep
         self.session = makeSession()
     }
 
@@ -398,7 +401,7 @@ public final class PipecatDailyTransport: CallTransport {
         }
         let route = applyRoute()
         let audio = applyRemoteAudio()
-        await Self.wait(for: Task { await route.value; await audio.value }, atMost: Self.attachBound)
+        await Self.wait(for: Task { await route.value; await audio.value }, atMost: Self.attachBound, sleep: attachBoundSleep)
     }
 
     /// Stops the agent's playout by unsubscribing from its audio (the engine closes the
@@ -429,15 +432,19 @@ public final class PipecatDailyTransport: CallTransport {
         return task
     }
 
-    /// Waits for `task`, or for `bound` to pass, whichever comes first.
-    private static func wait(for task: Task<Void, Never>, atMost bound: Duration) async {
+    /// Waits for `task`, or for `bound` to pass on `sleep`, whichever comes first.
+    private static func wait(
+        for task: Task<Void, Never>,
+        atMost bound: Duration,
+        sleep: @escaping @MainActor (Duration) async -> Void
+    ) async {
         let (outcome, report) = AsyncStream.makeStream(of: Void.self)
         let waiter = Task {
             await task.value
             report.yield()
         }
         let timer = Task {
-            try? await Task.sleep(for: bound)
+            await sleep(bound)
             report.yield()
         }
         for await _ in outcome { break }

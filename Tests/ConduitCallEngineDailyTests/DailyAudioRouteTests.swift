@@ -51,7 +51,9 @@ struct DailyAudioRouteTests {
                 clients.portReads += 1
                 return clients.outputPort
             },
-            readAvailableInputs: { [clients] in clients.availableInputs }
+            readAvailableInputs: { [clients] in clients.availableInputs },
+            sleep: { _ in },
+            attachBoundSleep: { try? await parkedSleep($0) }
         )
     }
 

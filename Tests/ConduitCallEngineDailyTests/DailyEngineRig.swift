@@ -11,6 +11,7 @@
 
 import AVFoundation
 import Foundation
+import Synchronization
 import Testing
 import ConduitCallEngine
 import ConduitCallEngineTesting
@@ -39,6 +40,47 @@ final class HandSleeper {
         let waiting = pending
         pending = []
         waiting.forEach { $0.resume() }
+    }
+}
+
+/// The moment the rig's engine is built at: its clock stands still, so no wait it
+/// measures by `now` (the outgoing minimum connecting time) passes with the machine's time.
+let testEpoch = Date(timeIntervalSince1970: 1_000_000)
+
+/// A sleep that never runs out by itself: it ends, throwing `CancellationError`, only
+/// when its task is cancelled. For the adapter's bounds, which must wait for what
+/// they bound however long the machine takes.
+func parkedSleep(_ duration: Duration) async throws {
+    let park = Park()
+    await withTaskCancellationHandler {
+        await park.wait()
+    } onCancel: {
+        park.open()
+    }
+    throw CancellationError()
+}
+
+/// Suspends `wait()` until `open()`; a `wait()` after `open()` returns at once.
+private final class Park: Sendable {
+    private let state = Mutex<(isOpen: Bool, waiter: CheckedContinuation<Void, Never>?)>((false, nil))
+
+    func wait() async {
+        await withCheckedContinuation { continuation in
+            let isOpen = state.withLock { state in
+                if !state.isOpen { state.waiter = continuation }
+                return state.isOpen
+            }
+            if isOpen { continuation.resume() }
+        }
+    }
+
+    func open() {
+        let waiter = state.withLock { state in
+            state.isOpen = true
+            defer { state.waiter = nil }
+            return state.waiter
+        }
+        waiter?.resume()
     }
 }
 
@@ -101,6 +143,7 @@ final class DailyEngineRig {
                 defaultsToSpeaker: defaultsToSpeaker
             ),
             system: system,
+            now: { testEpoch },
             sleep: { await sleeper.sleep($0) }
         )
         engine.delegate = host
@@ -147,7 +190,9 @@ final class DailyEngineRig {
                 return control
             },
             readOutputPort: { [unowned self] in outputPort },
-            readAvailableInputs: { [unowned self] in availableInputs }
+            readAvailableInputs: { [unowned self] in availableInputs },
+            sleep: { _ in },
+            attachBoundSleep: { try? await parkedSleep($0) }
         )
         transports.append(transport)
         return transport
