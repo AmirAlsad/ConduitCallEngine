@@ -171,7 +171,7 @@ Every public enum says in its documentation whether it is closed or open.
 - **Closed** enums gain no case within a minor version while the package is 0.x (from 1.0, within a major version), so a `switch` may list every case: `CallState`, `CallOutcome`, `CallDirection`, `CallCue`, `CallSignalDelivery`, `RingPreparation`, `AudioRouteKind`.
 - **Open** enums may gain cases in any release, each listed in the changelog: `CallFailureReason`, `MissedCallReason`, `CallMoment`, `RepeatingCue`, `CallSignal`, `RingPreparationPhase`, `ConnectRequest.Purpose`, `TransportEvent` (0.3 added `.serverMessage`, `.botOutput` and `.userTranscript`), `TransportError`, `TransportDisconnectReason`, and the Testing product's `FakeTransport.Command`. End a `switch` over one with `@unknown default`. It compiles without a warning today, and when a case is added the switch still compiles, with a warning that names the new case, which takes the `@unknown default` branch until you handle it. A `switch` over a `CallCue` that matches its `RepeatingCue` or `CallMoment` payloads (`case .moment(.connected):`) needs one too.
 
-So 0.3 may add a case to a closed enum, listed as a breaking change, and no 0.2.x release does. Depend on the package up to the next minor version ([README](../README.md#installation)), so that moving to 0.3 is a change you make on purpose.
+So 0.4 may add a case to a closed enum, listed as a breaking change, and no 0.3.x release does. Depend on the package up to the next minor version ([README](../README.md#installation)), so that moving to 0.4 is a change you make on purpose.
 
 ## 2. Choosing products
 

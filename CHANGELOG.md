@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.0 - Unreleased
+## 0.3.0 - 2026-11-14
 
 0.3 lets a host exchange its own messages with its agent over the call: `CallEngine.send(_:)` sends an RTVI client message (a type and an optional JSON payload) on the call in progress, and three new delegate callbacks pass on the agent's RTVI server messages, its output text (for captions) and the user's transcript, on both bundled adapters. Every credential request of a call now carries the call's CallKit id, outgoing calls included. A 0.2 host that uses none of this needs no change, unless it switches over `TransportEvent` or `FakeTransport.Command` without a default branch. Everything new is verified in unit tests only: no device run and no running agent.
 

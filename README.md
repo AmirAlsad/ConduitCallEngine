@@ -37,10 +37,10 @@ The manifest's dependency floors are the versions this release was verified with
 Add the package by URL in Xcode (File > Add Package Dependencies) or in a manifest:
 
 ```swift
-.package(url: "https://github.com/AmirAlsad/ConduitCallEngine.git", .upToNextMinor(from: "0.2.0"))
+.package(url: "https://github.com/AmirAlsad/ConduitCallEngine.git", .upToNextMinor(from: "0.3.0"))
 ```
 
-In Xcode, choose the dependency rule "Up to Next Minor Version". While the package is 0.x, a minor release (0.3) may break source compatibility or change defaults, and `from: "0.2.0"` would accept it; up to the next minor version takes only 0.2.x fixes.
+In Xcode, choose the dependency rule "Up to Next Minor Version". While the package is 0.x, a minor release (0.4) may break source compatibility or change defaults, and `from: "0.3.0"` would accept it; up to the next minor version takes only 0.3.x fixes.
 
 Then add `ConduitCallEngine` and one adapter product to your app target, and `ConduitCallEngineTesting` if you want simulator support.
 
